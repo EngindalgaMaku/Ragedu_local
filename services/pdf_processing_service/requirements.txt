@@ -1,0 +1,23 @@
+# PDF Processing Service Requirements
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# PDF processing
+PyPDF2
+marker-pdf>=0.2.15
+
+# Memory management and resource monitoring
+psutil>=5.9.0
+
+# Configuration
+python-dotenv
+
+# Logging
+colorlog>=6.7.0
+
+# HTTP requests
+requests>=2.31.0
+
+# Google Cloud Storage for persistent model caching
+google-cloud-storage>=2.10.0

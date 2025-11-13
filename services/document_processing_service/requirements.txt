@@ -1,0 +1,26 @@
+# Lightweight Document Processing Service Requirements
+# Heavy ML dependencies removed - embeddings come from Model Inference Service
+
+# Web framework  
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.5.0
+
+# HTTP requests to other microservices
+requests>=2.31.0
+
+# Configuration and logging
+python-dotenv
+colorlog>=6.7.0
+
+# Language detection (lightweight)
+langdetect
+
+# Text utilities
+regex
+
+# Numpy for numerical operations
+numpy
+
+# ChromaDB Python client for vector database operations
+chromadb>=1.3.0

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Test</title>
+</head>
+<body>
+    <h1>Admin API Test</h1>
+    <button onclick="testGetUsers()">Test GET Users</button>
+    <button onclick="testCreateUser()">Test CREATE User</button>
+    <button onclick="testUpdateUser()">Test UPDATE User</button>
+    <pre id="result"></pre>
+
+    <script>
+        const AUTH_URL = 'http://localhost:8006';
+        
+        // Get token from localStorage (open admin panel first)
+        function getToken() {
+            return localStorage.getItem('access_token');
+        }
+
+        async function testGetUsers() {
+            const token = getToken();
+            if (!token) {
+                document.getElementById('result').textContent = 'ERROR: No token found. Login to admin panel first.';
+                return;
+            }
+
+            try {
+                const response = await fetch(`${AUTH_URL}/admin/users`, {
+                    method: 'GET',
+                    credentials: 'include',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const data = await response.json();
+                document.getElementById('result').textContent = 
+                    `STATUS: ${response.status}\n` +
+                    `RESPONSE:\n${JSON.stringify(data, null, 2)}`;
+            } catch (error) {
+                document.getElementById('result').textContent = `ERROR: ${error.message}`;
+            }
+        }
+
+        async function testCreateUser() {
+            const token = getToken();
+            if (!token) {
+                document.getElementById('result').textContent = 'ERROR: No token found';
+                return;
+            }
+
+            try {
+                const response = await fetch(`${AUTH_URL}/admin/users`, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        username: 'test_' + Date.now(),
+                        email: 'test_' + Date.now() + '@example.com',
+                        password: 'Test123!',
+                        first_name: 'Test',
+                        last_name: 'User',
+                        role_name: 'user',
+                        is_active: true
+                    })
+                });
+
+                const data = await response.json();
+                document.getElementById('result').textContent = 
+                    `STATUS: ${response.status}\n` +
+                    `RESPONSE:\n${JSON.stringify(data, null, 2)}`;
+            } catch (error) {
+                document.getElementById('result').textContent = `ERROR: ${error.message}`;
+            }
+        }
+
+        async function testUpdateUser() {
+            const token = getToken();
+            if (!token) {
+                document.getElementById('result').textContent = 'ERROR: No token found';
+                return;
+            }
+
+            // Update user with ID 3 (teacher_demo)
+            try {
+                const response = await fetch(`${AUTH_URL}/admin/users/3`, {
+                    method: 'PUT',
+                    credentials: 'include',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        first_name: 'Updated',
+                        last_name: 'Teacher'
+                    })
+                });
+
+                const data = await response.json();
+                document.getElementById('result').textContent = 
+                    `STATUS: ${response.status}\n` +
+                    `RESPONSE:\n${JSON.stringify(data, null, 2)}`;
+            } catch (error) {
+                document.getElementById('result').textContent = `ERROR: ${error.message}`;
+            }
+        }
+    </script>
+</body>
+</html>

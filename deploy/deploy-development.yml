@@ -1,0 +1,90 @@
+# RAG Education Assistant - Development Deployment Configuration
+
+environment: development
+
+# Service configuration
+services:
+  auth-service:
+    port: 8006
+    replicas: 1
+    health_check: /health
+    timeout: 30
+    resources:
+      memory: 512MB
+      cpu: 0.5
+
+  api-gateway:
+    port: 8000
+    replicas: 1
+    health_check: /health
+    timeout: 30
+    resources:
+      memory: 512MB
+      cpu: 0.5
+
+  frontend:
+    port: 3000
+    replicas: 1
+    health_check: /
+    timeout: 60
+    build:
+      target: development
+    resources:
+      memory: 256MB
+      cpu: 0.25
+
+# Database configuration
+database:
+  backup_before_deploy: true
+  run_migrations: true
+  verify_integrity: true
+  path: data/rag_assistant.db
+
+# Deployment strategy
+deployment:
+  strategy: recreate # Faster for development
+  timeout: 300
+  health_check_retries: 5
+  health_check_interval: 10
+  parallel_deploy: false
+
+# Security settings (relaxed for development)
+security:
+  verify_ssl: false
+  run_security_scan: false
+  check_secrets: true
+  demo_accounts_enabled: true
+
+# Monitoring configuration
+monitoring:
+  enable: true
+  alert_on_failure: false
+  log_level: debug
+  alert_email: dev@localhost
+
+# Development-specific settings
+development:
+  auto_reload: true
+  debug_mode: true
+  cors_all_origins: true
+  extended_timeouts: true
+  verbose_logging: true
+
+# External services (development)
+external_services:
+  pdf_processor: https://pdf-processor-awe3elsvra-ew.a.run.app
+  document_processor: https://doc-proc-service-awe3elsvra-ew.a.run.app
+  model_inference: https://model-inferencer-awe3elsvra-ew.a.run.app
+
+# Volume mounts for development
+volumes:
+  - ./data:/data
+  - ./logs:/var/log/app
+
+# Environment overrides
+environment_overrides:
+  DEBUG: "true"
+  LOG_LEVEL: debug
+  CORS_ORIGINS: "*"
+  RATE_LIMIT_RPM: 120
+  ACCESS_TOKEN_EXPIRE_MINUTES: 60 # Longer for development convenience

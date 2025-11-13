@@ -1,0 +1,189 @@
+# RAG Education Assistant - Production Deployment Configuration
+
+environment: production
+
+# Domain configuration
+domain: yourdomain.com
+ssl_enabled: true
+
+# Service configuration (production optimized)
+services:
+  auth-service:
+    port: 8006
+    replicas: 2 # High availability
+    health_check: /health
+    timeout: 30
+    resources:
+      memory: 1GB
+      cpu: 1.0
+    restart_policy: unless-stopped
+
+  api-gateway:
+    port: 8000
+    replicas: 2 # High availability
+    health_check: /health
+    timeout: 30
+    resources:
+      memory: 1GB
+      cpu: 1.0
+    restart_policy: unless-stopped
+
+  frontend:
+    port: 3000
+    replicas: 1
+    health_check: /
+    timeout: 60
+    build:
+      target: production
+    resources:
+      memory: 512MB
+      cpu: 0.5
+    restart_policy: unless-stopped
+
+# Load balancer configuration
+load_balancer:
+  enabled: true
+  type: nginx
+  ssl_redirect: true
+  rate_limiting: true
+  security_headers: true
+
+# Database configuration
+database:
+  backup_before_deploy: true
+  run_migrations: true
+  verify_integrity: true
+  path: /data/rag_assistant.db
+  backup_retention:
+    daily: 30
+    weekly: 12
+    monthly: 6
+  encryption: true
+
+# Deployment strategy (zero-downtime)
+deployment:
+  strategy: rolling # Zero-downtime deployment
+  timeout: 600 # Longer for production safety
+  health_check_retries: 10
+  health_check_interval: 15
+  parallel_deploy: true
+  rollback_on_failure: true
+
+# Security settings (strict production)
+security:
+  verify_ssl: true
+  run_security_scan: true
+  check_secrets: true
+  demo_accounts_enabled: false
+  force_https: true
+  security_headers: true
+  rate_limiting: strict
+
+# Monitoring configuration
+monitoring:
+  enable: true
+  alert_on_failure: true
+  log_level: info
+  alert_email: admin@yourdomain.com
+  metrics_retention: 90d
+  log_retention: 30d
+
+# Production-specific settings
+production:
+  auto_reload: false
+  debug_mode: false
+  cors_strict: true
+  compression: true
+  caching: true
+  session_security: strict
+
+# External services (production)
+external_services:
+  pdf_processor: https://pdf-processor-prod.yourdomain.com
+  document_processor: https://doc-processor-prod.yourdomain.com
+  model_inference: https://model-inference-prod.yourdomain.com
+
+# Persistent volumes
+volumes:
+  - /opt/rag-assistant/data:/data
+  - /var/log/rag-assistant:/var/log/app
+  - /opt/rag-assistant/backups:/backups
+
+# Environment overrides (production secure)
+environment_overrides:
+  DEBUG: "false"
+  LOG_LEVEL: info
+  CORS_ORIGINS: https://yourdomain.com
+  RATE_LIMIT_RPM: 60
+  ACCESS_TOKEN_EXPIRE_MINUTES: 30
+  REFRESH_TOKEN_EXPIRE_DAYS: 7
+  REQUIRE_HTTPS: "true"
+
+# Backup configuration
+backup:
+  enabled: true
+  schedule: "0 2 * * *" # Daily at 2 AM
+  compression: true
+  encryption: true
+  remote_storage: true
+  retention_policy:
+    daily_backups: 30
+    weekly_backups: 12
+    monthly_backups: 6
+
+# SSL/TLS configuration
+ssl:
+  provider: letsencrypt
+  auto_renewal: true
+  force_https: true
+  hsts_enabled: true
+  certificate_path: /etc/ssl/certs/yourdomain.com.crt
+  private_key_path: /etc/ssl/private/yourdomain.com.key
+
+# Nginx configuration
+nginx:
+  client_max_body_size: 50m
+  proxy_timeout: 300s
+  gzip_compression: true
+  security_headers:
+    - "X-Frame-Options: DENY"
+    - "X-Content-Type-Options: nosniff"
+    - "X-XSS-Protection: 1; mode=block"
+    - "Strict-Transport-Security: max-age=31536000; includeSubdomains"
+
+# Performance optimizations
+performance:
+  enable_caching: true
+  connection_pooling: true
+  database_optimization: true
+  static_file_compression: true
+  cdn_enabled: false # Set to true if using CDN
+
+# Alerting rules
+alerts:
+  - name: service_down
+    condition: service_health == false
+    severity: critical
+    notification_channels: [email, slack]
+
+  - name: high_error_rate
+    condition: error_rate > 5%
+    severity: warning
+    notification_channels: [email]
+
+  - name: high_memory_usage
+    condition: memory_usage > 80%
+    severity: warning
+    notification_channels: [email]
+
+  - name: disk_space_low
+    condition: disk_free < 20%
+    severity: critical
+    notification_channels: [email, slack]
+
+# Compliance settings
+compliance:
+  gdpr_enabled: true
+  audit_logging: true
+  data_retention_policy: 2y
+  anonymization: true

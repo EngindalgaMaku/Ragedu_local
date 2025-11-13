@@ -1,0 +1,377 @@
+{
+  "timestamp": "2025-11-02T20:53:42.119194",
+  "total_services": 7,
+  "services_up": 7,
+  "services_down": 0,
+  "services_partial": 0,
+  "service_results": {
+    "api-gateway": {
+      "service_name": "api-gateway",
+      "port": 8000,
+      "status": "\u2705 All endpoints responding",
+      "endpoints_tested": 4,
+      "endpoints_responding": 4,
+      "endpoints_results": [
+        {
+          "url": "http://localhost:8000/",
+          "status_code": 200,
+          "response_time_ms": 11.14,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 288
+        },
+        {
+          "url": "http://localhost:8000/health",
+          "status_code": 200,
+          "response_time_ms": 5.15,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 39
+        },
+        {
+          "url": "http://localhost:8000/docs",
+          "status_code": 200,
+          "response_time_ms": 4.45,
+          "success": true,
+          "error": null,
+          "content_type": "text/html; charset=utf-8",
+          "content_length": 940
+        },
+        {
+          "url": "http://localhost:8000/openapi.json",
+          "status_code": 200,
+          "response_time_ms": 39.72,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 18252
+        }
+      ],
+      "overall_health": "UP",
+      "response_times": [
+        11.14,
+        5.15,
+        4.45,
+        39.72
+      ],
+      "errors": [],
+      "avg_response_time_ms": 15.12
+    },
+    "model-inference-service": {
+      "service_name": "model-inference-service",
+      "port": 8002,
+      "status": "\u2705 All endpoints responding",
+      "endpoints_tested": 4,
+      "endpoints_responding": 4,
+      "endpoints_results": [
+        {
+          "url": "http://localhost:8002/",
+          "status_code": 404,
+          "response_time_ms": 22.9,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 22
+        },
+        {
+          "url": "http://localhost:8002/health",
+          "status_code": 200,
+          "response_time_ms": 20.61,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 100
+        },
+        {
+          "url": "http://localhost:8002/models",
+          "status_code": 404,
+          "response_time_ms": 23.73,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 22
+        },
+        {
+          "url": "http://localhost:8002/docs",
+          "status_code": 200,
+          "response_time_ms": 3.4,
+          "success": true,
+          "error": null,
+          "content_type": "text/html; charset=utf-8",
+          "content_length": 947
+        }
+      ],
+      "overall_health": "UP",
+      "response_times": [
+        22.9,
+        20.61,
+        23.73,
+        3.4
+      ],
+      "errors": [],
+      "avg_response_time_ms": 17.66
+    },
+    "document-processing-service": {
+      "service_name": "document-processing-service",
+      "port": 8003,
+      "status": "\u2705 All endpoints responding",
+      "endpoints_tested": 4,
+      "endpoints_responding": 4,
+      "endpoints_results": [
+        {
+          "url": "http://localhost:8003/",
+          "status_code": 200,
+          "response_time_ms": 6.41,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 71
+        },
+        {
+          "url": "http://localhost:8003/health",
+          "status_code": 200,
+          "response_time_ms": 13.43,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 157
+        },
+        {
+          "url": "http://localhost:8003/docs",
+          "status_code": 200,
+          "response_time_ms": 22.19,
+          "success": true,
+          "error": null,
+          "content_type": "text/html; charset=utf-8",
+          "content_length": 951
+        },
+        {
+          "url": "http://localhost:8003/process",
+          "status_code": 404,
+          "response_time_ms": 15.5,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 22
+        }
+      ],
+      "overall_health": "UP",
+      "response_times": [
+        6.41,
+        13.43,
+        22.19,
+        15.5
+      ],
+      "errors": [],
+      "avg_response_time_ms": 14.38
+    },
+    "chromadb-service": {
+      "service_name": "chromadb-service",
+      "port": 8004,
+      "status": "\u2705 All endpoints responding",
+      "endpoints_tested": 4,
+      "endpoints_responding": 4,
+      "endpoints_results": [
+        {
+          "url": "http://localhost:8004/",
+          "status_code": 404,
+          "response_time_ms": 14.49,
+          "success": true,
+          "error": null,
+          "content_type": "",
+          "content_length": 0
+        },
+        {
+          "url": "http://localhost:8004/api/v1",
+          "status_code": 404,
+          "response_time_ms": 4.31,
+          "success": true,
+          "error": null,
+          "content_type": "",
+          "content_length": 0
+        },
+        {
+          "url": "http://localhost:8004/api/v1/heartbeat",
+          "status_code": 410,
+          "response_time_ms": 12.15,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 83
+        },
+        {
+          "url": "http://localhost:8004/docs",
+          "status_code": 200,
+          "response_time_ms": 18.17,
+          "success": true,
+          "error": null,
+          "content_type": "text/html",
+          "content_length": 734
+        }
+      ],
+      "overall_health": "UP",
+      "response_times": [
+        14.49,
+        4.31,
+        12.15,
+        18.17
+      ],
+      "errors": [],
+      "avg_response_time_ms": 12.28
+    },
+    "docstrange-service": {
+      "service_name": "docstrange-service",
+      "port": 8005,
+      "status": "\u2705 All endpoints responding",
+      "endpoints_tested": 4,
+      "endpoints_responding": 4,
+      "endpoints_results": [
+        {
+          "url": "http://localhost:8005/",
+          "status_code": 404,
+          "response_time_ms": 32.31,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 22
+        },
+        {
+          "url": "http://localhost:8005/health",
+          "status_code": 200,
+          "response_time_ms": 10.3,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 15
+        },
+        {
+          "url": "http://localhost:8005/convert",
+          "status_code": 404,
+          "response_time_ms": 3.99,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 22
+        },
+        {
+          "url": "http://localhost:8005/docs",
+          "status_code": 200,
+          "response_time_ms": 3.23,
+          "success": true,
+          "error": null,
+          "content_type": "text/html; charset=utf-8",
+          "content_length": 931
+        }
+      ],
+      "overall_health": "UP",
+      "response_times": [
+        32.31,
+        10.3,
+        3.99,
+        3.23
+      ],
+      "errors": [],
+      "avg_response_time_ms": 12.46
+    },
+    "auth-service": {
+      "service_name": "auth-service",
+      "port": 8006,
+      "status": "\u2705 All endpoints responding",
+      "endpoints_tested": 4,
+      "endpoints_responding": 4,
+      "endpoints_results": [
+        {
+          "url": "http://localhost:8006/",
+          "status_code": 200,
+          "response_time_ms": 4.72,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 132
+        },
+        {
+          "url": "http://localhost:8006/health",
+          "status_code": 200,
+          "response_time_ms": 5.12,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 160
+        },
+        {
+          "url": "http://localhost:8006/docs",
+          "status_code": 200,
+          "response_time_ms": 3.33,
+          "success": true,
+          "error": null,
+          "content_type": "text/html; charset=utf-8",
+          "content_length": 970
+        },
+        {
+          "url": "http://localhost:8006/users",
+          "status_code": 403,
+          "response_time_ms": 26.7,
+          "success": true,
+          "error": null,
+          "content_type": "application/json",
+          "content_length": 73
+        }
+      ],
+      "overall_health": "UP",
+      "response_times": [
+        4.72,
+        5.12,
+        3.33,
+        26.7
+      ],
+      "errors": [],
+      "avg_response_time_ms": 9.97
+    },
+    "rag3-frontend": {
+      "service_name": "rag3-frontend",
+      "port": 3000,
+      "status": "\u2705 All endpoints responding",
+      "endpoints_tested": 3,
+      "endpoints_responding": 3,
+      "endpoints_results": [
+        {
+          "url": "http://localhost:3000/",
+          "status_code": 200,
+          "response_time_ms": 39.45,
+          "success": true,
+          "error": null,
+          "content_type": "text/html; charset=utf-8",
+          "content_length": 6418
+        },
+        {
+          "url": "http://localhost:3000/_next/static",
+          "status_code": 404,
+          "response_time_ms": 28.83,
+          "success": true,
+          "error": null,
+          "content_type": "text/html; charset=utf-8",
+          "content_length": 6454
+        },
+        {
+          "url": "http://localhost:3000/api",
+          "status_code": 404,
+          "response_time_ms": 6.23,
+          "success": true,
+          "error": null,
+          "content_type": "text/html; charset=utf-8",
+          "content_length": 6454
+        }
+      ],
+      "overall_health": "UP",
+      "response_times": [
+        39.45,
+        28.83,
+        6.23
+      ],
+      "errors": [],
+      "avg_response_time_ms": 24.84
+    }
+  }
+}

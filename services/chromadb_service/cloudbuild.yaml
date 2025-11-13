@@ -1,0 +1,43 @@
+steps:
+  # Build the Docker image
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "europe-west1-docker.pkg.dev/nimble-gearing-476415-t2/rag-services/chromadb-proxy"
+      - "."
+    dir: "services/chromadb_service"
+
+  # Push the Docker image to Artifact Registry
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "europe-west1-docker.pkg.dev/nimble-gearing-476415-t2/rag-services/chromadb-proxy"
+
+  # Deploy to Cloud Run
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      - "run"
+      - "deploy"
+      - "chromadb-proxy"
+      - "--image"
+      - "europe-west1-docker.pkg.dev/nimble-gearing-476415-t2/rag-services/chromadb-proxy"
+      - "--region"
+      - "europe-west1"
+      - "--platform"
+      - "managed"
+      - "--allow-unauthenticated"
+      - "--cpu"
+      - "1"
+      - "--memory"
+      - "512Mi"
+      - "--port"
+      - "8080"
+      - "--set-env-vars"
+      - "CHROMADB_INTERNAL_URL=https://chromadb-1051060211087.europe-west1.run.app"
+
+images:
+  - "europe-west1-docker.pkg.dev/nimble-gearing-476415-t2/rag-services/chromadb-proxy"
+
+options:
+  logging: CLOUD_LOGGING_ONLY

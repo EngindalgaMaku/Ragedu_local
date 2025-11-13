@@ -1,0 +1,54 @@
+# Cloud Build pipeline for PDF Processing Service deployment
+substitutions:
+  _SERVICE: "pdf-processor"
+  _REGION: "europe-west1"
+
+steps:
+  # Build the PDF Processing Service container
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "gcr.io/$PROJECT_ID/pdf-processor:latest", "."]
+
+  # Push container image
+  - name: gcr.io/cloud-builders/docker
+    args: ["push", "gcr.io/$PROJECT_ID/pdf-processor:latest"]
+
+  # Deploy to Cloud Run
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      [
+        "run",
+        "deploy",
+        "${_SERVICE}",
+        "--image",
+        "gcr.io/$PROJECT_ID/pdf-processor:latest",
+        "--region",
+        "${_REGION}",
+        "--platform",
+        "managed",
+        "--allow-unauthenticated",
+        "--memory",
+        "32Gi",
+        "--cpu",
+        "8",
+        "--startup-cpu-boost",
+        "--timeout",
+        "900",
+        "--max-instances",
+        "10",
+        "--min-instances",
+        "0",
+        "--concurrency",
+        "10",
+        "--execution-environment",
+        "gen2",
+        "--set-env-vars",
+        "ENVIRONMENT=production,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GCS_BUCKET_NAME=nimble-gearing-476415-t2-rag3-data,MARKER_CACHE_DIR=/app/models,TORCH_HOME=/app/models/torch,HUGGINGFACE_HUB_CACHE=/app/models/huggingface,TRANSFORMERS_CACHE=/app/models/transformers,HF_HOME=/app/models/hf_home,TRANSFORMERS_OFFLINE=0,HF_HUB_OFFLINE=0,MARKER_DISABLE_GEMINI=true,MARKER_USE_LOCAL_ONLY=true,MARKER_DISABLE_ALL_LLM=true",
+      ]
+
+images:
+  - "gcr.io/$PROJECT_ID/pdf-processor:latest"
+
+options:
+  machineType: "N1_HIGHCPU_8"
+  logging: CLOUD_LOGGING_ONLY

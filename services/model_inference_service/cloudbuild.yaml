@@ -1,0 +1,56 @@
+# Cloud Build pipeline for Model Inference Service deployment
+substitutions:
+  _SERVICE: "model-inferencer"
+  _REGION: "europe-west1"
+
+steps:
+  # Build the Model Inference Service container
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "gcr.io/$PROJECT_ID/model-inferencer:latest", "."]
+
+  # Push container image
+  - name: gcr.io/cloud-builders/docker
+    args: ["push", "gcr.io/$PROJECT_ID/model-inferencer:latest"]
+
+  # Deploy to Cloud Run
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      [
+        "run",
+        "deploy",
+        "${_SERVICE}",
+        "--image",
+        "gcr.io/$PROJECT_ID/model-inferencer:latest",
+        "--region",
+        "${_REGION}",
+        "--platform",
+        "managed",
+        "--allow-unauthenticated",
+        "--memory",
+        "16Gi",
+        "--cpu",
+        "4",
+        "--gpu",
+        "1",
+        "--gpu-type",
+        "nvidia-tesla-t4",
+        "--timeout",
+        "300",
+        "--max-instances",
+        "10",
+        "--min-instances",
+        "0",
+        "--concurrency",
+        "10",
+        "--execution-environment",
+        "gen2",
+        "--set-env-vars",
+        "ENVIRONMENT=production,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,OLLAMA_HOST=http://localhost:11434",
+      ]
+
+images:
+  - "gcr.io/$PROJECT_ID/model-inferencer:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
