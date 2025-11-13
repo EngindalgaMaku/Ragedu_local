@@ -180,7 +180,7 @@ docker-compose -f docker-compose.prod.yml logs -f
 
 ### Port Mapping (Development)
 
-- **Frontend**: http://server-ip:80 (Standard HTTP port)
+- **Frontend**: http://server-ip:3000
 - **API Gateway**: http://server-ip:8000 (internal)
 - **Auth Service**: http://server-ip:8006 (internal)
 - **ChromaDB**: http://server-ip:8004 (internal)
@@ -188,8 +188,8 @@ docker-compose -f docker-compose.prod.yml logs -f
 
 ### Port Mapping (Production)
 
-- **HTTP**: http://server-ip:80 → Frontend (direct access)
-- **HTTPS**: https://server-ip:443 → Nginx reverse proxy (optional)
+- **HTTP**: http://server-ip:80 → Nginx reverse proxy
+- **HTTPS**: https://server-ip:443 → Nginx reverse proxy
 - All backend services are internal only
 
 ## 🏥 Health Checks
