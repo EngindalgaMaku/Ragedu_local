@@ -40,13 +40,17 @@ const nextConfig = {
         return process.env.NEXT_PUBLIC_API_URL;
       }
 
+      // Get host from environment variables - prioritize NEXT_PUBLIC_ vars
       const apiGatewayHost =
+        process.env.NEXT_PUBLIC_API_HOST ||
         process.env.API_GATEWAY_HOST ||
-        (isDocker ? "api-gateway" : "localhost");
+        (isDocker ? "api-gateway" : "46.62.254.131");
+
       const apiGatewayPort =
         process.env.API_GATEWAY_PORT ||
         process.env.API_GATEWAY_INTERNAL_PORT ||
         "8000";
+
       // Check if host is a full URL (Cloud Run)
       if (
         apiGatewayHost.startsWith("http://") ||
@@ -54,9 +58,8 @@ const nextConfig = {
       ) {
         return apiGatewayHost;
       }
-      return isDocker
-        ? `http://${apiGatewayHost}:${apiGatewayPort}`
-        : `http://localhost:${apiGatewayPort}`;
+
+      return `http://${apiGatewayHost}:${apiGatewayPort}`;
     })();
 
     console.log("🔧 Next.js API proxy configured for:", apiUrl);

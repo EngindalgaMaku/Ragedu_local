@@ -5,9 +5,19 @@
 
 // Ana Servis Portları - Environment variable'lardan alınır
 export const PORTS = {
-  API_GATEWAY: parseInt(process.env.NEXT_PUBLIC_API_GATEWAY_PORT || process.env.API_GATEWAY_PORT || "8000"),
-  AUTH_SERVICE: parseInt(process.env.NEXT_PUBLIC_AUTH_SERVICE_PORT || process.env.AUTH_SERVICE_PORT || "8006"),
-  FRONTEND: parseInt(process.env.NEXT_PUBLIC_FRONTEND_PORT || process.env.PORT || "3000"),
+  API_GATEWAY: parseInt(
+    process.env.NEXT_PUBLIC_API_GATEWAY_PORT ||
+      process.env.API_GATEWAY_PORT ||
+      "8000"
+  ),
+  AUTH_SERVICE: parseInt(
+    process.env.NEXT_PUBLIC_AUTH_SERVICE_PORT ||
+      process.env.AUTH_SERVICE_PORT ||
+      "8006"
+  ),
+  FRONTEND: parseInt(
+    process.env.NEXT_PUBLIC_FRONTEND_PORT || process.env.PORT || "3000"
+  ),
 
   // Mikroservis Portları - Environment variable'lardan alınır
   DOCUMENT_PROCESSOR: parseInt(process.env.DOCUMENT_PROCESSOR_PORT || "8003"),
@@ -41,38 +51,75 @@ export function getServiceUrl(
   const port = PORTS[service];
 
   // Docker için internal port kullan - environment variable'dan alınır
-  const dockerPort = useDockerNames && service === "API_GATEWAY" 
-    ? parseInt(process.env.API_GATEWAY_INTERNAL_PORT || process.env.API_GATEWAY_PORT || "8000")
-    : port;
+  const dockerPort =
+    useDockerNames && service === "API_GATEWAY"
+      ? parseInt(
+          process.env.API_GATEWAY_INTERNAL_PORT ||
+            process.env.API_GATEWAY_PORT ||
+            "8000"
+        )
+      : port;
 
   // Check if we should use HTTPS (only for Cloud Run, not Docker)
   // Docker'da her zaman HTTP kullan, Cloud Run'da environment variable'dan kontrol et
   const isDocker = process.env.DOCKER_ENV === "true" || useDockerNames;
-  const isCloudRun = process.env.NEXT_PUBLIC_API_URL && process.env.NEXT_PUBLIC_API_URL.startsWith("https://");
+  const isCloudRun =
+    process.env.NEXT_PUBLIC_API_URL &&
+    process.env.NEXT_PUBLIC_API_URL.startsWith("https://");
   const protocol = isCloudRun && !isDocker ? "https" : "http";
-  
+
   return `${protocol}://${actualHost}:${dockerPort}`;
 }
 
 // Sık kullanılan URL'ler - Environment değişkenlerinden override edilebilir
 // Docker'da çalışırken localhost kullan, Cloud Run'da environment variable'dan al
-const isDockerEnv = process.env.DOCKER_ENV === "true" || typeof window === "undefined";
+const isDockerEnv =
+  process.env.DOCKER_ENV === "true" || typeof window === "undefined";
+
+// Get the actual host from environment variables
+const getActualHost = () => {
+  // First check if we have a full URL in environment
+  if (
+    process.env.NEXT_PUBLIC_API_URL &&
+    process.env.NEXT_PUBLIC_API_URL.startsWith("http")
+  ) {
+    return new URL(process.env.NEXT_PUBLIC_API_URL).hostname;
+  }
+  // Then check for specific host override
+  if (process.env.NEXT_PUBLIC_API_HOST) {
+    return process.env.NEXT_PUBLIC_API_HOST;
+  }
+  // Use the API Gateway host from Docker environment
+  if (process.env.API_GATEWAY_HOST) {
+    return process.env.API_GATEWAY_HOST;
+  }
+  // Fallback to localhost only if no environment is set
+  return "localhost";
+};
+
+const actualHost = getActualHost();
+
 export const URLS = {
-  API_GATEWAY: process.env.NEXT_PUBLIC_API_URL || getServiceUrl("API_GATEWAY", "localhost", false),
+  API_GATEWAY:
+    process.env.NEXT_PUBLIC_API_URL ||
+    getServiceUrl("API_GATEWAY", actualHost, false),
   AUTH_SERVICE:
-    process.env.NEXT_PUBLIC_AUTH_URL || getServiceUrl("AUTH_SERVICE", "localhost", false),
-  FRONTEND: process.env.NEXT_PUBLIC_FRONTEND_URL || getServiceUrl("FRONTEND", "localhost", false),
+    process.env.NEXT_PUBLIC_AUTH_URL ||
+    getServiceUrl("AUTH_SERVICE", actualHost, false),
+  FRONTEND:
+    process.env.NEXT_PUBLIC_FRONTEND_URL ||
+    getServiceUrl("FRONTEND", actualHost, false),
 } as const;
 
 // Docker için URL'ler
 export const DOCKER_URLS = {
-  API_GATEWAY: getServiceUrl("API_GATEWAY", "localhost", true),
-  AUTH_SERVICE: getServiceUrl("AUTH_SERVICE", "localhost", true),
+  API_GATEWAY: getServiceUrl("API_GATEWAY", actualHost, true),
+  AUTH_SERVICE: getServiceUrl("AUTH_SERVICE", actualHost, true),
 } as const;
 
 // CORS için allowed origins - Environment variable'dan override edilebilir
-const corsOriginsFromEnv = process.env.CORS_ORIGINS 
-  ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim())
+const corsOriginsFromEnv = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(",").map((origin) => origin.trim())
   : [];
 
 export const CORS_ORIGINS = [
