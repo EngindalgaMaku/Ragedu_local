@@ -1,0 +1,66 @@
+# Use Python slim image as base image for CPU compatibility
+FROM python:3.9-slim
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install system dependencies including curl for Ollama installation
+RUN apt-get update && apt-get install -y curl procps wget && rm -rf /var/lib/apt/lists/*
+
+# Copy the dependencies file to the working directory
+COPY requirements.txt .
+
+# Install any needed dependencies
+# This layer is cached unless requirements.txt changes
+RUN pip install -r requirements.txt
+
+# Install Ollama - handle SSL certificate issues
+# Try multiple methods to ensure installation succeeds
+RUN curl -k -fsSL https://ollama.com/install.sh -o /tmp/install.sh && \
+    bash /tmp/install.sh || \
+    (wget --no-check-certificate -O /tmp/ollama-install.sh https://ollama.com/install.sh && \
+     bash /tmp/ollama-install.sh) || \
+    (curl -k -L https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64 -o /usr/local/bin/ollama && \
+     chmod +x /usr/local/bin/ollama && \
+     echo "Ollama binary downloaded directly")
+
+# Ensure Ollama is in PATH and verify installation
+ENV PATH="/usr/local/bin:${PATH}"
+ENV OLLAMA_HOST="http://localhost:11434"
+RUN if [ -f /usr/local/bin/ollama ]; then \
+      chmod +x /usr/local/bin/ollama && \
+      ollama --version || echo "Ollama version check failed but binary exists"; \
+    else \
+      echo "ERROR: Ollama binary not found. Attempting direct download..."; \
+      curl -k -L https://github.com/ollama/ollama/releases/latest/download/ollama-linux-amd64 -o /usr/local/bin/ollama && \
+      chmod +x /usr/local/bin/ollama && \
+      ollama --version || (echo "CRITICAL: Ollama installation failed" && exit 1); \
+    fi
+
+# Copy the content of the local src directory to the working directory
+COPY main.py .
+# Models will be pulled at runtime by the startup script.
+
+# Create startup script
+RUN echo '#!/bin/sh\n\
+ollama serve > /tmp/ollama.log 2>&1 &\n\
+OLLAMA_PID=$!\n\
+echo "Started Ollama with PID: $OLLAMA_PID"\n\
+sleep 15\n\
+for i in 1 2 3 4 5; do\n\
+  if curl -f http://localhost:11434/api/tags > /dev/null 2>&1; then\n\
+    echo "Ollama is ready!"\n\
+    break\n\
+  fi\n\
+  echo "Waiting for Ollama to start... ($i/5)"\n\
+  sleep 3\n\
+done\n\
+echo "Pulling models..."\n\
+ollama pull llama3:8b || echo "Failed to pull llama3:8b"\n\
+ollama pull nomic-embed-text || echo "Failed to pull nomic-embed-text"\n\
+echo "Starting FastAPI..."\n\
+exec uvicorn main:app --host 0.0.0.0 --port 8002\n\
+' > /app/start.sh && chmod +x /app/start.sh
+
+# Specify the command to run on container startup
+CMD ["/app/start.sh"]

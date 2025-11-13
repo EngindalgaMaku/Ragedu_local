@@ -1,0 +1,336 @@
+services:
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway.local
+    container_name: api-gateway
+    ports:
+      - "${API_GATEWAY_PORT:-8000}:${API_GATEWAY_PORT:-8000}"
+    environment:
+      # Port configuration
+      - PORT=${API_GATEWAY_PORT:-8000}
+      - API_GATEWAY_PORT=${API_GATEWAY_PORT:-8000}
+      - HOST=0.0.0.0
+      # Service URLs - Environment variable'lardan alınır
+      - PDF_PROCESSOR_URL=${PDF_PROCESSOR_URL:-http://docstrange-service:80}
+      - DOCUMENT_PROCESSOR_HOST=${DOCUMENT_PROCESSOR_HOST:-document-processing-service}
+      - DOCUMENT_PROCESSOR_PORT=${DOCUMENT_PROCESSOR_PORT:-8080}
+      - DOCUMENT_PROCESSOR_URL=${DOCUMENT_PROCESSOR_URL:-http://${DOCUMENT_PROCESSOR_HOST:-document-processing-service}:${DOCUMENT_PROCESSOR_PORT:-8080}}
+      - MODEL_INFERENCE_HOST=${MODEL_INFERENCE_HOST:-model-inference-service}
+      - MODEL_INFERENCE_PORT=${MODEL_INFERENCE_PORT:-8002}
+      - MODEL_INFERENCE_URL=${MODEL_INFERENCE_URL:-http://${MODEL_INFERENCE_HOST:-model-inference-service}:${MODEL_INFERENCE_PORT:-8002}}
+      - CHROMADB_HOST=${CHROMADB_HOST:-chromadb-service}
+      - CHROMADB_PORT=${CHROMADB_PORT:-8000}
+      - CHROMADB_URL=${CHROMADB_URL:-http://${CHROMADB_HOST:-chromadb-service}:${CHROMADB_PORT:-8000}}
+      - DOCSTRANGE_URL=${DOCSTRANGE_URL:-http://docstrange-service:80}
+      - MARKER_API_HOST=${MARKER_API_HOST:-marker-api}
+      - MARKER_API_PORT=${MARKER_API_PORT:-8090}
+      - MARKER_API_URL=${MARKER_API_URL:-http://${MARKER_API_HOST:-marker-api}:${MARKER_API_PORT:-8090}}
+      - AUTH_SERVICE_HOST=${AUTH_SERVICE_HOST:-auth-service}
+      - AUTH_SERVICE_PORT=${AUTH_SERVICE_PORT:-8006}
+      - AUTH_SERVICE_URL=${AUTH_SERVICE_URL:-http://${AUTH_SERVICE_HOST:-auth-service}:${AUTH_SERVICE_PORT:-8006}}
+      - APRAG_SERVICE_HOST=${APRAG_SERVICE_HOST:-aprag-service}
+      - APRAG_SERVICE_PORT=${APRAG_SERVICE_PORT:-8007}
+      - APRAG_SERVICE_URL=${APRAG_SERVICE_URL:-http://${APRAG_SERVICE_HOST:-aprag-service}:${APRAG_SERVICE_PORT:-8007}}
+      # Database configuration
+      - DATABASE_PATH=/app/data/rag_assistant.db
+      # JWT configuration for API Gateway
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+    volumes:
+      - session_data:/app/sessions
+      - markdown_data:/app/data/markdown
+      - database_data:/app/data
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      docstrange-service:
+        condition: service_started
+      # pdf-processing-service:
+      #   condition: service_healthy
+      document-processing-service:
+        condition: service_started
+      model-inference-service:
+        condition: service_started
+      chromadb-service:
+        condition: service_started
+      aprag-service:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  aprag-service:
+    build:
+      context: ./services/aprag_service
+      dockerfile: Dockerfile
+    container_name: aprag-service
+    ports:
+      - "${APRAG_SERVICE_PORT:-8007}:${APRAG_SERVICE_PORT:-8007}"
+    environment:
+      # Server configuration - Google Cloud Run için PORT desteği
+      - HOST=0.0.0.0
+      - PORT=${APRAG_SERVICE_PORT:-8007}
+      - APRAG_SERVICE_PORT=${APRAG_SERVICE_PORT:-8007}
+      # Service URLs - Environment variable'lardan alınır
+      - MODEL_INFERENCE_HOST=${MODEL_INFERENCE_HOST:-model-inference-service}
+      - MODEL_INFERENCE_PORT=${MODEL_INFERENCE_PORT:-8002}
+      - MODEL_INFERENCE_URL=${MODEL_INFERENCE_URL:-http://${MODEL_INFERENCE_HOST:-model-inference-service}:${MODEL_INFERENCE_PORT:-8002}}
+      - MODEL_INFERENCER_URL=${MODEL_INFERENCER_URL:-http://${MODEL_INFERENCE_HOST:-model-inference-service}:${MODEL_INFERENCE_PORT:-8002}}
+      - CHROMADB_HOST=${CHROMADB_HOST:-chromadb-service}
+      - CHROMADB_PORT=${CHROMADB_PORT:-8000}
+      - CHROMADB_URL=${CHROMADB_URL:-http://${CHROMADB_HOST:-chromadb-service}:${CHROMADB_PORT:-8000}}
+      - CHROMA_SERVICE_URL=${CHROMA_SERVICE_URL:-http://${CHROMADB_HOST:-chromadb-service}:${CHROMADB_PORT:-8000}}
+      - DOCUMENT_PROCESSING_HOST=${DOCUMENT_PROCESSOR_HOST:-document-processing-service}
+      - DOCUMENT_PROCESSING_PORT=${DOCUMENT_PROCESSOR_PORT:-8080}
+      - DOCUMENT_PROCESSING_URL=${DOCUMENT_PROCESSING_URL:-http://${DOCUMENT_PROCESSOR_HOST:-document-processing-service}:${DOCUMENT_PROCESSOR_PORT:-8080}}
+      # Database configuration
+      - DATABASE_PATH=/app/data/rag_assistant.db
+      - APRAG_DB_PATH=/app/data/rag_assistant.db
+      # CORS configuration
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000}
+      - CORS_CREDENTIALS=true
+      # Feature Flags
+      - APRAG_ENABLED=${APRAG_ENABLED:-true}
+      - APRAG_FEEDBACK_COLLECTION=${APRAG_FEEDBACK_COLLECTION:-true}
+      - APRAG_PERSONALIZATION=${APRAG_PERSONALIZATION:-true}
+      - APRAG_RECOMMENDATIONS=${APRAG_RECOMMENDATIONS:-true}
+      - APRAG_ANALYTICS=${APRAG_ANALYTICS:-true}
+    volumes:
+      - database_data:/app/data
+      - ./services/auth_service/database/migrations:/app/migrations:ro # Read-only access to migrations
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          'import requests; import os; requests.get(f''http://localhost:{os.getenv("PORT", "8007")}/health'')',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      model-inference-service:
+        condition: service_started
+      chromadb-service:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  auth-service:
+    build:
+      context: ./services/auth_service
+      dockerfile: Dockerfile
+    container_name: auth-service
+    ports:
+      - "${AUTH_SERVICE_PORT:-8006}:${AUTH_SERVICE_PORT:-8006}"
+    environment:
+      # Server configuration - Google Cloud Run için PORT desteği
+      - HOST=0.0.0.0
+      - PORT=${AUTH_SERVICE_PORT:-8006}
+      - AUTH_SERVICE_PORT=${AUTH_SERVICE_PORT:-8006}
+      - DEBUG=false
+      # JWT configuration
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+      - JWT_ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=30
+      - REFRESH_TOKEN_EXPIRE_DAYS=7
+      # Database configuration
+      - DATABASE_PATH=/app/data/rag_assistant.db
+      # CORS configuration - Environment variable'dan alınır
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000}
+      - CORS_CREDENTIALS=true
+      # Rate limiting - Geliştirme için gevşetildi
+      - RATE_LIMIT_RPM=300
+      - RATE_LIMIT_BURST=50
+      # Security
+      - REQUIRE_AUTH=true
+    volumes:
+      - database_data:/app/data
+      - ./src/database:/app/src_database # Mount database files for reference
+      - ./services/auth_service/create_test_user.py:/app/create_test_user.py
+      - ./services/auth_service/reset_admin_password.py:/app/reset_admin_password.py
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          'import requests; import os; requests.get(f''http://localhost:{os.getenv("PORT", "8006")}/health'')',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    command: >
+      sh -c "/app/init-db.sh &&
+             python -m uvicorn main:app --host 0.0.0.0 --port $$PORT"
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  docstrange-service:
+    build:
+      context: ./services/docstrange_service
+      dockerfile: Dockerfile
+    container_name: docstrange-service
+    ports:
+      - "${DOCSTRANGE_PORT:-8005}:80"
+    environment:
+      - DOCSTRANGE_API_KEY=5f7583ed-b5d8-11f0-9225-2efa885dd201
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  # pdf-processing-service:
+  #   build:
+  #     context: ./services/pdf_processing_service
+  #     dockerfile: Dockerfile.local
+  #   container_name: pdf-processing-service
+  #   ports:
+  #     - "8001:8080"
+  #   volumes:
+  #     - marker_cache:/app/models
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8080/health/ready"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 300s
+  #   restart: unless-stopped
+  #   networks:
+  #     - rag-network
+
+  document-processing-service:
+    build:
+      context: ./services/document_processing_service
+      dockerfile: Dockerfile.local
+    container_name: document-processing-service
+    ports:
+      - "${DOCUMENT_PROCESSOR_PORT:-8003}:8080"
+    environment:
+      - MODEL_INFERENCER_HOST=${MODEL_INFERENCE_HOST:-model-inference-service}
+      - MODEL_INFERENCER_PORT=${MODEL_INFERENCE_PORT:-8002}
+      - MODEL_INFERENCER_URL=${MODEL_INFERENCER_URL:-http://${MODEL_INFERENCE_HOST:-model-inference-service}:${MODEL_INFERENCE_PORT:-8002}}
+      - CHROMADB_HOST=${CHROMADB_HOST:-chromadb-service}
+      - CHROMADB_PORT=${CHROMADB_PORT:-8000}
+      - CHROMADB_URL=${CHROMADB_URL:-http://${CHROMADB_HOST:-chromadb-service}:${CHROMADB_PORT:-8000}}
+      - CHROMA_SERVICE_URL=${CHROMA_SERVICE_URL:-http://${CHROMADB_HOST:-chromadb-service}:${CHROMADB_PORT:-8000}}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    volumes:
+      - session_data:/app/sessions
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  model-inference-service:
+    build:
+      context: ./services/model_inference_service
+      dockerfile: Dockerfile.local
+    container_name: model-inference-service
+    ports:
+      - "${MODEL_INFERENCE_PORT:-8002}:${MODEL_INFERENCE_PORT:-8002}"
+    environment:
+      - PORT=${MODEL_INFERENCE_PORT:-8002}
+      - MODEL_INFERENCE_PORT=${MODEL_INFERENCE_PORT:-8002}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY:-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}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://127.0.0.1:11434}
+      - OLLAMA_SKIP_VERIFY=true
+    volumes:
+      - ollama_cache:/root/.ollama
+      - ./services/model_inference_service/main.py:/app/main.py
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  chromadb-service:
+    image: chromadb/chroma:1.3.0 # LATEST STABLE VERSION
+    container_name: chromadb-service
+    ports:
+      - "${CHROMADB_PORT:-8004}:8000"
+    volumes:
+      - chroma_data:/data # Fix: ChromaDB 1.2.0 uses /data not /chroma/chroma
+    environment:
+      # ChromaDB 1.3.0 - latest stable
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/data # Fix: Match volume mount
+      - ANONYMIZED_TELEMETRY=false
+      - ALLOW_RESET=true
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+    # healthcheck:
+    #   test:
+    #     [
+    #       "CMD-SHELL",
+    #       "wget --no-verbose --tries=1 --spider http://localhost:8000/api/v2/heartbeat || exit 1",
+    #     ]
+    #   interval: 30s
+    #   timeout: 15s
+    #   retries: 5
+    #   start_period: 60s
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  marker-api:
+    image: wirawan/marker-api:latest
+    container_name: marker-api
+    ports:
+      - "${MARKER_API_PORT:-8090}:8080"
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    container_name: rag3-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:${FRONTEND_PORT:-3000}"
+    environment:
+      # Port configuration
+      - PORT=${FRONTEND_PORT:-3000}
+      - FRONTEND_PORT=${FRONTEND_PORT:-3000}
+      # API Gateway configuration
+      - API_GATEWAY_HOST=${API_GATEWAY_HOST:-api-gateway}
+      - API_GATEWAY_PORT=${API_GATEWAY_PORT:-8000}
+      - API_GATEWAY_INTERNAL_PORT=${API_GATEWAY_PORT:-8000}
+      # Frontend URLs
+      - NEXT_PUBLIC_API_URL=/api
+      - NEXT_PUBLIC_AUTH_URL=/api
+      # Environment
+      - NODE_ENV=${NODE_ENV:-production}
+      - DOCKER_ENV=${DOCKER_ENV:-true}
+      # Authentication settings
+      - NEXT_PUBLIC_AUTH_ENABLED=${NEXT_PUBLIC_AUTH_ENABLED:-true}
+      - NEXT_PUBLIC_DEMO_MODE=${NEXT_PUBLIC_DEMO_MODE:-true}
+      # CORS
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+    depends_on:
+      api-gateway:
+        condition: service_started
+      auth-service:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - rag-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  # marker_cache:
+  ollama_cache:
+  chroma_data:
+  session_data:
+  markdown_data:
+  database_data:
+
+networks:
+  rag-network:
+    driver: bridge

@@ -85,10 +85,8 @@ pnpm-lock.yaml
 # TypeScript
 *.tsbuildinfo
 
-# Docker
+# Docker - Keep deployment files, ignore only development files
 .dockerignore
-Dockerfile*
-docker-compose*.yml
 *.docker
 
 # Sessions ve Data
