@@ -302,8 +302,8 @@ services:
       - API_GATEWAY_PORT=${API_GATEWAY_PORT:-8000}
       - API_GATEWAY_INTERNAL_PORT=${API_GATEWAY_PORT:-8000}
       # Frontend URLs - Environment variable'lardan alınır
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-/api}
-      - NEXT_PUBLIC_AUTH_URL=${NEXT_PUBLIC_AUTH_URL:-/api}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://46.62.254.131:8000}
+      - NEXT_PUBLIC_AUTH_URL=${NEXT_PUBLIC_AUTH_URL:-http://46.62.254.131:8006}
       # Environment
       - NODE_ENV=${NODE_ENV:-production}
       - DOCKER_ENV=${DOCKER_ENV:-true}
