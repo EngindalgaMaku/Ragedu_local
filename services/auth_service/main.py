@@ -248,20 +248,20 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 # Add middleware (order is important - last added runs first)
 
-# CORS middleware
+# EMERGENCY CORS - Allow everything
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.CORS_ORIGINS,
-    allow_credentials=config.CORS_CREDENTIALS,
-    allow_methods=config.CORS_METHODS,
-    allow_headers=config.CORS_HEADERS,
+    allow_origins=["*"],
+    allow_credentials=False,  # Must be False with wildcard
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Add explicit OPTIONS handler for admin endpoints
-@app.options("/admin/{path:path}")
+# Global OPTIONS handler
+@app.options("/{full_path:path}")
 async def options_handler():
-    """Handle CORS preflight requests for admin endpoints"""
-    return {"message": "OK"}
+    """Handle all OPTIONS requests"""
+    return {"status": "OK"}
 
 # Security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
