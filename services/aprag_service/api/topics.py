@@ -72,6 +72,13 @@ class QuestionClassificationRequest(BaseModel):
     interaction_id: Optional[int] = None
 
 
+class QuestionGenerationRequest(BaseModel):
+    """Request model for question generation"""
+    count: int = 10
+    difficulty_level: Optional[str] = None  # beginner, intermediate, advanced
+    question_types: Optional[List[str]] = None  # factual, conceptual, application, analysis
+
+
 class TopicResponse(BaseModel):
     """Response model for a topic"""
     topic_id: int
@@ -733,4 +740,136 @@ async def get_student_progress(user_id: str, session_id: str):
     except Exception as e:
         logger.error(f"Error fetching progress: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch progress: {str(e)}")
+
+
+@router.post("/{topic_id}/generate-questions")
+async def generate_questions_for_topic(topic_id: int, request: QuestionGenerationRequest):
+    """
+    Generate questions for a specific topic using LLM
+    """
+    db = get_db()
+    
+    try:
+        # Get topic information and session_id
+        with db.get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT session_id, topic_title, description, keywords, estimated_difficulty
+                FROM course_topics
+                WHERE topic_id = ? AND is_active = TRUE
+            """, (topic_id,))
+            
+            topic = cursor.fetchone()
+            if not topic:
+                raise HTTPException(status_code=404, detail="Topic not found")
+            
+            topic_data = dict(topic)
+            session_id = topic_data["session_id"]
+            
+            # Check if APRAG is enabled
+            if not FeatureFlags.is_aprag_enabled(session_id):
+                raise HTTPException(
+                    status_code=403,
+                    detail="APRAG module is disabled. Please enable it from admin settings."
+                )
+        
+        # Get chunks related to this topic
+        chunks = fetch_chunks_for_session(session_id)
+        if not chunks:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No content chunks found for session {session_id}"
+            )
+        
+        # Filter chunks related to this topic (if we have related_chunk_ids)
+        # For now, we'll use all chunks as we don't have chunk-topic mapping fully implemented
+        relevant_chunks = chunks[:10]  # Limit to first 10 chunks to stay within token limits
+        
+        # Prepare content for LLM
+        chunks_text = "\n\n---\n\n".join([
+            f"Bölüm {i+1}:\n{chunk.get('chunk_text', chunk.get('content', chunk.get('text', '')))}"
+            for i, chunk in enumerate(relevant_chunks)
+        ])
+        
+        # Determine difficulty level
+        difficulty = request.difficulty_level or topic_data.get("estimated_difficulty", "intermediate")
+        
+        # Create prompt for question generation
+        prompt = f"""Sen bir eğitim uzmanısın. Aşağıdaki ders materyali bağlamında "{topic_data['topic_title']}" konusu için sorular üret.
+
+KONU BAŞLIĞI: {topic_data['topic_title']}
+ZORLUK SEVİYESİ: {difficulty}
+ANAHTAR KELİMELER: {', '.join(json.loads(topic_data['keywords']) if topic_data['keywords'] else [])}
+
+DERS MATERYALİ:
+{chunks_text[:8000]}
+
+LÜTFEN ŞUNLARI YAP:
+1. Bu konu ve materyal bağlamında {request.count} adet soru üret
+2. Soruları farklı türlerde dağıt: kavramsal sorular, uygulama soruları, analiz soruları
+3. Zorluk seviyesi "{difficulty}" seviyesine uygun olsun
+4. Sorular doğrudan materyal içeriğine dayalı olsun
+5. Açık uçlu ve düşünmeyi teşvik eden sorular olsun
+
+ÇIKTI FORMATI (JSON):
+{{
+  "questions": [
+    "İlk soru burada...",
+    "İkinci soru burada...",
+    "Üçüncü soru burada..."
+  ]
+}}
+
+Sadece JSON çıktısı ver, başka açıklama yapma."""
+
+        # Get session-specific model configuration
+        model_to_use = get_session_model(session_id) or "llama-3.1-8b-instant"
+        
+        # Call model inference service
+        response = requests.post(
+            f"{MODEL_INFERENCER_URL}/models/generate",
+            json={
+                "prompt": prompt,
+                "model": model_to_use,
+                "max_tokens": 2048,
+                "temperature": 0.7
+            },
+            timeout=120
+        )
+        
+        if response.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"LLM service error: {response.text}")
+        
+        result = response.json()
+        llm_output = result.get("response", "")
+        
+        # Parse JSON from LLM output
+        import re
+        json_match = re.search(r'\{.*\}', llm_output, re.DOTALL)
+        if json_match:
+            questions_data = json.loads(json_match.group())
+        else:
+            # Try to parse entire output as JSON
+            questions_data = json.loads(llm_output)
+        
+        return {
+            "success": True,
+            "topic_id": topic_id,
+            "topic_title": topic_data["topic_title"],
+            "questions": questions_data.get("questions", []),
+            "count": len(questions_data.get("questions", [])),
+            "difficulty_level": difficulty
+        }
+        
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse LLM JSON output: {e}")
+        logger.error(f"LLM output was: {llm_output[:1000]}")
+        raise HTTPException(status_code=500, detail="LLM returned invalid JSON for question generation")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request error in question generation: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to connect to model service: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error generating questions: {e}")
+        raise HTTPException(status_code=500, detail=f"Question generation failed: {str(e)}")
 

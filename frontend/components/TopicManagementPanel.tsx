@@ -8,6 +8,7 @@ import {
   Topic,
   TopicExtractionRequest,
 } from "@/lib/api";
+import { URLS } from "../config/ports";
 
 interface TopicManagementPanelProps {
   sessionId: string;
@@ -25,6 +26,12 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
   const [success, setSuccess] = useState<string | null>(null);
   const [editingTopic, setEditingTopic] = useState<Topic | null>(null);
   const [topicPage, setTopicPage] = useState(1);
+  const [generatingQuestions, setGeneratingQuestions] = useState<number | null>(
+    null
+  );
+  const [generatedQuestions, setGeneratedQuestions] = useState<{
+    [key: number]: string[];
+  }>({});
   const TOPICS_PER_PAGE = 20; // Increased from 10 to 20 to show more topics
 
   // Fetch topics
@@ -87,6 +94,49 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
       setEditingTopic(null);
     } catch (e: any) {
       setError(e.message || "Konu güncellenemedi");
+    }
+  };
+
+  // Generate questions for a topic
+  const handleGenerateQuestions = async (
+    topicId: number,
+    topicTitle: string
+  ) => {
+    try {
+      setGeneratingQuestions(topicId);
+      setError(null);
+
+      const response = await fetch(
+        `${URLS.API_GATEWAY}/api/aprag/topics/${topicId}/generate-questions`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            count: 10,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Sorular üretilemedi");
+      }
+
+      const data = await response.json();
+      if (data.success && data.questions) {
+        setGeneratedQuestions((prev) => ({
+          ...prev,
+          [topicId]: data.questions,
+        }));
+        setSuccess(
+          `${topicTitle} konusu için ${data.questions.length} soru üretildi!`
+        );
+      }
+    } catch (e: any) {
+      setError(e.message || "Soru üretimi başarısız oldu");
+    } finally {
+      setGeneratingQuestions(null);
     }
   };
 
@@ -315,26 +365,107 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
                             </div>
                           </div>
                         )}
+
+                        {/* Generated Questions */}
+                        {generatedQuestions[topic.topic_id] && (
+                          <div className="mt-4 p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg border border-blue-200 dark:border-blue-800">
+                            <p className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-3 flex items-center gap-2">
+                              🧠 Üretilen Sorular (
+                              {generatedQuestions[topic.topic_id].length})
+                            </p>
+                            <div className="space-y-2">
+                              {generatedQuestions[topic.topic_id].map(
+                                (question, idx) => (
+                                  <div
+                                    key={idx}
+                                    className="flex items-start gap-2 text-sm"
+                                  >
+                                    <span className="text-blue-600 dark:text-blue-400 font-medium min-w-0 shrink-0">
+                                      {idx + 1}.
+                                    </span>
+                                    <span className="text-blue-800 dark:text-blue-200 flex-1">
+                                      {question}
+                                    </span>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                            <button
+                              onClick={() => {
+                                const questions = generatedQuestions[
+                                  topic.topic_id
+                                ]
+                                  .map((q, i) => `${i + 1}. ${q}`)
+                                  .join("\n\n");
+                                navigator.clipboard.writeText(questions);
+                                setSuccess("Sorular panoya kopyalandı!");
+                              }}
+                              className="mt-3 px-3 py-1.5 text-xs bg-blue-100 text-blue-800 dark:bg-blue-800/30 dark:text-blue-200 rounded hover:bg-blue-200 dark:hover:bg-blue-800/50 transition-colors"
+                            >
+                              📋 Panoya Kopyala
+                            </button>
+                          </div>
+                        )}
                       </div>
-                      <button
-                        onClick={() => setEditingTopic(topic)}
-                        className="flex-shrink-0 text-muted-foreground hover:text-foreground transition-colors"
-                        title="Düzenle"
-                      >
-                        <svg
-                          className="w-4 h-4"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() =>
+                            handleGenerateQuestions(
+                              topic.topic_id,
+                              topic.topic_title
+                            )
+                          }
+                          disabled={generatingQuestions === topic.topic_id}
+                          className="flex-shrink-0 px-3 py-1.5 text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300 rounded hover:bg-green-200 dark:hover:bg-green-900/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                          title="Bu konu için sorular üret"
                         >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="2"
-                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                          />
-                        </svg>
-                      </button>
+                          {generatingQuestions === topic.topic_id ? (
+                            <>
+                              <svg
+                                className="animate-spin h-3 w-3 mr-1"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                              >
+                                <circle
+                                  className="opacity-25"
+                                  cx="12"
+                                  cy="12"
+                                  r="10"
+                                  stroke="currentColor"
+                                  strokeWidth="4"
+                                ></circle>
+                                <path
+                                  className="opacity-75"
+                                  fill="currentColor"
+                                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                                ></path>
+                              </svg>
+                              Üretiliyor...
+                            </>
+                          ) : (
+                            <>🧠 Soru Üret</>
+                          )}
+                        </button>
+                        <button
+                          onClick={() => setEditingTopic(topic)}
+                          className="flex-shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                          title="Düzenle"
+                        >
+                          <svg
+                            className="w-4 h-4"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth="2"
+                              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                            />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
