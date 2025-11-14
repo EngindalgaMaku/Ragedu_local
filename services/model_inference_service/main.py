@@ -973,156 +973,116 @@ async def generate_embeddings(request: EmbedRequest):
             try:
                 print(f"Attempting to use HuggingFace model: {attempt_model}")
                 
-                # Use direct API calls to HuggingFace Inference API
+                # Use direct API calls to HuggingFace Inference API with BATCH processing
                 # This is more reliable than using InferenceClient for embeddings
-                for text in texts:
-                    # Use the correct HuggingFace Inference API endpoint format (2024+ format)
-                    # New format: https://router.huggingface.co/hf-inference/models/{model}/pipeline/feature-extraction
-                    api_endpoints = [
-                        f"https://router.huggingface.co/hf-inference/models/{attempt_model}/pipeline/feature-extraction",
-                        # Old router format as fallback
-                        f"https://router.huggingface.co/hf-inference/pipeline/feature-extraction/{attempt_model}",
-                        # Removed deprecated legacy API endpoint
-                    ]
-                    
-                    # Try with API key first, then without if it fails with 403 or 401
-                    use_api_key = bool(HUGGINGFACE_API_KEY)
-                    last_request_error = None
-                    embedding_response = None
-                    response = None
-                    
-                    for api_url in api_endpoints:
-                        try:
-                            headers = {"Content-Type": "application/json"}
-                            if use_api_key and HUGGINGFACE_API_KEY:
-                                headers["Authorization"] = f"Bearer {HUGGINGFACE_API_KEY}"
-                            
-                            # HuggingFace feature-extraction API expects inputs as string or array
-                            # Try both formats: string first, then array if needed
-                            payload = {"inputs": text}
-                            
-                            # For new router API format, inputs can be a string or array
-                            # Most models accept both, but some prefer array format
-                            
-                            print(f"Calling HuggingFace API: {api_url} (with API key: {use_api_key})")
-                            # Disable SSL verification for HuggingFace API (common in corporate/proxy environments)
-                            response = requests.post(api_url, json=payload, headers=headers, timeout=60, verify=False)
-                            print(f"Response status: {response.status_code} for {api_url}")
-                            
-                            # Handle 410 (deprecated endpoint) - skip old endpoints immediately
-                            if response.status_code == 410:
-                                error_msg = response.text[:500] if response.text else "Endpoint deprecated"
-                                print(f"⚠️ Endpoint deprecated (410): {error_msg}")
-                                last_request_error = f"HTTP {response.status_code}: {error_msg}"
-                                continue  # Try next endpoint
-                            
-                            # Track if we retried without API key
-                            retried_without_key = False
-                            
-                            # Handle 401 (unauthorized) - try without API key
-                            if response.status_code == 401 and use_api_key:
-                                print(f"⚠️ Unauthorized (401) with API key, trying without API key...")
-                                headers_no_key = {"Content-Type": "application/json"}
-                                response = requests.post(api_url, json=payload, headers=headers_no_key, timeout=60, verify=False)
-                                print(f"Response without API key (401->): {response.status_code}")
-                                retried_without_key = True
-                            
-                            # Handle 403 (permission denied) - try without API key
-                            if response.status_code == 403 and use_api_key:
-                                print(f"⚠️ API key permission denied (403), trying without API key...")
-                                headers_no_key = {"Content-Type": "application/json"}
-                                response = requests.post(api_url, json=payload, headers=headers_no_key, timeout=60, verify=False)
-                                print(f"Response without API key (403->): {response.status_code}")
-                                retried_without_key = True
-                            
-                            # Handle 503 (model loading) with retry - after auth handling
-                            retry_count = 0
-                            current_headers = headers_no_key if retried_without_key else headers
-                            while response.status_code == 503 and retry_count < 3:
-                                print(f"Model {attempt_model} is loading, waiting 10 seconds... (attempt {retry_count + 1}/3)")
-                                time.sleep(10)
-                                response = requests.post(api_url, json=payload, headers=current_headers, timeout=60, verify=False)
-                                print(f"Retry response status: {response.status_code}")
-                                retry_count += 1
-                            
-                            if response.status_code == 200:
-                                embedding_response = response.json()
-                                print(f"✅ Successfully got embedding from {api_url}")
-                                break  # Success, exit endpoint loop
-                            elif response.status_code == 404:
-                                # 404 means endpoint doesn't exist - try array format for this endpoint
-                                if isinstance(payload["inputs"], str):
-                                    print(f"⚠️ 404 with string input, trying array format...")
-                                    payload_array = {"inputs": [text]}
-                                    response_array = requests.post(api_url, json=payload_array, headers=headers, timeout=60, verify=False)
-                                    if response_array.status_code == 200:
-                                        embedding_response = response_array.json()
-                                        print(f"✅ Successfully got embedding with array format from {api_url}")
-                                        break
-                                    else:
-                                        error_msg = response_array.text[:500] if response_array.text else "No error message"
-                                        print(f"❌ Failed with array format: {response_array.status_code}: {error_msg}")
-                                        last_request_error = f"HTTP {response.status_code}: {error_msg}"
-                                        continue
-                                else:
-                                    error_msg = response.text[:500] if response.text else "No error message"
-                                    print(f"❌ Failed with status {response.status_code}: {error_msg}")
-                                    last_request_error = f"HTTP {response.status_code}: {error_msg}"
-                                    continue
-                            else:
-                                error_msg = response.text[:500] if response.text else "No error message"
-                                print(f"❌ Failed with status {response.status_code}: {error_msg}")
-                                last_request_error = f"HTTP {response.status_code}: {error_msg}"
-                                continue  # Try next endpoint
-                                
-                        except requests.RequestException as req_error:
-                            last_request_error = f"Request failed: {str(req_error)}"
+                # Process all texts in a single batch request instead of individual requests
+                api_endpoints = [
+                    f"https://router.huggingface.co/hf-inference/models/{attempt_model}/pipeline/feature-extraction",
+                    # Old router format as fallback
+                    f"https://router.huggingface.co/hf-inference/pipeline/feature-extraction/{attempt_model}",
+                    # Removed deprecated legacy API endpoint
+                ]
+                
+                # Try with API key first, then without if it fails with 403 or 401
+                use_api_key = bool(HUGGINGFACE_API_KEY)
+                last_request_error = None
+                embedding_response = None
+                response = None
+                
+                for api_url in api_endpoints:
+                    try:
+                        headers = {"Content-Type": "application/json"}
+                        if use_api_key and HUGGINGFACE_API_KEY:
+                            headers["Authorization"] = f"Bearer {HUGGINGFACE_API_KEY}"
+                        
+                        # HuggingFace feature-extraction API supports batch processing
+                        # Send all texts in one request for better performance
+                        payload = {"inputs": texts}
+                        
+                        print(f"Calling HuggingFace API: {api_url} (batch size: {len(texts)}, with API key: {use_api_key})")
+                        # Use increased timeout for batch processing - 5 minutes for large batches
+                        response = requests.post(api_url, json=payload, headers=headers, timeout=300, verify=False)
+                        print(f"Response status: {response.status_code} for {api_url}")
+                        
+                        # Handle 410 (deprecated endpoint) - skip old endpoints immediately
+                        if response.status_code == 410:
+                            error_msg = response.text[:500] if response.text else "Endpoint deprecated"
+                            print(f"⚠️ Endpoint deprecated (410): {error_msg}")
+                            last_request_error = f"HTTP {response.status_code}: {error_msg}"
                             continue  # Try next endpoint
-                    
-                    # Check if we got a successful response
-                    if embedding_response is None or (response and response.status_code != 200):
-                        error_msg = response.text[:500] if response and response.text else str(last_request_error) if last_request_error else "No response from any endpoint"
-                        raise Exception(f"Failed to get embeddings: {error_msg}")
-                    
-                    # HuggingFace API returns a list of embeddings (one per input)
-                    # For single text, it's usually a list of floats or a nested list
-                    if isinstance(embedding_response, list):
-                        # If nested list (list of lists), take first element
-                        if len(embedding_response) > 0 and isinstance(embedding_response[0], list):
-                            embedding = embedding_response[0]
-                        # If it's a flat list of numbers, use it directly
-                        elif all(isinstance(x, (int, float)) for x in embedding_response):
-                            embedding = embedding_response
+                        
+                        # Track if we retried without API key
+                        retried_without_key = False
+                        
+                        # Handle 401 (unauthorized) - try without API key
+                        if response.status_code == 401 and use_api_key:
+                            print(f"⚠️ Unauthorized (401) with API key, trying without API key...")
+                            headers_no_key = {"Content-Type": "application/json"}
+                            response = requests.post(api_url, json=payload, headers=headers_no_key, timeout=300, verify=False)
+                            print(f"Response without API key (401->): {response.status_code}")
+                            retried_without_key = True
+                        
+                        # Handle 403 (permission denied) - try without API key
+                        if response.status_code == 403 and use_api_key:
+                            print(f"⚠️ API key permission denied (403), trying without API key...")
+                            headers_no_key = {"Content-Type": "application/json"}
+                            response = requests.post(api_url, json=payload, headers=headers_no_key, timeout=300, verify=False)
+                            print(f"Response without API key (403->): {response.status_code}")
+                            retried_without_key = True
+                        
+                        # Handle 503 (model loading) with retry - after auth handling
+                        retry_count = 0
+                        current_headers = headers_no_key if retried_without_key else headers
+                        while response.status_code == 503 and retry_count < 3:
+                            print(f"Model {attempt_model} is loading, waiting 10 seconds... (attempt {retry_count + 1}/3)")
+                            time.sleep(10)
+                            response = requests.post(api_url, json=payload, headers=current_headers, timeout=300, verify=False)
+                            print(f"Retry response status: {response.status_code}")
+                            retry_count += 1
+                        
+                        if response.status_code == 200:
+                            embedding_response = response.json()
+                            print(f"✅ Successfully got batch embeddings from {api_url}")
+                            
+                            # Process batch response - should be list of embeddings
+                            if isinstance(embedding_response, list):
+                                # Batch response: list of embeddings for each input
+                                for emb in embedding_response:
+                                    if isinstance(emb, list):
+                                        embeddings.append([float(x) for x in emb])
+                                    else:
+                                        print(f"⚠️ Unexpected embedding format: {type(emb)}")
+                                        embeddings.append([float(emb)] if isinstance(emb, (int, float)) else [0.0])
+                            else:
+                                print(f"⚠️ Unexpected batch response format: {type(embedding_response)}")
+                                # Fallback: treat as single embedding
+                                if hasattr(embedding_response, 'tolist'):
+                                    embeddings.append(embedding_response.tolist())
+                                else:
+                                    embeddings.append(list(embedding_response) if hasattr(embedding_response, '__iter__') else [0.0])
+                            break  # Success, exit endpoint loop
+                        
+                        elif response.status_code == 404:
+                            error_msg = response.text[:500] if response.text else "No error message"
+                            print(f"❌ Failed with status {response.status_code}: {error_msg}")
+                            last_request_error = f"HTTP {response.status_code}: {error_msg}"
+                            continue
                         else:
-                            # Take first element if it's a list of other types
-                            embedding = embedding_response[0] if len(embedding_response) > 0 else embedding_response
-                    elif isinstance(embedding_response, dict):
-                        # Handle dict response
-                        if 'embeddings' in embedding_response:
-                            emb_list = embedding_response['embeddings']
-                            embedding = emb_list[0] if isinstance(emb_list, list) and len(emb_list) > 0 else emb_list
-                        else:
-                            # Take first value from dict
-                            embedding = list(embedding_response.values())[0] if embedding_response else []
-                    else:
-                        embedding = embedding_response
-                    
-                    # Convert to list of floats
-                    if not isinstance(embedding, list):
-                        if hasattr(embedding, 'tolist'):
-                            embedding = embedding.tolist()
-                        elif hasattr(embedding, '__iter__') and not isinstance(embedding, str):
-                            embedding = list(embedding)
-                        else:
-                            raise ValueError(f"Cannot convert embedding to list: {type(embedding)}")
-                    
-                    # Ensure all elements are floats
-                    embedding = [float(x) for x in embedding]
-                    
-                    if len(embedding) == 0:
-                        raise ValueError("Empty embedding vector")
-                    
-                    embeddings.append(embedding)
+                            error_msg = response.text[:500] if response.text else "No error message"
+                            print(f"❌ Failed with status {response.status_code}: {error_msg}")
+                            last_request_error = f"HTTP {response.status_code}: {error_msg}"
+                            continue  # Try next endpoint
+                            
+                    except requests.RequestException as req_error:
+                        last_request_error = f"Request failed: {str(req_error)}"
+                        continue  # Try next endpoint
+                
+                # Check if we got successful batch response
+                if len(embeddings) == 0 or len(embeddings) != len(texts):
+                    error_msg = f"Batch processing failed: expected {len(texts)} embeddings, got {len(embeddings)}"
+                    if last_request_error:
+                        error_msg += f". Last error: {last_request_error}"
+                    raise Exception(error_msg)
                 
                 # Success - update the model name used
                 hf_embedding_model = attempt_model
