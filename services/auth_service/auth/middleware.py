@@ -396,10 +396,16 @@ class CORSMiddleware(BaseHTTPMiddleware):
     
     def _get_allowed_origin(self, origin: Optional[str]) -> str:
         """Get allowed origin for the request"""
-        if "*" in self.allowed_origins:
+        # Never return wildcard when credentials are allowed
+        if self.allow_credentials and origin and origin in self.allowed_origins:
+            return origin
+        
+        # For non-credentialed requests, use wildcard if allowed
+        if not self.allow_credentials and "*" in self.allowed_origins:
             return "*"
         
         if origin and origin in self.allowed_origins:
             return origin
         
-        return self.allowed_origins[0] if self.allowed_origins else "*"
+        # Return first allowed origin instead of wildcard for credentials
+        return self.allowed_origins[0] if self.allowed_origins else "null"
