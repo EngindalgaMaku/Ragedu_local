@@ -248,13 +248,13 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 # Add middleware (order is important - last added runs first)
 
-# EMERGENCY CORS - Allow everything
+# CORS Configuration - Fixed for credentials support
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,  # Must be False with wildcard
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=config.CORS_ORIGINS,  # Use specific origins instead of wildcard
+    allow_credentials=config.CORS_CREDENTIALS,  # Allow credentials
+    allow_methods=config.CORS_METHODS,
+    allow_headers=config.CORS_HEADERS,
 )
 
 # Global OPTIONS handler
