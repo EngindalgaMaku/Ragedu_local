@@ -195,7 +195,7 @@ export const CORS_ORIGINS = [
   // Backward compatibility
   DOCKER_URLS.API_GATEWAY,
   DOCKER_URLS.AUTH_SERVICE,
-] as const;
+];
 
 // Health check URL'leri
 export const HEALTH_URLS = {
