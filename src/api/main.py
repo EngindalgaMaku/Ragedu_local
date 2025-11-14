@@ -45,68 +45,63 @@ from src.utils.cloud_storage_manager import cloud_storage_manager
 app = FastAPI(title="RAG3 API Gateway", version="1.0.0",
               description="Pure API Gateway - Routes requests to microservices")
 
-# CORS configuration
+# CORS configuration - ENHANCED for Docker deployment with external IP support
 _cors_env = os.getenv("CORS_ORIGINS", "")
+logger.info(f"[API GATEWAY CORS] Environment CORS_ORIGINS: '{_cors_env}'")
+
 if _cors_env:
     origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+    logger.info(f"[API GATEWAY CORS] Using environment CORS origins: {origins}")
 else:
-    # Safe defaults for local dev
-    # Import centralized port configuration with proper Docker path handling
-    import sys
-    import os
-    # Try different paths for Docker vs local development
-    possible_paths = ['/app/config', '/app', './config', '.', '../config', '../../config']
-    ports_imported = False
-    for path in possible_paths:
-        if os.path.exists(os.path.join(path, 'ports.py')):
-            sys.path.insert(0, path)
-            try:
-                from ports import CORS_ORIGINS
-                ports_imported = True
-                logger.info(f"Successfully imported ports module from: {path}")
-                break
-            except ImportError:
-                continue
+    logger.warning("[API GATEWAY CORS] No CORS_ORIGINS environment variable found, using enhanced fallback")
     
-    if not ports_imported:
-        # Fallback CORS origins if ports module not found - Environment variable'dan alınır
-        logger.warning("Could not import ports module, using fallback CORS origins")
-        _fallback_cors_env = os.getenv("CORS_ORIGINS", "")
-        if _fallback_cors_env:
-            CORS_ORIGINS = [o.strip() for o in _fallback_cors_env.split(",") if o.strip()]
-        else:
-            # Default fallback origins - environment variable'lardan port'lar alınır + External IP support
-            _frontend_port = os.getenv("FRONTEND_PORT", "3000")
-            _api_gateway_port = os.getenv("API_GATEWAY_PORT", os.getenv("PORT", "8000"))
-            
-            # Get external IP from environment for server deployment
-            _external_ip = os.getenv("NEXT_PUBLIC_API_URL", "")
-            if _external_ip and _external_ip.startswith("http"):
-                _external_host = _external_ip.split("://")[1].split(":")[0]
-            else:
-                _external_host = None
-            
-            CORS_ORIGINS = [
-                f"http://localhost:{_frontend_port}",
-                f"http://127.0.0.1:{_frontend_port}",
-                f"http://0.0.0.0:{_frontend_port}",
-                f"http://frontend:{_frontend_port}",
-                f"http://api-gateway:{_api_gateway_port}",
-                f"http://46.62.254.131:8000",
-                f"http://46.62.254.131:8006",
-                # Add external IP support for server deployment
-            ]
-            
-            # Add external IP origins if available
-            if _external_host:
-                CORS_ORIGINS.extend([
+    # ENHANCED FALLBACK with guaranteed external IP support
+    _frontend_port = os.getenv("FRONTEND_PORT", "3000")
+    _api_gateway_port = os.getenv("API_GATEWAY_PORT", os.getenv("PORT", "8000"))
+    
+    # GUARANTEED External IP CORS origins (no dependency on ports.py)
+    CORS_ORIGINS = [
+        # Local development origins
+        f"http://localhost:{_frontend_port}",
+        f"http://127.0.0.1:{_frontend_port}",
+        f"http://0.0.0.0:{_frontend_port}",
+        
+        # Docker container origins
+        f"http://frontend:{_frontend_port}",
+        f"http://api-gateway:{_api_gateway_port}",
+        
+        # GUARANTEED External IP origins for server deployment
+        "http://46.62.254.131:3000",  # Frontend
+        "http://46.62.254.131:8000",  # API Gateway
+        "http://46.62.254.131:8006",  # Auth Service
+        "http://46.62.254.131:8007",  # APRAG Service
+        
+        # Additional protocol variations for external IP
+        "https://46.62.254.131:3000",
+        "https://46.62.254.131:8000",
+        "https://46.62.254.131:8006",
+        "https://46.62.254.131:8007",
+    ]
+    
+    # Add dynamic external IP from NEXT_PUBLIC_API_URL if available
+    _external_ip_env = os.getenv("NEXT_PUBLIC_API_URL", "")
+    if _external_ip_env and _external_ip_env.startswith("http"):
+        try:
+            _external_host = _external_ip_env.split("://")[1].split(":")[0]
+            if _external_host and _external_host not in ["46.62.254.131", "localhost", "127.0.0.1"]:
+                dynamic_origins = [
                     f"http://{_external_host}:{_frontend_port}",
                     f"http://{_external_host}:{_api_gateway_port}",
                     f"https://{_external_host}:{_frontend_port}",
-                    f"https://{_external_host}:{_api_gateway_port}",                    
-                ])
+                    f"https://{_external_host}:{_api_gateway_port}",
+                ]
+                CORS_ORIGINS.extend(dynamic_origins)
+                logger.info(f"[API GATEWAY CORS] Added dynamic external IP origins: {dynamic_origins}")
+        except Exception as e:
+            logger.warning(f"[API GATEWAY CORS] Failed to parse NEXT_PUBLIC_API_URL: {e}")
     
     origins = CORS_ORIGINS
+    logger.info(f"[API GATEWAY CORS] Using fallback CORS origins ({len(origins)} total): {origins}")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
