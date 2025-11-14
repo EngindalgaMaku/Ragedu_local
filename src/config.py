@@ -139,7 +139,7 @@ class RAGConfig:
                 "language": "Multi-language"
             },
             "llama-3.3-70b-versatile": {
-                "name": "Llama 3.3 70B Versatile", 
+                "name": "Llama 3.3 70B Versatile",
                 "description": "Large versatile model for complex reasoning",
                 "provider": "groq",
                 "size": "70B parameters",
@@ -149,7 +149,7 @@ class RAGConfig:
             "openai/gpt-oss-20b": {
                 "name": "GPT OSS 20B",
                 "description": "Open source GPT-style model",
-                "provider": "groq", 
+                "provider": "groq",
                 "size": "20B parameters",
                 "performance": "High",
                 "language": "Multi-language"
@@ -158,11 +158,58 @@ class RAGConfig:
                 "name": "Qwen 3 32B",
                 "description": "Advanced Chinese-English bilingual model",
                 "provider": "groq",
-                "size": "32B parameters", 
+                "size": "32B parameters",
                 "performance": "High",
                 "language": "Chinese/English"
             }
         }
+        
+        # OpenRouter models - FREE models only for cost-effective usage
+        self.openrouter_models = {
+            "meta-llama/llama-3.1-8b-instruct:free": {
+                "name": "Llama 3.1 8B (Free)",
+                "description": "Meta's instruction-tuned Llama model - Free tier",
+                "provider": "openrouter",
+                "size": "8B parameters",
+                "performance": "High",
+                "language": "Multi-language"
+            },
+            "mistralai/mistral-7b-instruct:free": {
+                "name": "Mistral 7B (Free)",
+                "description": "Mistral's efficient instruction-following model - Free tier",
+                "provider": "openrouter",
+                "size": "7B parameters",
+                "performance": "High",
+                "language": "Multi-language"
+            },
+            "microsoft/phi-3-mini-4k-instruct:free": {
+                "name": "Phi-3 Mini (Free)",
+                "description": "Microsoft's compact and efficient model - Free tier",
+                "provider": "openrouter",
+                "size": "3.8B parameters",
+                "performance": "Medium-High",
+                "language": "Multi-language"
+            },
+            "google/gemma-2-9b-it:free": {
+                "name": "Gemma 2 9B (Free)",
+                "description": "Google's open model with good performance - Free tier",
+                "provider": "openrouter",
+                "size": "9B parameters",
+                "performance": "High",
+                "language": "Multi-language"
+            },
+            "nousresearch/hermes-3-llama-3.1-8b:free": {
+                "name": "Hermes 3 Llama 8B (Free)",
+                "description": "Nous Research's fine-tuned Llama model - Free tier",
+                "provider": "openrouter",
+                "size": "8B parameters",
+                "performance": "High",
+                "language": "Multi-language"
+            }
+        }
+        
+        # Merge OpenRouter models into cloud models
+        self.cloud_models.update(self.openrouter_models)
         
         # Local Ollama models
         self.available_models = {

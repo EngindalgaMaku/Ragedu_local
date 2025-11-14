@@ -184,7 +184,7 @@ def create_model_selector_ui():
     
     # Provider Selection
     st.markdown("#### 🔧 Provider Seçimi")
-    col_prov1, col_prov2 = st.columns(2)
+    col_prov1, col_prov2, col_prov3 = st.columns(3)
     
     with col_prov1:
         if st.button("🏠 Ollama (Yerel)",
@@ -202,6 +202,14 @@ def create_model_selector_ui():
             st.session_state.selected_provider = 'groq'
             st.rerun()
     
+    with col_prov3:
+        if st.button("🚀 OpenRouter",
+                     type="primary" if st.session_state.selected_provider == 'openrouter' else "secondary",
+                     use_container_width=True,
+                     help="OpenRouter API - Premium AI modelleri"):
+            st.session_state.selected_provider = 'openrouter'
+            st.rerun()
+    
     st.markdown("---")
     
     # Get available models with status - PROVIDER AWARE
@@ -212,10 +220,14 @@ def create_model_selector_ui():
         filtered_models = {k: v for k, v in available_models.items()
                           if v.get('provider', 'ollama') == 'ollama'}
         st.info("🏠 **Yerel modeller** - Bilgisayarınızda çalışır, internet gerektirmez")
+    elif st.session_state.selected_provider == 'openrouter':
+        filtered_models = {k: v for k, v in available_models.items()
+                          if v.get('provider') == 'openrouter'}
+        st.info("🚀 **OpenRouter modelleri** - Premium AI modelleri, çeşitli sağlayıcılar")
     else:  # groq
         filtered_models = {k: v for k, v in available_models.items()
                           if v.get('provider') == 'groq'}
-        st.info("🌐 **Cloud modeller** - Hızlı ve güçlü, internet bağlantısı gerekir")
+        st.info("🌐 **Groq modelleri** - Hızlı ve güçlü, internet bağlantısı gerekir")
     
     if not filtered_models:
         st.warning(f"⚠️ {st.session_state.selected_provider.title()} için model bulunamadı")
@@ -306,6 +318,25 @@ def create_model_selector_ui():
                                 st.error("❌ Model yüklenemedi")
                         except Exception as e:
                             st.error(f"❌ İndirme hatası: {e}")
+        elif st.session_state.selected_provider == 'openrouter':
+            # OpenRouter cloud model - always available if API key is set
+            st.success("🚀 OpenRouter Hazır")
+            if st.button("🧪 Test Et", help="OpenRouter API bağlantısını test et"):
+                with st.spinner("OpenRouter API test ediliyor..."):
+                    try:
+                        from ..utils.cloud_llm_client import CloudLLMClient
+                        client = CloudLLMClient()
+                        test_response = client.generate_response(
+                            "Merhaba, bu bir test mesajıdır.",
+                            selected_model,
+                            'openrouter'
+                        )
+                        if "❌" not in test_response:
+                            st.success("✅ OpenRouter API çalışıyor!")
+                        else:
+                            st.error(f"❌ Test başarısız: {test_response}")
+                    except Exception as e:
+                        st.error(f"❌ OpenRouter test hatası: {e}")
         else:
             # Groq cloud model - always available
             st.success("🌐 Cloud Hazır")
@@ -356,7 +387,7 @@ def create_simple_model_selector_ui():
     
     # Provider Selection - Compact
     st.markdown("#### 🔧 AI Provider")
-    provider_col1, provider_col2 = st.columns(2)
+    provider_col1, provider_col2, provider_col3 = st.columns(3)
     
     with provider_col1:
         if st.button("🏠 Yerel",
@@ -366,10 +397,17 @@ def create_simple_model_selector_ui():
             st.rerun()
     
     with provider_col2:
-        if st.button("🌐 Cloud",
+        if st.button("🌐 Groq",
                      type="primary" if st.session_state.selected_provider == 'groq' else "secondary",
                      use_container_width=True):
             st.session_state.selected_provider = 'groq'
+            st.rerun()
+    
+    with provider_col3:
+        if st.button("🚀 OpenRouter",
+                     type="primary" if st.session_state.selected_provider == 'openrouter' else "secondary",
+                     use_container_width=True):
+            st.session_state.selected_provider = 'openrouter'
             st.rerun()
     
     # Get available models with status - PROVIDER AWARE
@@ -381,15 +419,22 @@ def create_simple_model_selector_ui():
         usable_models = {k: v for k, v in available_models.items()
                         if v.get('provider', 'ollama') == 'ollama' and v.get('installed', False)}
         provider_info = "🏠 Yerel modeller"
+    elif st.session_state.selected_provider == 'openrouter':
+        # OpenRouter modeller: her zaman kullanılabilir
+        usable_models = {k: v for k, v in available_models.items()
+                        if v.get('provider') == 'openrouter'}
+        provider_info = "🚀 OpenRouter modeller"
     else:  # groq
         # Cloud modeller: her zaman kullanılabilir
         usable_models = {k: v for k, v in available_models.items()
                         if v.get('provider') == 'groq'}
-        provider_info = "🌐 Cloud modeller"
+        provider_info = "🌐 Groq modeller"
     
     if not usable_models:
         if st.session_state.selected_provider == 'ollama':
             st.info("ℹ️ Yerel model yükleniyor... Öğretmen panelinden kontrol edebilirsiniz.")
+        elif st.session_state.selected_provider == 'openrouter':
+            st.warning("⚠️ OpenRouter API anahtarı gerekli (.env dosyasında)")
         else:
             st.warning("⚠️ Groq API anahtarı gerekli (.env dosyasında)")
         return st.session_state.selected_model
@@ -422,8 +467,11 @@ def create_simple_model_selector_ui():
     if selected_model != st.session_state.selected_model:
         st.session_state.selected_model = selected_model
         # Update provider based on selected model
-        if usable_models[selected_model].get('provider') == 'groq':
+        model_provider = usable_models[selected_model].get('provider', 'ollama')
+        if model_provider == 'groq':
             st.session_state.selected_provider = 'groq'
+        elif model_provider == 'openrouter':
+            st.session_state.selected_provider = 'openrouter'
         else:
             st.session_state.selected_provider = 'ollama'
         set_generation_model(selected_model)
@@ -442,17 +490,20 @@ def get_available_models_info(provider_filter: str = None) -> Dict[str, Dict[str
     if provider_filter:
         current_provider = provider_filter
     
-    # 1. CLOUD_MODELS'den external API modellerini ekle (sadece cloud provider ise)
-    if current_provider in ['groq', 'cloud']:
+    # 1. CLOUD_MODELS'den external API modellerini ekle (groq ve openrouter için)
+    if current_provider in ['groq', 'openrouter', 'cloud']:
         for model_name, model_config in app_config.CLOUD_MODELS.items():
-            models_info[model_name] = {
-                "type": "cloud",
-                "status": "🌐 External API",
-                "name": model_config.get("name", model_name),
-                "description": model_config.get("description", f"External API: {model_name}"),
-                "provider": model_config.get("provider", "groq"),
-                "installed": True  # Cloud modeller her zaman kullanılabilir
-            }
+            model_provider = model_config.get("provider", "groq")
+            # Sadece current provider ile eşleşenleri ekle
+            if current_provider == model_provider or current_provider == 'cloud':
+                models_info[model_name] = {
+                    "type": "cloud",
+                    "status": "🌐 External API" if model_provider == 'groq' else "🚀 Premium API",
+                    "name": model_config.get("name", model_name),
+                    "description": model_config.get("description", f"External API: {model_name}"),
+                    "provider": model_provider,
+                    "installed": True  # Cloud modeller her zaman kullanılabilir
+                }
     
     # 2. Ollama modellerini sadece ollama provider seçiliyse kontrol et
     if current_provider == 'ollama':

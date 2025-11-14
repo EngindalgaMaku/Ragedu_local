@@ -22,6 +22,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", os.getenv("OLLAMA_URL", "http://localhost:11434"))
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # --- FastAPI App Initialization ---
 app = FastAPI(
@@ -148,6 +149,14 @@ groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 if not groq_client:
     print("⚠️ Warning: GROQ_API_KEY not set. Groq models will not be available.")
 
+# OpenRouter client setup
+openrouter_client = None
+if OPENROUTER_API_KEY:
+    openrouter_client = True  # We'll use requests directly for OpenRouter
+    print("✅ OpenRouter API key found.")
+else:
+    print("⚠️ Warning: OPENROUTER_API_KEY not set. OpenRouter models will not be available.")
+
 # Initialize HuggingFace client with explicit provider
 try:
     huggingface_client = InferenceClient(
@@ -265,6 +274,18 @@ def is_groq_model(model_name: str) -> bool:
     ]
     return model_name in groq_models
 
+def is_openrouter_model(model_name: str) -> bool:
+    """Check if the model is intended for OpenRouter based on free models."""
+    # Free OpenRouter models - cost-effective options
+    openrouter_models = [
+        "meta-llama/llama-3.1-8b-instruct:free",
+        "mistralai/mistral-7b-instruct:free",
+        "microsoft/phi-3-mini-4k-instruct:free",
+        "google/gemma-2-9b-it:free",
+        "nousresearch/hermes-3-llama-3.1-8b:free"
+    ]
+    return model_name in openrouter_models
+
 def is_huggingface_model(model_name: str) -> bool:
     """Check if the model is a HuggingFace model."""
     # HuggingFace models typically have format: "organization/model-name"
@@ -294,6 +315,7 @@ def health_check():
         "ollama_available": OLLAMA_AVAILABLE,
         "groq_available": bool(groq_client),
         "huggingface_available": bool(huggingface_client),
+        "openrouter_available": bool(openrouter_client and OPENROUTER_API_KEY),
         "ollama_host": OLLAMA_HOST
     }
 
@@ -307,7 +329,53 @@ async def generate_response(request: GenerationRequest):
     prompt = request.prompt
 
     try:
-        if is_groq_model(model_name):
+        if is_openrouter_model(model_name):
+            if not openrouter_client or not OPENROUTER_API_KEY:
+                raise HTTPException(status_code=503, detail="OpenRouter client is not available. Check OPENROUTER_API_KEY.")
+
+            # OpenRouter API call
+            headers = {
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:3000",  # Optional: for analytics
+                "X-Title": "RAG3 Local System"  # Optional: for analytics
+            }
+            
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": request.temperature,
+                "max_tokens": request.max_tokens
+            }
+            
+            try:
+                response = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=60
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    if "choices" in result and len(result["choices"]) > 0:
+                        response_content = result["choices"][0]["message"]["content"] or ""
+                        return GenerationResponse(response=response_content, model_used=model_name)
+                    else:
+                        raise HTTPException(status_code=500, detail="Invalid response format from OpenRouter")
+                else:
+                    error_detail = f"OpenRouter API error: {response.status_code}"
+                    if response.text:
+                        error_detail += f" - {response.text[:500]}"
+                    raise HTTPException(status_code=response.status_code, detail=error_detail)
+                    
+            except requests.exceptions.RequestException as e:
+                raise HTTPException(status_code=503, detail=f"OpenRouter API request failed: {str(e)}")
+
+        elif is_groq_model(model_name):
             if not groq_client:
                 raise HTTPException(status_code=503, detail="Groq client is not available. Check GROQ_API_KEY.")
 
@@ -482,7 +550,7 @@ async def generate_response(request: GenerationRequest):
 @app.get("/models/available", summary="List Available Models")
 def get_available_models():
     """Returns a list of available models from all configured providers."""
-    models = {"groq": [], "ollama": [], "huggingface": []}
+    models = {"groq": [], "ollama": [], "huggingface": [], "openrouter": []}
 
     if groq_client:
         # Only tested and confirmed working models
@@ -502,6 +570,16 @@ def get_available_models():
             "openai/gpt-oss-safeguard-20b",
             "moonshotai/kimi-k2-instruct",
             "moonshotai/kimi-k2-instruct-0905"
+        ]
+
+    if openrouter_client and OPENROUTER_API_KEY:
+        # Free OpenRouter models - cost-effective and reliable
+        models["openrouter"] = [
+            "meta-llama/llama-3.1-8b-instruct:free",
+            "mistralai/mistral-7b-instruct:free",
+            "microsoft/phi-3-mini-4k-instruct:free",
+            "google/gemma-2-9b-it:free",
+            "nousresearch/hermes-3-llama-3.1-8b:free"
         ]
 
     client = get_ollama_client()

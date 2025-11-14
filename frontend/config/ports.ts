@@ -29,7 +29,7 @@ export const PORTS = {
 // URL Builder Functions - Google Cloud Run compatible
 export function getServiceUrl(
   service: keyof typeof PORTS,
-  host: string = "localhost",
+  host: string = "46.62.254.131",
   useDockerNames: boolean = false
 ): string {
   // Check if host is already a full URL (Cloud Run)
@@ -108,7 +108,7 @@ const getActualHost = () => {
     console.warn(
       "⚠️ No external host configured, falling back to localhost for browser"
     );
-    return "localhost";
+    return "46.62.254.131";
   }
 
   // SERVER-SIDE DOCKER ENVIRONMENT: Use Docker service names for internal communication
@@ -124,7 +124,7 @@ const getActualHost = () => {
 
   // SERVER-SIDE NON-DOCKER: Use localhost or configured host
   console.log("🖥️ Non-Docker server environment detected");
-  return process.env.API_GATEWAY_HOST || "localhost";
+  return process.env.API_GATEWAY_HOST || "46.62.254.131";
 };
 
 const actualHost = getActualHost();
@@ -187,7 +187,7 @@ export const CORS_ORIGINS = [
   ...(process.env.NODE_ENV === "development"
     ? [
         `http://127.0.0.1:${PORTS.FRONTEND}`,
-        `http://localhost:${PORTS.FRONTEND}`,
+        `http://46.62.254.131:${PORTS.FRONTEND}`,
         `http://host.docker.internal:${PORTS.FRONTEND}`,
         `http://host.docker.internal:${PORTS.API_GATEWAY}`,
       ]
