@@ -78,7 +78,7 @@ class Config:
         if origin not in CORS_ORIGINS:
             CORS_ORIGINS.append(origin)
     
-    CORS_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+    CORS_METHODS = ["*"]  # Allow all methods including PATCH
     CORS_HEADERS = [
         "Content-Type",
         "Authorization",
