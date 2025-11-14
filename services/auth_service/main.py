@@ -64,7 +64,8 @@ class Config:
             "http://46.62.254.131:3000",  # External IP frontend
             "http://46.62.254.131:8000",  # External IP API gateway
             "http://46.62.254.131:8006",  # External IP auth service (self)
-            "*"  # Allow all as last resort
+            "http://localhost:8000",     # Local API gateway
+            "http://127.0.0.1:8000"      # Local API gateway
         ]
     
     # Ensure external server IP origins are always included for Docker deployment
