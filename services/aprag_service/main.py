@@ -20,9 +20,17 @@ sys.path.insert(0, parent_dir)
 try:
     from config.feature_flags import FeatureFlags
 except ImportError:
-    # Fallback if config not in path
-    sys.path.insert(0, os.path.join(parent_dir, 'rag3_for_colab'))
-    from config.feature_flags import FeatureFlags
+    # Fallback: Define minimal version if parent config not available
+    class FeatureFlags:
+        @staticmethod
+        def is_aprag_enabled(session_id=None):
+            """Fallback implementation when feature flags config is not available"""
+            return os.getenv("APRAG_ENABLED", "true").lower() == "true"
+        
+        @staticmethod
+        def load_from_database(db_manager):
+            """Fallback method for database loading"""
+            pass
 
 # Import database and API modules
 from database.database import DatabaseManager

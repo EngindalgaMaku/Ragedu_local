@@ -17,9 +17,34 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../..'))
 try:
     from config.feature_flags import FeatureFlags, FeatureFlagScope
 except ImportError:
-    # Fallback
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../rag3_for_colab'))
-    from config.feature_flags import FeatureFlags, FeatureFlagScope
+    # Fallback: Define minimal versions if parent config not available
+    from enum import Enum
+    
+    class FeatureFlagScope(Enum):
+        GLOBAL = "global"
+        SESSION = "session"
+    
+    class FeatureFlags:
+        @staticmethod
+        def is_aprag_enabled(session_id=None):
+            """Fallback implementation when feature flags config is not available"""
+            return os.getenv("APRAG_ENABLED", "true").lower() == "true"
+        
+        @staticmethod
+        def is_feedback_collection_enabled(session_id=None):
+            return os.getenv("APRAG_FEEDBACK_COLLECTION", "true").lower() == "true"
+        
+        @staticmethod
+        def is_personalization_enabled(session_id=None):
+            return os.getenv("APRAG_PERSONALIZATION", "true").lower() == "true"
+        
+        @staticmethod
+        def is_recommendations_enabled(session_id=None):
+            return os.getenv("APRAG_RECOMMENDATIONS", "true").lower() == "true"
+        
+        @staticmethod
+        def is_analytics_enabled(session_id=None):
+            return os.getenv("APRAG_ANALYTICS", "true").lower() == "true"
 
 logger = logging.getLogger(__name__)
 

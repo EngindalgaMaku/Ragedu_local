@@ -23,12 +23,17 @@ from database.database import DatabaseManager
 try:
     import sys
     import os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../..'))
+    # Add parent directory to path to import from config
+    parent_dir = os.path.join(os.path.dirname(__file__), '../../..')
+    sys.path.insert(0, parent_dir)
     from config.feature_flags import FeatureFlags
 except ImportError:
-    # Fallback
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../rag3_for_colab'))
-    from config.feature_flags import FeatureFlags
+    # Fallback: Define minimal version if parent config not available
+    class FeatureFlags:
+        @staticmethod
+        def is_aprag_enabled(session_id=None):
+            """Fallback implementation when feature flags config is not available"""
+            return os.getenv("APRAG_ENABLED", "true").lower() == "true"
 
 # Environment variables - Google Cloud Run compatible
 # These should be set via environment variables in Cloud Run
