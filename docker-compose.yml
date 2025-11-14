@@ -37,7 +37,7 @@ services:
       # JWT configuration for API Gateway
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
       # CORS configuration - API Gateway needs CORS too!
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://46.62.254.131:3000,http://46.62.254.131:8000}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://46.62.254.131:3000,http://46.62.254.131:8000,http://api-gateway:8000}
       - CORS_CREDENTIALS=true
     volumes:
       - session_data:/app/sessions
@@ -90,7 +90,7 @@ services:
       - DATABASE_PATH=/app/data/rag_assistant.db
       - APRAG_DB_PATH=/app/data/rag_assistant.db
       # CORS configuration - Add external server IP for browser access
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://46.62.254.131:3000,http://46.62.254.131:8000}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://46.62.254.131:3000,http://46.62.254.131:8000,http://auth-service:8006}
       - CORS_CREDENTIALS=true
       # Feature Flags
       - APRAG_ENABLED=${APRAG_ENABLED:-true}
@@ -145,7 +145,7 @@ services:
       # Database configuration
       - DATABASE_PATH=/app/data/rag_assistant.db
       # CORS configuration - Add external server IP for browser access
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://46.62.254.131:3000,http://46.62.254.131:8000}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://46.62.254.131:3000,http://46.62.254.131:8000,http://auth-service:8006}
       - CORS_CREDENTIALS=true
       # Rate limiting - Geliştirme için gevşetildi
       - RATE_LIMIT_RPM=300

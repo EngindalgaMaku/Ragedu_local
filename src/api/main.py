@@ -92,6 +92,8 @@ else:
                 f"http://0.0.0.0:{_frontend_port}",
                 f"http://frontend:{_frontend_port}",
                 f"http://api-gateway:{_api_gateway_port}",
+                f"https://46.62.254.131:8000",
+                f"https://46.62.254.131:8006",
                 # Add external IP support for server deployment
             ]
             
@@ -101,7 +103,7 @@ else:
                     f"http://{_external_host}:{_frontend_port}",
                     f"http://{_external_host}:{_api_gateway_port}",
                     f"https://{_external_host}:{_frontend_port}",
-                    f"https://{_external_host}:{_api_gateway_port}",
+                    f"https://{_external_host}:{_api_gateway_port}",                    
                 ])
     
     origins = CORS_ORIGINS

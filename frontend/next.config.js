@@ -9,6 +9,27 @@ const nextConfig = {
   // Ensure proper handling of environment variables in production
   env: {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+    // Pass frontend CORS origins to backend
+    FRONTEND_CORS_ORIGINS: (() => {
+      // Import ports config to get CORS_ORIGINS
+      try {
+        const path = require("path");
+        const configPath = path.join(__dirname, "config", "ports.ts");
+        delete require.cache[configPath]; // Clear cache for fresh computation
+        const { CORS_ORIGINS } = require("./config/ports.ts");
+        return CORS_ORIGINS.join(",");
+      } catch (e) {
+        console.warn("Could not load CORS_ORIGINS from ports.ts:", e.message);
+        // Fallback CORS origins for production server
+        return [
+          "http://localhost:3000",
+          "http://46.62.254.131:3000",
+          "http://46.62.254.131:8000",
+          "http://api-gateway:8000",
+          "http://auth-service:8006",
+        ].join(",");
+      }
+    })(),
   },
   // Optimize for production builds
   compiler: {
