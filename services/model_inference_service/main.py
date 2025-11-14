@@ -403,7 +403,7 @@ async def generate_response(request: GenerationRequest):
                 # Note: Spaces API format is complex and model-specific, so we skip it
                 api_endpoints = [
                     f"https://router.huggingface.co/hf-inference/models/{model_name}",
-                    f"https://api-inference.huggingface.co/models/{model_name}",
+                    # Removed deprecated endpoint
                 ]
                 
                 headers = {"Content-Type": "application/json"}
@@ -982,8 +982,7 @@ async def generate_embeddings(request: EmbedRequest):
                         f"https://router.huggingface.co/hf-inference/models/{attempt_model}/pipeline/feature-extraction",
                         # Old router format as fallback
                         f"https://router.huggingface.co/hf-inference/pipeline/feature-extraction/{attempt_model}",
-                        # Legacy API format as last resort
-                        f"https://api-inference.huggingface.co/pipeline/feature-extraction/{attempt_model}",
+                        # Removed deprecated legacy API endpoint
                     ]
                     
                     # Try with API key first, then without if it fails with 403 or 401
