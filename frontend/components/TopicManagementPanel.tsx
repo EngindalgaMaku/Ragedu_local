@@ -111,6 +111,37 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
     topicPage * TOPICS_PER_PAGE
   );
 
+  // Debug logging
+  console.log(
+    `[TopicManagement DEBUG] Total topics from API: ${topics.length}`
+  );
+  console.log(
+    `[TopicManagement DEBUG] Main topics (no parent): ${mainTopics.length}`
+  );
+  console.log(
+    `[TopicManagement DEBUG] Paginated topics showing: ${paginatedTopics.length}`
+  );
+  console.log(
+    `[TopicManagement DEBUG] Current page: ${topicPage}/${totalPages}`
+  );
+  console.log(`[TopicManagement DEBUG] Topics per page: ${TOPICS_PER_PAGE}`);
+  console.log(
+    "[TopicManagement DEBUG] All topics:",
+    topics.map((t) => ({
+      id: t.topic_id,
+      title: t.topic_title,
+      parent: t.parent_topic_id,
+    }))
+  );
+  console.log(
+    "[TopicManagement DEBUG] Main topics:",
+    mainTopics.map((t) => ({ id: t.topic_id, title: t.topic_title }))
+  );
+  console.log(
+    "[TopicManagement DEBUG] Paginated topics:",
+    paginatedTopics.map((t) => ({ id: t.topic_id, title: t.topic_title }))
+  );
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -246,20 +277,42 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
                           </div>
                         )}
                         {subtopics.length > 0 && (
-                          <div className="mt-3 space-y-1.5">
-                            <p className="text-xs font-medium text-muted-foreground">
-                              Alt Konular
+                          <div className="mt-4 p-3 bg-muted/30 rounded-lg border">
+                            <p className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
+                              📋 Alt Konular ({subtopics.length})
                             </p>
-                            {subtopics
-                              .sort((a, b) => a.topic_order - b.topic_order)
-                              .map((subtopic) => (
-                                <div
-                                  key={subtopic.topic_id}
-                                  className="text-sm text-foreground border-l-2 border-border pl-3"
-                                >
-                                  • {subtopic.topic_title}
-                                </div>
-                              ))}
+                            <div className="space-y-2">
+                              {subtopics
+                                .sort((a, b) => a.topic_order - b.topic_order)
+                                .map((subtopic) => (
+                                  <div
+                                    key={subtopic.topic_id}
+                                    className="flex items-start gap-3 p-2 bg-background rounded border hover:bg-muted/50 transition-colors"
+                                  >
+                                    <span className="text-xs font-medium text-muted-foreground bg-primary/10 px-2 py-1 rounded min-w-0 shrink-0">
+                                      #{subtopic.topic_order}
+                                    </span>
+                                    <span className="text-sm font-medium text-foreground flex-1">
+                                      {subtopic.topic_title}
+                                    </span>
+                                    {subtopic.keywords &&
+                                      subtopic.keywords.length > 0 && (
+                                        <div className="flex flex-wrap gap-1">
+                                          {subtopic.keywords
+                                            .slice(0, 2)
+                                            .map((keyword, idx) => (
+                                              <span
+                                                key={idx}
+                                                className="text-xs bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300 px-1.5 py-0.5 rounded"
+                                              >
+                                                {keyword}
+                                              </span>
+                                            ))}
+                                        </div>
+                                      )}
+                                  </div>
+                                ))}
+                            </div>
                           </div>
                         )}
                       </div>
