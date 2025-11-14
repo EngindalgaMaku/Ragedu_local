@@ -418,11 +418,12 @@ export default function HomePage() {
     }[]
   >([]);
   const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
-  const [selectedInteractionForFeedback, setSelectedInteractionForFeedback] = useState<{
-    interactionId: number;
-    query: string;
-    answer: string;
-  } | null>(null);
+  const [selectedInteractionForFeedback, setSelectedInteractionForFeedback] =
+    useState<{
+      interactionId: number;
+      query: string;
+      answer: string;
+    } | null>(null);
   const [isQuerying, setIsQuerying] = useState(false);
   const [uploadStats, setUploadStats] = useState<any>(null);
 
@@ -501,12 +502,14 @@ export default function HomePage() {
 
   // APRAG enabled state
   const [apragEnabled, setApragEnabled] = useState<boolean>(false);
-  
+
   // Check APRAG status on mount
   useEffect(() => {
     const checkApragStatus = async () => {
       try {
-        const response = await fetch(`${getApiUrl()}/api/aprag/settings/status`);
+        const response = await fetch(
+          `${getApiUrl()}/api/aprag/settings/status`
+        );
         if (response.ok) {
           const data = await response.json();
           setApragEnabled(data.global_enabled || false);
@@ -827,21 +830,26 @@ export default function HomePage() {
       if (selectedSessionId && !useDirectLLM) {
         setTimeout(async () => {
           try {
-            const interactions = await getSessionInteractions(selectedSessionId, 1, 0);
-            if (interactions.interactions && interactions.interactions.length > 0) {
+            const interactions = await getSessionInteractions(
+              selectedSessionId,
+              1,
+              0
+            );
+            if (
+              interactions.interactions &&
+              interactions.interactions.length > 0
+            ) {
               const latestInteraction = interactions.interactions[0];
               // Match by query and timestamp (within 5 seconds)
               const timeDiff = Math.abs(
                 new Date(latestInteraction.timestamp).getTime() - Date.now()
               );
-              if (
-                latestInteraction.query === userMessage &&
-                timeDiff < 5000
-              ) {
+              if (latestInteraction.query === userMessage && timeDiff < 5000) {
                 setChatHistory((prev) => {
                   const updated = [...prev];
                   if (updated.length > 0) {
-                    updated[updated.length - 1].interactionId = latestInteraction.interaction_id;
+                    updated[updated.length - 1].interactionId =
+                      latestInteraction.interaction_id;
                   }
                   return updated;
                 });
@@ -1829,15 +1837,18 @@ export default function HomePage() {
             </div>
 
             {/* Topic Progress Card - APRAG (only for students when enabled) */}
-            {apragEnabled && userRole === "student" && selectedSessionId && user?.username && (
-              <div className="mb-4">
-                <TopicProgressCard
-                  userId={user.username}
-                  sessionId={selectedSessionId}
-                  apragEnabled={apragEnabled}
-                />
-              </div>
-            )}
+            {apragEnabled &&
+              userRole === "student" &&
+              selectedSessionId &&
+              user?.username && (
+                <div className="mb-4">
+                  <TopicProgressCard
+                    userId={user.username}
+                    sessionId={selectedSessionId}
+                    apragEnabled={apragEnabled}
+                  />
+                </div>
+              )}
 
             {/* Clean Chat Interface */}
             <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
@@ -2301,9 +2312,13 @@ export default function HomePage() {
           <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3 flex items-start gap-2">
             <span className="text-lg">💡</span>
             <div className="flex-1">
-              <span className="text-sm font-medium text-blue-800 dark:text-blue-200">Nasıl Çalışır? </span>
+              <span className="text-sm font-medium text-blue-800 dark:text-blue-200">
+                Nasıl Çalışır?{" "}
+              </span>
               <span className="text-sm text-blue-700 dark:text-blue-300">
-                Ders oturumları oluşturarak farklı konuları organize edebilirsiniz. Her oturuma özel belgeler yükleyip, öğrencilerinizin o konuda sorular sormasını sağlayabilirsiniz.
+                Ders oturumları oluşturarak farklı konuları organize
+                edebilirsiniz. Her oturuma özel belgeler yükleyip,
+                öğrencilerinizin o konuda sorular sormasını sağlayabilirsiniz.
               </span>
             </div>
           </div>
@@ -2914,6 +2929,9 @@ export default function HomePage() {
                       disabled={modelsLoading}
                     >
                       <option value="groq">🌐 Groq (Cloud - Hızlı)</option>
+                      <option value="openrouter">
+                        🚀 OpenRouter (Cloud - Güçlü)
+                      </option>
                       <option value="huggingface">
                         🤗 HuggingFace (Ücretsiz)
                       </option>
@@ -3216,20 +3234,23 @@ export default function HomePage() {
               {isChatOpen && (
                 <div className="p-8">
                   {/* Recommendation Panel - Only for Students and when APRAG is enabled */}
-                  {apragEnabled && selectedSessionId && user?.username && userRole === "student" && (
-                    <div className="mb-6">
-                      <RecommendationPanel
-                        userId={user.username}
-                        sessionId={selectedSessionId}
-                        onQuestionClick={(question) => {
-                          setQuery(question);
-                          // Auto-submit if desired
-                          // handleQuery(new Event('submit') as any);
-                        }}
-                      />
-                    </div>
-                  )}
-                  
+                  {apragEnabled &&
+                    selectedSessionId &&
+                    user?.username &&
+                    userRole === "student" && (
+                      <div className="mb-6">
+                        <RecommendationPanel
+                          userId={user.username}
+                          sessionId={selectedSessionId}
+                          onQuestionClick={(question) => {
+                            setQuery(question);
+                            // Auto-submit if desired
+                            // handleQuery(new Event('submit') as any);
+                          }}
+                        />
+                      </div>
+                    )}
+
                   {/* Query Input - Moved to top */}
                   <form
                     onSubmit={handleQuery}
@@ -3879,26 +3900,38 @@ export default function HomePage() {
                               })()}
 
                               {/* Feedback Button - APRAG */}
-                              {chat.interactionId && chat.bot !== "..." && !chat.bot.startsWith("Hata:") && (
-                                <div className="mt-4 pt-4 border-t border-gray-200">
-                                  <button
-                                    onClick={() => {
-                                      setSelectedInteractionForFeedback({
-                                        interactionId: chat.interactionId!,
-                                        query: chat.user,
-                                        answer: chat.bot,
-                                      });
-                                      setFeedbackModalOpen(true);
-                                    }}
-                                    className="w-full px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg hover:from-green-600 hover:to-emerald-700 transition-all duration-200 flex items-center justify-center gap-2 font-medium shadow-sm hover:shadow-md"
-                                  >
-                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-                                    </svg>
-                                    <span>Geri Bildirim Ver</span>
-                                  </button>
-                                </div>
-                              )}
+                              {chat.interactionId &&
+                                chat.bot !== "..." &&
+                                !chat.bot.startsWith("Hata:") && (
+                                  <div className="mt-4 pt-4 border-t border-gray-200">
+                                    <button
+                                      onClick={() => {
+                                        setSelectedInteractionForFeedback({
+                                          interactionId: chat.interactionId!,
+                                          query: chat.user,
+                                          answer: chat.bot,
+                                        });
+                                        setFeedbackModalOpen(true);
+                                      }}
+                                      className="w-full px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg hover:from-green-600 hover:to-emerald-700 transition-all duration-200 flex items-center justify-center gap-2 font-medium shadow-sm hover:shadow-md"
+                                    >
+                                      <svg
+                                        className="w-5 h-5"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                      >
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth="2"
+                                          d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"
+                                        />
+                                      </svg>
+                                      <span>Geri Bildirim Ver</span>
+                                    </button>
+                                  </div>
+                                )}
                             </div>
                           </div>
                         </div>
@@ -4562,9 +4595,13 @@ export default function HomePage() {
           onSubmit={async (feedback: FeedbackData) => {
             try {
               // Get user info
-              const userId = user?.id?.toString() || user?.username || "anonymous";
-              const sessionId = selectedSessionId || localStorage.getItem("currentSessionId") || "";
-              
+              const userId =
+                user?.id?.toString() || user?.username || "anonymous";
+              const sessionId =
+                selectedSessionId ||
+                localStorage.getItem("currentSessionId") ||
+                "";
+
               if (!sessionId) {
                 throw new Error("Session ID bulunamadı");
               }
