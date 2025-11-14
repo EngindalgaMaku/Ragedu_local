@@ -45,8 +45,8 @@ from src.utils.cloud_storage_manager import cloud_storage_manager
 app = FastAPI(title="RAG3 API Gateway", version="1.0.0",
               description="Pure API Gateway - Routes requests to microservices")
 
-# SIMPLE AND GUARANTEED CORS configuration for server deployment
-logger.info("[API GATEWAY] Setting up CORS with guaranteed external IP support")
+# CREDENTIALS-COMPATIBLE CORS configuration (no wildcard allowed with credentials)
+logger.info("[API GATEWAY] Setting up CORS with credentials support (no wildcard)")
 
 origins = [
     # Local development
@@ -68,13 +68,10 @@ origins = [
     "https://46.62.254.131:3000",
     "https://46.62.254.131:8000",
     "https://46.62.254.131:8006",
-    "https://46.62.254.131:8007",
-    
-    # Allow all for testing (can be removed in production)
-    "*"
+    "https://46.62.254.131:8007"
 ]
 
-logger.info(f"[API GATEWAY CORS] Configured origins: {origins}")
+logger.info(f"[API GATEWAY CORS] Credentials-compatible origins: {origins}")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
