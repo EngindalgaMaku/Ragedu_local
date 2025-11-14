@@ -763,8 +763,14 @@ async def reprocess_session_documents(session_id: str, request: Request):
         # Update session metadata if successful
         if result.get("success"):
             chunks_processed = result.get("chunks_processed", 0)
+            # For reprocessing, document_count stays the same (we're just re-embedding existing documents)
+            # Get current session metadata to preserve document_count
+            current_metadata = professional_session_manager.get_session_metadata(session_id)
+            current_document_count = current_metadata.document_count if current_metadata else 0
+            
             professional_session_manager.update_session_counts(
                 session_id=session_id,
+                document_count=current_document_count,
                 total_chunks=chunks_processed
             )
             
