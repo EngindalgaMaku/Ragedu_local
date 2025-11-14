@@ -25,7 +25,7 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
   const [success, setSuccess] = useState<string | null>(null);
   const [editingTopic, setEditingTopic] = useState<Topic | null>(null);
   const [topicPage, setTopicPage] = useState(1);
-  const TOPICS_PER_PAGE = 10;
+  const TOPICS_PER_PAGE = 20; // Increased from 10 to 20 to show more topics
 
   // Fetch topics
   const fetchTopics = async () => {
@@ -34,6 +34,9 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
       setError(null);
       const response = await getSessionTopics(sessionId);
       if (response.success) {
+        console.log(
+          `[TopicManagement] Fetched ${response.topics.length} topics for session ${sessionId}`
+        );
         setTopics(response.topics);
       }
     } catch (e: any) {
@@ -61,7 +64,9 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
       const response = await extractTopics(request);
       if (response.success) {
         setSuccess(
-          `${response.total_topics} konu başarıyla çıkarıldı (${(response.extraction_time_ms / 1000).toFixed(1)}s)`
+          `${response.total_topics} konu başarıyla çıkarıldı (${(
+            response.extraction_time_ms / 1000
+          ).toFixed(1)}s)`
         );
         await fetchTopics();
       }
@@ -97,7 +102,9 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
   }
 
   // Get main topics (without parents) for pagination
-  const mainTopics = topics.filter((t) => !t.parent_topic_id).sort((a, b) => a.topic_order - b.topic_order);
+  const mainTopics = topics
+    .filter((t) => !t.parent_topic_id)
+    .sort((a, b) => a.topic_order - b.topic_order);
   const totalPages = Math.ceil(mainTopics.length / TOPICS_PER_PAGE);
   const paginatedTopics = mainTopics.slice(
     (topicPage - 1) * TOPICS_PER_PAGE,
@@ -151,167 +158,171 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
       </div>
 
       <div>
+        {/* Messages */}
+        {error && (
+          <div className="mb-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-3">
+            <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
+          </div>
+        )}
 
-      {/* Messages */}
-      {error && (
-        <div className="mb-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-3">
-          <p className="text-sm text-red-800 dark:text-red-200">{error}</p>
-        </div>
-      )}
+        {success && (
+          <div className="mb-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md p-3">
+            <p className="text-sm text-green-800 dark:text-green-200">
+              {success}
+            </p>
+          </div>
+        )}
 
-      {success && (
-        <div className="mb-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md p-3">
-          <p className="text-sm text-green-800 dark:text-green-200">{success}</p>
-        </div>
-      )}
-
-      {/* Topics List */}
-      {loading ? (
-        <div className="text-center py-12">
-          <div className="inline-block animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent mb-3"></div>
-          <p className="text-sm text-muted-foreground">
-            Yükleniyor...
-          </p>
-        </div>
-      ) : topics.length === 0 ? (
-        <div className="text-center py-12">
-          <p className="text-sm text-muted-foreground mb-1">
-            Henüz konu çıkarılmamış
-          </p>
-          <p className="text-xs text-muted-foreground">
-            "Konuları Çıkar" butonuna tıklayarak başlayın
-          </p>
-        </div>
-      ) : (
-        <>
-          <div className="space-y-3">
-            {paginatedTopics.map((topic) => {
-              const subtopics = topics.filter(
-                (t) => t.parent_topic_id === topic.topic_id
-              );
-              return (
-                <div
-                  key={topic.topic_id}
-                  className="border border-border rounded-lg p-4 hover:bg-muted/30 transition-colors"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs font-medium text-muted-foreground bg-muted px-2 py-0.5 rounded">
-                          #{topic.topic_order}
-                        </span>
-                        <h3 className="text-base font-semibold text-foreground">
-                          {topic.topic_title}
-                        </h3>
-                        {topic.estimated_difficulty && (
-                          <span
-                            className={`text-xs px-2 py-0.5 rounded ${
-                              topic.estimated_difficulty === "beginner"
-                                ? "bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-300"
-                                : topic.estimated_difficulty === "intermediate"
-                                ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-300"
-                                : "bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-300"
-                            }`}
-                          >
-                            {topic.estimated_difficulty === "beginner"
-                              ? "Başlangıç"
-                              : topic.estimated_difficulty === "intermediate"
-                              ? "Orta"
-                              : "İleri"}
+        {/* Topics List */}
+        {loading ? (
+          <div className="text-center py-12">
+            <div className="inline-block animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent mb-3"></div>
+            <p className="text-sm text-muted-foreground">Yükleniyor...</p>
+          </div>
+        ) : topics.length === 0 ? (
+          <div className="text-center py-12">
+            <p className="text-sm text-muted-foreground mb-1">
+              Henüz konu çıkarılmamış
+            </p>
+            <p className="text-xs text-muted-foreground">
+              "Konuları Çıkar" butonuna tıklayarak başlayın
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="space-y-3">
+              {paginatedTopics.map((topic) => {
+                const subtopics = topics.filter(
+                  (t) => t.parent_topic_id === topic.topic_id
+                );
+                return (
+                  <div
+                    key={topic.topic_id}
+                    className="border border-border rounded-lg p-4 hover:bg-muted/30 transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-medium text-muted-foreground bg-muted px-2 py-0.5 rounded">
+                            #{topic.topic_order}
                           </span>
+                          <h3 className="text-base font-semibold text-foreground">
+                            {topic.topic_title}
+                          </h3>
+                          {topic.estimated_difficulty && (
+                            <span
+                              className={`text-xs px-2 py-0.5 rounded ${
+                                topic.estimated_difficulty === "beginner"
+                                  ? "bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-300"
+                                  : topic.estimated_difficulty ===
+                                    "intermediate"
+                                  ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-300"
+                                  : "bg-red-100 text-red-800 dark:bg-red-900/20 dark:text-red-300"
+                              }`}
+                            >
+                              {topic.estimated_difficulty === "beginner"
+                                ? "Başlangıç"
+                                : topic.estimated_difficulty === "intermediate"
+                                ? "Orta"
+                                : "İleri"}
+                            </span>
+                          )}
+                        </div>
+                        {topic.description && (
+                          <p className="text-sm text-muted-foreground mt-1.5">
+                            {topic.description}
+                          </p>
+                        )}
+                        {topic.keywords && topic.keywords.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {topic.keywords.map((keyword, idx) => (
+                              <span
+                                key={idx}
+                                className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded"
+                              >
+                                {keyword}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {subtopics.length > 0 && (
+                          <div className="mt-3 space-y-1.5">
+                            <p className="text-xs font-medium text-muted-foreground">
+                              Alt Konular
+                            </p>
+                            {subtopics
+                              .sort((a, b) => a.topic_order - b.topic_order)
+                              .map((subtopic) => (
+                                <div
+                                  key={subtopic.topic_id}
+                                  className="text-sm text-foreground border-l-2 border-border pl-3"
+                                >
+                                  • {subtopic.topic_title}
+                                </div>
+                              ))}
+                          </div>
                         )}
                       </div>
-                      {topic.description && (
-                        <p className="text-sm text-muted-foreground mt-1.5">
-                          {topic.description}
-                        </p>
-                      )}
-                      {topic.keywords && topic.keywords.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-2">
-                          {topic.keywords.map((keyword, idx) => (
-                            <span
-                              key={idx}
-                              className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded"
-                            >
-                              {keyword}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      {subtopics.length > 0 && (
-                        <div className="mt-3 space-y-1.5">
-                          <p className="text-xs font-medium text-muted-foreground">
-                            Alt Konular
-                          </p>
-                          {subtopics
-                            .sort((a, b) => a.topic_order - b.topic_order)
-                            .map((subtopic) => (
-                              <div
-                                key={subtopic.topic_id}
-                                className="text-sm text-foreground border-l-2 border-border pl-3"
-                              >
-                                • {subtopic.topic_title}
-                              </div>
-                            ))}
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => setEditingTopic(topic)}
-                      className="flex-shrink-0 text-muted-foreground hover:text-foreground transition-colors"
-                      title="Düzenle"
-                    >
-                      <svg
-                        className="w-4 h-4"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
+                      <button
+                        onClick={() => setEditingTopic(topic)}
+                        className="flex-shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                        title="Düzenle"
                       >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth="2"
-                          d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                        />
-                      </svg>
-                    </button>
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="2"
+                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+                          />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between mt-4 pt-4 border-t border-border">
-              <button
-                onClick={() => setTopicPage((p) => Math.max(1, p - 1))}
-                disabled={topicPage === 1}
-                className="py-1.5 px-3 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                Önceki
-              </button>
-              <span className="text-sm text-muted-foreground">
-                Sayfa {topicPage} / {totalPages}
-              </span>
-              <button
-                onClick={() => setTopicPage((p) => Math.min(totalPages, p + 1))}
-                disabled={topicPage >= totalPages}
-                className="py-1.5 px-3 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                Sonraki
-              </button>
+                );
+              })}
             </div>
-          )}
-        </>
-      )}
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between mt-4 pt-4 border-t border-border">
+                <button
+                  onClick={() => setTopicPage((p) => Math.max(1, p - 1))}
+                  disabled={topicPage === 1}
+                  className="py-1.5 px-3 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  Önceki
+                </button>
+                <span className="text-sm text-muted-foreground">
+                  Sayfa {topicPage} / {totalPages}
+                </span>
+                <button
+                  onClick={() =>
+                    setTopicPage((p) => Math.min(totalPages, p + 1))
+                  }
+                  disabled={topicPage >= totalPages}
+                  className="py-1.5 px-3 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  Sonraki
+                </button>
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {/* Edit Modal */}
       {editingTopic && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-card border border-border rounded-lg shadow-xl max-w-md w-full p-6">
-            <h3 className="text-lg font-semibold text-foreground mb-4">Konu Düzenle</h3>
+            <h3 className="text-lg font-semibold text-foreground mb-4">
+              Konu Düzenle
+            </h3>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -384,6 +395,3 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
 };
 
 export default TopicManagementPanel;
-
-
-
