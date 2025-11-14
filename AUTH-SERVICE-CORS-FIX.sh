@@ -38,5 +38,10 @@ curl -v -X OPTIONS "http://46.62.254.131:8006/admin/users/2/password" \
   2>&1 | grep -E "(HTTP|Access-Control|Origin)"
 
 echo
+echo "🔍 Checking service logs for CORS errors..."
+docker-compose logs --tail=20 auth-service | grep -i cors || echo "No CORS errors in logs"
+
+echo
 echo "✅ Auth Service CORS fix completed!"
 echo "🌐 Try the password change again from frontend"
+echo "   If still failing, check browser Network tab for exact error"

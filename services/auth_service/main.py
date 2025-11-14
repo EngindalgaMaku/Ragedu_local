@@ -78,8 +78,16 @@ class Config:
         if origin not in CORS_ORIGINS:
             CORS_ORIGINS.append(origin)
     
-    CORS_METHODS = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
-    CORS_HEADERS = ["*"]
+    CORS_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]
+    CORS_HEADERS = [
+        "Content-Type",
+        "Authorization",
+        "Accept",
+        "Origin",
+        "X-Requested-With",
+        "Access-Control-Request-Method",
+        "Access-Control-Request-Headers"
+    ]
     CORS_CREDENTIALS = os.getenv("CORS_CREDENTIALS", "true").lower() == "true"
     
     # Rate limiting configuration - Geliştirme için gevşetildi
@@ -248,6 +256,12 @@ app.add_middleware(
     allow_methods=config.CORS_METHODS,
     allow_headers=config.CORS_HEADERS,
 )
+
+# Add explicit OPTIONS handler for admin endpoints
+@app.options("/admin/{path:path}")
+async def options_handler():
+    """Handle CORS preflight requests for admin endpoints"""
+    return {"message": "OK"}
 
 # Security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
