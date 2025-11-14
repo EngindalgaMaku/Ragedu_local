@@ -79,11 +79,41 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS configuration
-cors_origins = os.getenv(
-    "CORS_ORIGINS",
-    "http://localhost:3000,http://localhost:8000,http://api-gateway:8000"
-).split(",")
+# CORS configuration - Enhanced with external IP support
+_cors_env = os.getenv("CORS_ORIGINS", "")
+if _cors_env and _cors_env.strip():
+    cors_origins = [origin.strip() for origin in _cors_env.split(",") if origin.strip()]
+else:
+    # Fallback CORS origins with external IP support for Docker deployment
+    logger.warning("CORS_ORIGINS environment variable not set, using fallback configuration")
+    cors_origins = [
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:3000",
+        "http://0.0.0.0:3000",
+        "http://host.docker.internal:3000",
+        "http://frontend:3000",
+        "http://api-gateway:8000",
+        "http://auth-service:8006",
+        "http://46.62.254.131:3000",  # External IP frontend
+        "http://46.62.254.131:8000",  # External IP API gateway
+        "http://46.62.254.131:8006",  # External IP auth service
+        "http://46.62.254.131:8007",  # External IP aprag service (self)
+        "*"  # Allow all as last resort
+    ]
+
+# Ensure external server IP origins are always included for Docker deployment
+external_origins = [
+    "http://46.62.254.131:3000",
+    "http://46.62.254.131:8000",
+    "http://46.62.254.131:8006",
+    "http://46.62.254.131:8007"
+]
+for origin in external_origins:
+    if origin not in cors_origins:
+        cors_origins.append(origin)
+
+logger.info(f"APRAG Service CORS Origins: {cors_origins}")
 
 app.add_middleware(
     CORSMiddleware,
