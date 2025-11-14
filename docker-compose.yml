@@ -36,6 +36,9 @@ services:
       - DATABASE_PATH=/app/data/rag_assistant.db
       # JWT configuration for API Gateway
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+      # CORS configuration - API Gateway needs CORS too!
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://46.62.254.131:3000,http://46.62.254.131:8000}
+      - CORS_CREDENTIALS=true
     volumes:
       - session_data:/app/sessions
       - markdown_data:/app/data/markdown
@@ -86,8 +89,8 @@ services:
       # Database configuration
       - DATABASE_PATH=/app/data/rag_assistant.db
       - APRAG_DB_PATH=/app/data/rag_assistant.db
-      # CORS configuration
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000}
+      # CORS configuration - Add external server IP for browser access
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://46.62.254.131:3000,http://46.62.254.131:8000}
       - CORS_CREDENTIALS=true
       # Feature Flags
       - APRAG_ENABLED=${APRAG_ENABLED:-true}
@@ -141,8 +144,8 @@ services:
       - REFRESH_TOKEN_EXPIRE_DAYS=7
       # Database configuration
       - DATABASE_PATH=/app/data/rag_assistant.db
-      # CORS configuration - Environment variable'dan alınır
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000}
+      # CORS configuration - Add external server IP for browser access
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://46.62.254.131:3000,http://46.62.254.131:8000}
       - CORS_CREDENTIALS=true
       # Rate limiting - Geliştirme için gevşetildi
       - RATE_LIMIT_RPM=300
