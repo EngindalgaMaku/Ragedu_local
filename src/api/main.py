@@ -75,16 +75,34 @@ else:
         if _fallback_cors_env:
             CORS_ORIGINS = [o.strip() for o in _fallback_cors_env.split(",") if o.strip()]
         else:
-            # Default fallback origins - environment variable'lardan port'lar alınır
+            # Default fallback origins - environment variable'lardan port'lar alınır + External IP support
             _frontend_port = os.getenv("FRONTEND_PORT", "3000")
             _api_gateway_port = os.getenv("API_GATEWAY_PORT", os.getenv("PORT", "8000"))
+            
+            # Get external IP from environment for server deployment
+            _external_ip = os.getenv("NEXT_PUBLIC_API_URL", "")
+            if _external_ip and _external_ip.startswith("http"):
+                _external_host = _external_ip.split("://")[1].split(":")[0]
+            else:
+                _external_host = None
+            
             CORS_ORIGINS = [
                 f"http://localhost:{_frontend_port}",
                 f"http://127.0.0.1:{_frontend_port}",
                 f"http://0.0.0.0:{_frontend_port}",
                 f"http://frontend:{_frontend_port}",
-                f"http://api-gateway:{_api_gateway_port}"
+                f"http://api-gateway:{_api_gateway_port}",
+                # Add external IP support for server deployment
             ]
+            
+            # Add external IP origins if available
+            if _external_host:
+                CORS_ORIGINS.extend([
+                    f"http://{_external_host}:{_frontend_port}",
+                    f"http://{_external_host}:{_api_gateway_port}",
+                    f"https://{_external_host}:{_frontend_port}",
+                    f"https://{_external_host}:{_api_gateway_port}",
+                ])
     
     origins = CORS_ORIGINS
 app.add_middleware(
