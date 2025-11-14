@@ -1493,7 +1493,7 @@ async def get_session_chunks(session_id: str):
                 for key in ["source_files", "source_file", "filename", "document_name", "file_name"]:
                     if metadata.get(key):
                         source_value = metadata.get(key)
-                        logger.info(f"🔍 METADATA FIX: Found source info in key '{key}': {source_value}")
+                        logger.debug(f"🔍 METADATA FIX: Found source info in key '{key}': {source_value}")
                         break
                 
                 if source_value:
@@ -1504,16 +1504,16 @@ async def get_session_chunks(session_id: str):
                             source_files = [str(item) for item in parsed_value if item]
                         else:
                             source_files = [str(parsed_value)]
-                        logger.info(f"🔍 METADATA FIX: Parsed JSON source_files: {source_files}")
+                        logger.debug(f"🔍 METADATA FIX: Parsed JSON source_files: {source_files}")
                     except (json.JSONDecodeError, TypeError):
                         # If it's not JSON, treat as string
                         source_files = [str(source_value)]
-                        logger.info(f"🔍 METADATA FIX: Using string source_files: {source_files}")
+                        logger.debug(f"🔍 METADATA FIX: Using string source_files: {source_files}")
                 else:
                     logger.warning(f"🔍 METADATA FIX: No source file information found in metadata keys: {list(metadata.keys())}")
                 
                 document_name = source_files[0] if source_files and source_files[0] != "Unknown" else "Unknown"
-                logger.info(f"🔍 METADATA FIX: Final document_name: '{document_name}'")
+                logger.debug(f"🔍 METADATA FIX: Final document_name: '{document_name}'")
                 
                 chunks.append({
                     "document_name": document_name,
