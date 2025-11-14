@@ -72,49 +72,88 @@ export function getServiceUrl(
 }
 
 // Sık kullanılan URL'ler - Environment değişkenlerinden override edilebilir
-// Docker'da çalışırken localhost kullan, Cloud Run'da environment variable'dan al
-const isDockerEnv =
-  process.env.DOCKER_ENV === "true" || typeof window === "undefined";
+// Environment detection with proper Client/Server side handling
+const isServerSide = typeof window === "undefined";
+const isDockerServerEnv = process.env.DOCKER_ENV === "true" && isServerSide;
+const isBrowserEnv = typeof window !== "undefined";
 
-// Get the actual host from environment variables
+// Get the actual host with priority: Browser External IP > Docker Service Names > Localhost
 const getActualHost = () => {
-  // First check if we have a full URL in environment
-  if (
-    process.env.NEXT_PUBLIC_API_URL &&
-    process.env.NEXT_PUBLIC_API_URL.startsWith("http")
-  ) {
-    return new URL(process.env.NEXT_PUBLIC_API_URL).hostname;
+  // BROWSER ENVIRONMENT: Always use external IP/hostname for client-side API calls
+  if (isBrowserEnv) {
+    console.log(
+      "🌐 Browser environment detected, using external IP for API calls"
+    );
+
+    // Use external IP from environment variables
+    if (
+      process.env.NEXT_PUBLIC_API_URL &&
+      process.env.NEXT_PUBLIC_API_URL.startsWith("http")
+    ) {
+      const hostname = new URL(process.env.NEXT_PUBLIC_API_URL).hostname;
+      console.log(
+        `📡 Using external hostname from NEXT_PUBLIC_API_URL: ${hostname}`
+      );
+      return hostname;
+    }
+
+    if (process.env.NEXT_PUBLIC_API_HOST) {
+      console.log(
+        `📡 Using external hostname from NEXT_PUBLIC_API_HOST: ${process.env.NEXT_PUBLIC_API_HOST}`
+      );
+      return process.env.NEXT_PUBLIC_API_HOST;
+    }
+
+    // Fallback to localhost for development browser testing
+    console.warn(
+      "⚠️ No external host configured, falling back to localhost for browser"
+    );
+    return "localhost";
   }
-  // Then check for specific host override
-  if (process.env.NEXT_PUBLIC_API_HOST) {
-    return process.env.NEXT_PUBLIC_API_HOST;
+
+  // SERVER-SIDE DOCKER ENVIRONMENT: Use Docker service names for internal communication
+  if (isDockerServerEnv) {
+    console.log(
+      "🐳 Docker server environment detected, using Docker service names"
+    );
+    if (process.env.API_GATEWAY_HOST) {
+      return process.env.API_GATEWAY_HOST;
+    }
+    return "api-gateway";
   }
-  // Use the API Gateway host from Docker environment
-  if (process.env.API_GATEWAY_HOST) {
-    return process.env.API_GATEWAY_HOST;
-  }
-  // Fallback to localhost only if no environment is set
-  return "localhost";
+
+  // SERVER-SIDE NON-DOCKER: Use localhost or configured host
+  console.log("🖥️ Non-Docker server environment detected");
+  return process.env.API_GATEWAY_HOST || "localhost";
 };
 
 const actualHost = getActualHost();
 
 export const URLS = {
-  API_GATEWAY:
-    process.env.NEXT_PUBLIC_API_URL ||
-    getServiceUrl("API_GATEWAY", actualHost, false),
-  AUTH_SERVICE:
-    process.env.NEXT_PUBLIC_AUTH_URL ||
-    getServiceUrl("AUTH_SERVICE", actualHost, false),
-  FRONTEND:
-    process.env.NEXT_PUBLIC_FRONTEND_URL ||
-    getServiceUrl("FRONTEND", actualHost, false),
+  API_GATEWAY: isBrowserEnv
+    ? process.env.NEXT_PUBLIC_API_URL ||
+      getServiceUrl("API_GATEWAY", actualHost, false) // Browser: Always use external IP
+    : isDockerServerEnv
+    ? getServiceUrl("API_GATEWAY", actualHost, true) // Server Docker: Service names
+    : getServiceUrl("API_GATEWAY", actualHost, false), // Server Non-Docker: localhost
+  AUTH_SERVICE: isBrowserEnv
+    ? process.env.NEXT_PUBLIC_AUTH_URL ||
+      getServiceUrl("AUTH_SERVICE", actualHost, false) // Browser: Always use external IP
+    : isDockerServerEnv
+    ? getServiceUrl("AUTH_SERVICE", actualHost, true) // Server Docker: Service names
+    : getServiceUrl("AUTH_SERVICE", actualHost, false), // Server Non-Docker: localhost
+  FRONTEND: isBrowserEnv
+    ? process.env.NEXT_PUBLIC_FRONTEND_URL ||
+      getServiceUrl("FRONTEND", actualHost, false) // Browser: Always use external IP
+    : isDockerServerEnv
+    ? getServiceUrl("FRONTEND", actualHost, true) // Server Docker: Service names
+    : getServiceUrl("FRONTEND", actualHost, false), // Server Non-Docker: localhost
 } as const;
 
-// Docker için URL'ler
+// Docker için URL'ler (Backward compatibility - now handled in main URLS)
 export const DOCKER_URLS = {
-  API_GATEWAY: getServiceUrl("API_GATEWAY", actualHost, true),
-  AUTH_SERVICE: getServiceUrl("AUTH_SERVICE", actualHost, true),
+  API_GATEWAY: getServiceUrl("API_GATEWAY", "api-gateway", true),
+  AUTH_SERVICE: getServiceUrl("AUTH_SERVICE", "auth-service", true),
 } as const;
 
 // CORS için allowed origins - Environment variable'dan override edilebilir
@@ -127,12 +166,35 @@ export const CORS_ORIGINS = [
   URLS.API_GATEWAY,
   URLS.AUTH_SERVICE,
   URLS.FRONTEND,
-  `http://127.0.0.1:${PORTS.FRONTEND}`,
-  `http://host.docker.internal:${PORTS.FRONTEND}`,
-  `http://host.docker.internal:${PORTS.API_GATEWAY}`,
-  DOCKER_URLS.API_GATEWAY,
+  // Docker service names (for internal server communication)
+  `http://api-gateway:${PORTS.API_GATEWAY}`,
+  `http://auth-service:${PORTS.AUTH_SERVICE}`,
   `http://frontend:${PORTS.FRONTEND}`,
+  // External access (for browser requests to server)
+  ...(process.env.NEXT_PUBLIC_API_URL
+    ? [
+        process.env.NEXT_PUBLIC_API_URL,
+        process.env.NEXT_PUBLIC_API_URL.replace(
+          `:${PORTS.API_GATEWAY}`,
+          `:${PORTS.FRONTEND}`
+        ),
+      ]
+    : []),
+  ...(process.env.NEXT_PUBLIC_AUTH_URL
+    ? [process.env.NEXT_PUBLIC_AUTH_URL]
+    : []),
+  // Local development only (not for production server)
+  ...(process.env.NODE_ENV === "development"
+    ? [
+        `http://127.0.0.1:${PORTS.FRONTEND}`,
+        `http://localhost:${PORTS.FRONTEND}`,
+        `http://host.docker.internal:${PORTS.FRONTEND}`,
+        `http://host.docker.internal:${PORTS.API_GATEWAY}`,
+      ]
+    : []),
+  // Backward compatibility
   DOCKER_URLS.API_GATEWAY,
+  DOCKER_URLS.AUTH_SERVICE,
 ] as const;
 
 // Health check URL'leri
@@ -143,14 +205,26 @@ export const HEALTH_URLS = {
 } as const;
 
 // Debug için configuration'ı logla
-if (process.env.NODE_ENV === "development") {
-  console.log("🔧 Frontend Port Configuration:", {
+console.log("🔧 Frontend Port Configuration DEBUG:", {
+  "Environment Variables": {
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+    NEXT_PUBLIC_AUTH_URL: process.env.NEXT_PUBLIC_AUTH_URL,
+    NEXT_PUBLIC_API_HOST: process.env.NEXT_PUBLIC_API_HOST,
+    API_GATEWAY_HOST: process.env.API_GATEWAY_HOST,
+    DOCKER_ENV: process.env.DOCKER_ENV,
+    NODE_ENV: process.env.NODE_ENV,
+  },
+  "Computed Values": {
+    actualHost: actualHost,
+    isBrowserEnv: isBrowserEnv,
+    isServerSide: isServerSide,
+    isDockerServerEnv: isDockerServerEnv,
     "API Gateway": URLS.API_GATEWAY,
     "Auth Service": URLS.AUTH_SERVICE,
     Frontend: URLS.FRONTEND,
-    "CORS Origins": CORS_ORIGINS.slice(0, 3).join(", ") + "...",
-  });
-}
+  },
+  "CORS Origins": CORS_ORIGINS.slice(0, 3).join(", ") + "...",
+});
 
 // CommonJS export for next.config.js compatibility - Removed to fix ES Modules issue
 // module.exports = {
