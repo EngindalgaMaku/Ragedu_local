@@ -20,6 +20,22 @@ colorlog>=6.7.0
 # Cloud storage for persistent data
 google-cloud-storage>=2.10.0
 
-# Basic dependencies only - no heavy ML libraries
-# ChromaDB, FAISS, sentence-transformers moved to microservices
+# Advanced Semantic Chunking Phase 1 Dependencies
+sentence-transformers>=2.2.2  # For embedding-based semantic analysis
+numpy>=1.21.0                 # For numerical computations and similarity calculations
+scikit-learn>=1.0.0          # For clustering and similarity metrics
+nltk>=3.8.1                  # For advanced text processing and tokenization
+markdown>=3.4.0              # For AST-based markdown parsing
+python-markdown-math>=0.8    # For mathematical formula preservation
+beautifulsoup4>=4.11.0       # For HTML/XML parsing support
+lxml>=4.9.0                  # For XML processing in AST parser
+
+# Performance and caching
+memory-profiler>=0.61.0      # For memory optimization monitoring
+cachetools>=5.3.0            # For intelligent caching mechanisms
+
+# Enhanced logging and debugging
+psutil>=5.9.0                # For system resource monitoring
+
+# Basic dependencies only - ChromaDB, FAISS moved to microservices
 # CRAG evaluation moved to Document Processing Service

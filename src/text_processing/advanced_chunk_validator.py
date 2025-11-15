@@ -1,27 +1,57 @@
 """
-Advanced Chunk Quality Validation System
+Advanced Chunk Quality Validation System with Embedding-based Analysis - Phase 1
 
 Bu modül semantic chunking kalitesini gerçekçi metriklerle değerlendiren gelişmiş
-bir sistem sağlar. Basit karakter/cümle sayma yerine gerçek anlamsal analiz yapar.
+bir sistem sağlar. Embedding-based analysis ve Turkish language optimization ile
+güçlendirilmiştir.
 
-Yeni Metrikler:
-- Semantic Coherence Score (40%): Konu tutarlılığı, semantic similarity
-- Context Preservation Score (25%): Bağlam korunması, referans çözümü
+Enhanced Metrikler:
+- Semantic Coherence Score (40%): Embedding-based konu tutarlılığı
+- Context Preservation Score (25%): Cross-chunk relationship analysis
 - Information Completeness (20%): Bilgi bütünlüğü, ana fikir tamamlanması
 - Readability & Flow (15%): Doğal okuma akışı, cümle geçişleri
+
+Phase 1 Features:
+- Embedding-based coherence measurement
+- Topic consistency with semantic vectors
+- Cross-chunk relationship analysis
+- Turkish-optimized validation rules
+- Performance caching and optimization
 """
 
 import re
 import numpy as np
+import hashlib
 from typing import List, Dict, Union, Optional, Tuple
 from dataclasses import dataclass
 from collections import Counter
 import math
 
+# Enhanced dependencies for Phase 1
+try:
+    from sentence_transformers import SentenceTransformer
+    from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
+    from sklearn.cluster import KMeans
+    from sklearn.decomposition import PCA
+    import nltk
+    from cachetools import LRUCache
+    import psutil
+    EMBEDDING_SUPPORT = True
+    
+    # Ensure NLTK data is available
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt', quiet=True)
+        
+except ImportError as e:
+    EMBEDDING_SUPPORT = False
+    print(f"Warning: Advanced validation features not available: {e}")
+
 
 @dataclass
 class ChunkQualityScore:
-    """Gelişmiş chunk kalite skoru."""
+    """Enhanced chunk kalite skoru with embedding-based metrics."""
     semantic_coherence: float
     context_preservation: float
     information_completeness: float
@@ -29,75 +59,202 @@ class ChunkQualityScore:
     overall_score: float
     is_valid: bool
     detailed_analysis: Dict[str, Union[str, float, List[str]]]
+    
+    # Enhanced Phase 1 metrics
+    embedding_coherence: Optional[float] = None
+    topic_consistency: Optional[float] = None
+    cross_chunk_similarity: Optional[float] = None
+    semantic_density: Optional[float] = None
+    language_consistency: Optional[str] = None
+    
+    
+@dataclass
+class CrossChunkAnalysis:
+    """Cross-chunk relationship analysis results."""
+    similarity_with_previous: Optional[float] = None
+    similarity_with_next: Optional[float] = None
+    topic_drift_score: float = 0.0
+    boundary_strength: float = 0.0
+    relationship_type: str = "unknown"  # "continuation", "transition", "new_topic"
 
 
 class AdvancedChunkValidator:
-    """Gelişmiş semantic chunk kalite değerlendirici."""
+    """Enhanced semantic chunk kalite değerlendirici with embedding analysis."""
     
-    def __init__(self):
+    def __init__(self, embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"):
         # Türkçe dil için özel pattern'lar
         self.sentence_endings = re.compile(r'[.!?]+(?:\s+|$)')
         self.reference_words = re.compile(r'\b(bu|şu|o|bunlar|şunlar|onlar|bunu|şunu|onu|bunları|şunları|onları|burada|şurada|orada|böyle|şöyle|öyle)\b', re.IGNORECASE)
         self.topic_transition_words = re.compile(r'\b(ancak|fakat|lakin|ama|halbuki|oysa|bununla birlikte|öte yandan|diğer taraftan|ayrıca|dahası|üstelik|sonuç olarak|bu nedenle|bu yüzden)\b', re.IGNORECASE)
         self.incomplete_indicators = re.compile(r'\b(örneğin|yani|şöyle ki|gibi|vs\.|vb\.|v\.s\.|devam|sürdür|ilerle)\s*$', re.IGNORECASE)
         
-        # Stopwords for Turkish
+        # Enhanced Turkish patterns
+        self.turkish_sentence_starters = re.compile(r'^(Bu|Şu|O|Bunlar|Şunlar|Onlar|Böyle|Şöyle|Öyle|Ancak|Fakat|Ama|Lakin|Ayrıca|Dahası|Sonuç olarak|Bu nedenle)\s+', re.IGNORECASE)
+        self.coherence_indicators = re.compile(r'\b(örneğin|mesela|yani|şöyle ki|böylece|dolayısıyla|bu şekilde|bu durumda)\b', re.IGNORECASE)
+        
+        # Stopwords for Turkish and English
         self.turkish_stopwords = {
             'bir', 'bu', 'da', 'de', 'den', 'dır', 've', 'veya', 'için', 'ile', 'ise',
             'olan', 'olarak', 'her', 'daha', 'en', 'çok', 'az', 'var', 'yok', 'gibi',
             'kadar', 'sonra', 'önce', 'şimdi', 'burada', 'orada', 'nerede', 'nasıl'
         }
         
-        # Quality thresholds
+        self.english_stopwords = {
+            'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
+            'by', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has'
+        }
+        
+        # Enhanced quality thresholds
         self.min_coherence_score = 0.6
         self.min_context_score = 0.5
         self.min_completeness_score = 0.6
         self.min_readability_score = 0.5
         self.overall_threshold = 0.65
+        
+        # New embedding-based thresholds
+        self.min_embedding_coherence = 0.7
+        self.min_topic_consistency = 0.65
+        self.max_topic_drift = 0.4
+        
+        # Initialize embedding model and cache
+        self.embedding_model = None
+        self.embedding_cache = LRUCache(maxsize=1000)
+        self.validation_cache = LRUCache(maxsize=500)
+        
+        if EMBEDDING_SUPPORT:
+            try:
+                self._initialize_embedding_model(embedding_model)
+            except Exception as e:
+                print(f"Warning: Failed to initialize embedding model for validation: {e}")
+                EMBEDDING_SUPPORT = False
+        
+        if not EMBEDDING_SUPPORT:
+            print("Warning: Falling back to pattern-based validation without embeddings")
+            
+    def _initialize_embedding_model(self, model_name: str):
+        """Initialize the sentence transformer model for validation."""
+        try:
+            self.embedding_model = SentenceTransformer(model_name)
+            print(f"Validation embedding model loaded: {model_name}")
+        except Exception as e:
+            print(f"Failed to load validation embedding model {model_name}: {e}")
+            raise
 
-    def validate_chunk_quality(self, chunk: str, previous_chunk: str = None, next_chunk: str = None) -> ChunkQualityScore:
-        """Chunk kalitesini gelişmiş metriklerle değerlendirin."""
+    def validate_chunk_quality(
+        self,
+        chunk: str,
+        previous_chunk: str = None,
+        next_chunk: str = None,
+        use_embedding_analysis: bool = True,
+        chunk_embedding: Optional[np.ndarray] = None
+    ) -> ChunkQualityScore:
+        """Enhanced chunk kalitesini embedding-based metriklerle değerlendirin."""
         
         if not chunk.strip():
             return self._create_invalid_score("Boş chunk")
         
-        # Her bir metriği hesapla
+        # Cache key for performance
+        cache_key = self._generate_cache_key(chunk, previous_chunk, next_chunk, use_embedding_analysis)
+        if cache_key in self.validation_cache:
+            return self.validation_cache[cache_key]
+        
+        # Traditional metrics
         coherence_score = self._calculate_semantic_coherence(chunk)
         context_score = self._calculate_context_preservation(chunk, previous_chunk, next_chunk)
         completeness_score = self._calculate_information_completeness(chunk)
         readability_score = self._calculate_readability_flow(chunk)
         
-        # Ağırlıklı genel skor
-        overall_score = (
-            coherence_score * 0.40 +
-            context_score * 0.25 +
-            completeness_score * 0.20 +
-            readability_score * 0.15
+        # Enhanced embedding-based metrics
+        embedding_coherence = None
+        topic_consistency = None
+        cross_chunk_similarity = None
+        semantic_density = None
+        language_consistency = None
+        cross_chunk_analysis = None
+        
+        if use_embedding_analysis and EMBEDDING_SUPPORT and self.embedding_model:
+            try:
+                # Get or compute chunk embedding
+                if chunk_embedding is None:
+                    chunk_embedding = self._get_chunk_embedding(chunk)
+                
+                # Embedding-based coherence
+                embedding_coherence = self._calculate_embedding_coherence(chunk, chunk_embedding)
+                
+                # Topic consistency within chunk
+                topic_consistency = self._calculate_topic_consistency(chunk, chunk_embedding)
+                
+                # Cross-chunk analysis
+                if previous_chunk or next_chunk:
+                    cross_chunk_analysis = self._analyze_cross_chunk_relationships(
+                        chunk, previous_chunk, next_chunk, chunk_embedding
+                    )
+                    cross_chunk_similarity = (
+                        (cross_chunk_analysis.similarity_with_previous or 0) +
+                        (cross_chunk_analysis.similarity_with_next or 0)
+                    ) / 2 if (cross_chunk_analysis.similarity_with_previous or cross_chunk_analysis.similarity_with_next) else None
+                
+                # Semantic density
+                semantic_density = self._calculate_semantic_density(chunk, chunk_embedding)
+                
+                # Language consistency
+                language_consistency = self._detect_chunk_language(chunk)
+                
+                # Adjust traditional scores based on embedding analysis
+                if embedding_coherence is not None:
+                    coherence_score = (coherence_score * 0.6 + embedding_coherence * 0.4)
+                
+            except Exception as e:
+                print(f"Warning: Embedding analysis failed: {e}")
+        
+        # Enhanced weighted overall score
+        if embedding_coherence is not None:
+            overall_score = (
+                coherence_score * 0.35 +
+                context_score * 0.20 +
+                completeness_score * 0.20 +
+                readability_score * 0.15 +
+                (embedding_coherence or 0) * 0.10
+            )
+        else:
+            overall_score = (
+                coherence_score * 0.40 +
+                context_score * 0.25 +
+                completeness_score * 0.20 +
+                readability_score * 0.15
+            )
+        
+        # Enhanced validity check
+        is_valid = self._determine_chunk_validity(
+            coherence_score, context_score, completeness_score, readability_score,
+            embedding_coherence, topic_consistency, cross_chunk_analysis
         )
         
-        # Geçerlilik kontrolü
-        is_valid = (
-            overall_score >= self.overall_threshold and
-            coherence_score >= self.min_coherence_score and
-            context_score >= self.min_context_score and
-            completeness_score >= self.min_completeness_score and
-            readability_score >= self.min_readability_score
+        # Enhanced detailed analysis
+        detailed_analysis = self._create_enhanced_detailed_analysis(
+            chunk, coherence_score, context_score, completeness_score, readability_score,
+            embedding_coherence, topic_consistency, cross_chunk_similarity, semantic_density,
+            language_consistency, cross_chunk_analysis
         )
         
-        # Detaylı analiz
-        detailed_analysis = self._create_detailed_analysis(
-            chunk, coherence_score, context_score, completeness_score, readability_score
-        )
-        
-        return ChunkQualityScore(
+        result = ChunkQualityScore(
             semantic_coherence=coherence_score,
             context_preservation=context_score,
             information_completeness=completeness_score,
             readability_flow=readability_score,
             overall_score=overall_score,
             is_valid=is_valid,
-            detailed_analysis=detailed_analysis
+            detailed_analysis=detailed_analysis,
+            embedding_coherence=embedding_coherence,
+            topic_consistency=topic_consistency,
+            cross_chunk_similarity=cross_chunk_similarity,
+            semantic_density=semantic_density,
+            language_consistency=language_consistency
         )
+        
+        # Cache result
+        self.validation_cache[cache_key] = result
+        return result
 
     def _calculate_semantic_coherence(self, chunk: str) -> float:
         """
@@ -790,3 +947,339 @@ class AdvancedChunkValidator:
             is_valid=False,
             detailed_analysis={'reason': reason, 'quality_issues': [reason]}
         )
+    
+    # Efficient Embedding-based Helper Methods
+    
+    def _generate_cache_key(
+        self,
+        chunk: str,
+        previous_chunk: Optional[str],
+        next_chunk: Optional[str],
+        use_embedding_analysis: bool
+    ) -> str:
+        """Generate cache key for validation results."""
+        key_components = [
+            hashlib.md5(chunk.encode()).hexdigest()[:8],
+            hashlib.md5((previous_chunk or "").encode()).hexdigest()[:8],
+            hashlib.md5((next_chunk or "").encode()).hexdigest()[:8],
+            str(use_embedding_analysis)
+        ]
+        return "|".join(key_components)
+    
+    def _get_chunk_embedding(self, chunk: str) -> np.ndarray:
+        """
+        Get chunk embedding EFFICIENTLY with caching.
+        
+        IMPORTANT: Bu method sadece mevcut embedding yoksa kullanılır.
+        SemanticChunk objesi varsa embedding_vector field'ını kullan!
+        """
+        if not EMBEDDING_SUPPORT or not self.embedding_model:
+            return np.random.rand(384)  # Fallback
+        
+        cache_key = hashlib.md5(chunk.encode()).hexdigest()
+        
+        if cache_key in self.embedding_cache:
+            return self.embedding_cache[cache_key]
+        
+        try:
+            # Single chunk encoding (only when necessary!)
+            embedding = self.embedding_model.encode([chunk])[0]
+            self.embedding_cache[cache_key] = embedding
+            return embedding
+        except Exception as e:
+            print(f"Failed to encode chunk: {e}")
+            return np.zeros(384)
+    
+    def _calculate_embedding_coherence(self, chunk: str, chunk_embedding: np.ndarray) -> float:
+        """Calculate embedding-based internal coherence."""
+        
+        if chunk_embedding is None:
+            return 0.5  # Default score when no embedding available
+        
+        # Split into sentences and get individual sentence embeddings
+        sentences = self._split_into_sentences(chunk)
+        if len(sentences) < 2:
+            return 1.0  # Single sentence is perfectly coherent
+        
+        # Get sentence embeddings (efficiently with batch processing if needed)
+        sentence_embeddings = self._get_sentence_embeddings_for_validation(sentences)
+        
+        # Calculate pairwise similarities
+        similarities = []
+        for i in range(len(sentence_embeddings)):
+            for j in range(i + 1, len(sentence_embeddings)):
+                sim = cosine_similarity(
+                    sentence_embeddings[i].reshape(1, -1),
+                    sentence_embeddings[j].reshape(1, -1)
+                )[0, 0]
+                similarities.append(sim)
+        
+        # Return average similarity as coherence
+        coherence = float(np.mean(similarities)) if similarities else 0.5
+        return min(1.0, max(0.0, coherence))
+    
+    def _get_sentence_embeddings_for_validation(self, sentences: List[str]) -> np.ndarray:
+        """
+        Efficient sentence embedding generation for validation.
+        Same batch processing as semantic chunker.
+        """
+        if not EMBEDDING_SUPPORT or not self.embedding_model:
+            return np.random.rand(len(sentences), 384)
+        
+        embeddings = []
+        sentences_to_encode = []
+        indices_to_encode = []
+        cache_hits = 0
+        
+        # Check cache first
+        for i, sentence in enumerate(sentences):
+            cache_key = hashlib.md5(sentence.encode()).hexdigest()
+            
+            if cache_key in self.embedding_cache:
+                embeddings.append(self.embedding_cache[cache_key])
+                cache_hits += 1
+            else:
+                embeddings.append(None)
+                sentences_to_encode.append(sentence)
+                indices_to_encode.append(i)
+        
+        # Batch encode missing sentences (EFFICIENT!)
+        if sentences_to_encode:
+            try:
+                batch_embeddings = self.embedding_model.encode(sentences_to_encode)
+                
+                for i, (sentence, embedding) in enumerate(zip(sentences_to_encode, batch_embeddings)):
+                    cache_key = hashlib.md5(sentence.encode()).hexdigest()
+                    self.embedding_cache[cache_key] = embedding
+                    
+                    original_index = indices_to_encode[i]
+                    embeddings[original_index] = embedding
+                    
+            except Exception as e:
+                print(f"Batch encoding failed in validation: {e}")
+                for idx in indices_to_encode:
+                    embeddings[idx] = np.zeros(384)
+        
+        return np.array(embeddings)
+    
+    def _calculate_topic_consistency(self, chunk: str, chunk_embedding: np.ndarray) -> float:
+        """Calculate topic consistency within chunk using embedding analysis."""
+        
+        if chunk_embedding is None:
+            return 0.6  # Default score
+        
+        sentences = self._split_into_sentences(chunk)
+        if len(sentences) < 3:
+            return 1.0  # Short chunks are assumed consistent
+        
+        # Use KMeans clustering to detect topic consistency
+        try:
+            sentence_embeddings = self._get_sentence_embeddings_for_validation(sentences)
+            
+            # Use 2 clusters to see if sentences naturally group
+            n_clusters = min(2, len(sentences) - 1)
+            if n_clusters < 2:
+                return 1.0
+                
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            clusters = kmeans.fit_predict(sentence_embeddings)
+            
+            # Calculate silhouette-like score for consistency
+            cluster_counts = np.bincount(clusters)
+            dominant_cluster_ratio = np.max(cluster_counts) / len(sentences)
+            
+            # High dominant cluster ratio = high consistency
+            return float(dominant_cluster_ratio)
+            
+        except Exception as e:
+            print(f"Topic consistency calculation failed: {e}")
+            return 0.6
+    
+    def _analyze_cross_chunk_relationships(
+        self,
+        chunk: str,
+        previous_chunk: Optional[str],
+        next_chunk: Optional[str],
+        chunk_embedding: np.ndarray
+    ) -> CrossChunkAnalysis:
+        """Analyze relationships between adjacent chunks using embeddings."""
+        
+        analysis = CrossChunkAnalysis()
+        
+        if chunk_embedding is None:
+            return analysis
+        
+        try:
+            # Similarity with previous chunk
+            if previous_chunk:
+                prev_embedding = self._get_chunk_embedding(previous_chunk)
+                analysis.similarity_with_previous = float(cosine_similarity(
+                    chunk_embedding.reshape(1, -1),
+                    prev_embedding.reshape(1, -1)
+                )[0, 0])
+            
+            # Similarity with next chunk
+            if next_chunk:
+                next_embedding = self._get_chunk_embedding(next_chunk)
+                analysis.similarity_with_next = float(cosine_similarity(
+                    chunk_embedding.reshape(1, -1),
+                    next_embedding.reshape(1, -1)
+                )[0, 0])
+            
+            # Calculate topic drift and boundary strength
+            if analysis.similarity_with_previous is not None:
+                analysis.topic_drift_score = 1 - analysis.similarity_with_previous
+                analysis.boundary_strength = analysis.topic_drift_score
+            
+            # Determine relationship type
+            if analysis.similarity_with_previous is not None:
+                if analysis.similarity_with_previous > 0.8:
+                    analysis.relationship_type = "continuation"
+                elif analysis.similarity_with_previous > 0.6:
+                    analysis.relationship_type = "transition"
+                else:
+                    analysis.relationship_type = "new_topic"
+                    
+        except Exception as e:
+            print(f"Cross-chunk analysis failed: {e}")
+        
+        return analysis
+    
+    def _calculate_semantic_density(self, chunk: str, chunk_embedding: np.ndarray) -> float:
+        """Calculate semantic density - how much meaning is packed in the chunk."""
+        
+        if chunk_embedding is None:
+            return 0.5
+        
+        try:
+            # Simple heuristic: ratio of unique meaningful words to total words
+            words = chunk.lower().split()
+            meaningful_words = []
+            
+            for word in words:
+                if (len(word) > 3 and
+                    word not in self.turkish_stopwords and
+                    word not in self.english_stopwords and
+                    word.isalpha()):
+                    meaningful_words.append(word)
+            
+            if not words:
+                return 0.0
+            
+            unique_meaningful = len(set(meaningful_words))
+            total_words = len(words)
+            
+            # Normalize and combine with embedding magnitude
+            lexical_density = unique_meaningful / total_words
+            embedding_magnitude = float(np.linalg.norm(chunk_embedding))
+            
+            # Combine both metrics
+            semantic_density = (lexical_density * 0.7 + min(embedding_magnitude / 10, 1.0) * 0.3)
+            
+            return min(1.0, max(0.0, semantic_density))
+            
+        except Exception as e:
+            print(f"Semantic density calculation failed: {e}")
+            return 0.5
+    
+    def _detect_chunk_language(self, chunk: str) -> str:
+        """Simple language detection for chunk."""
+        
+        words = chunk.lower().split()[:50]  # Check first 50 words
+        
+        turkish_indicators = ['bir', 'bu', 'şu', 've', 'ile', 'için', 'de', 'da', 'olan']
+        english_indicators = ['the', 'and', 'of', 'to', 'in', 'is', 'that', 'for']
+        
+        turkish_count = sum(1 for word in words if word in turkish_indicators)
+        english_count = sum(1 for word in words if word in english_indicators)
+        
+        if turkish_count > english_count * 1.3:
+            return "turkish"
+        elif english_count > turkish_count * 1.3:
+            return "english"
+        else:
+            return "mixed"
+    
+    def _determine_chunk_validity(
+        self,
+        coherence_score: float,
+        context_score: float,
+        completeness_score: float,
+        readability_score: float,
+        embedding_coherence: Optional[float],
+        topic_consistency: Optional[float],
+        cross_chunk_analysis: Optional[CrossChunkAnalysis]
+    ) -> bool:
+        """Enhanced validity determination with embedding metrics."""
+        
+        # Traditional validity check
+        traditional_valid = (
+            coherence_score >= self.min_coherence_score and
+            context_score >= self.min_context_score and
+            completeness_score >= self.min_completeness_score and
+            readability_score >= self.min_readability_score
+        )
+        
+        # Enhanced checks with embedding metrics
+        if embedding_coherence is not None and embedding_coherence < self.min_embedding_coherence:
+            return False
+        
+        if topic_consistency is not None and topic_consistency < self.min_topic_consistency:
+            return False
+        
+        if cross_chunk_analysis and cross_chunk_analysis.topic_drift_score > self.max_topic_drift:
+            return False
+        
+        return traditional_valid
+    
+    def _create_enhanced_detailed_analysis(
+        self,
+        chunk: str,
+        coherence_score: float,
+        context_score: float,
+        completeness_score: float,
+        readability_score: float,
+        embedding_coherence: Optional[float],
+        topic_consistency: Optional[float],
+        cross_chunk_similarity: Optional[float],
+        semantic_density: Optional[float],
+        language_consistency: Optional[str],
+        cross_chunk_analysis: Optional[CrossChunkAnalysis]
+    ) -> Dict:
+        """Create enhanced detailed analysis with embedding metrics."""
+        
+        # Base analysis
+        analysis = self._create_detailed_analysis(chunk, coherence_score, context_score, completeness_score, readability_score)
+        
+        # Add enhanced metrics
+        if embedding_coherence is not None:
+            analysis['embedding_coherence'] = embedding_coherence
+            
+        if topic_consistency is not None:
+            analysis['topic_consistency'] = topic_consistency
+            
+        if cross_chunk_similarity is not None:
+            analysis['cross_chunk_similarity'] = cross_chunk_similarity
+            
+        if semantic_density is not None:
+            analysis['semantic_density'] = semantic_density
+            
+        if language_consistency:
+            analysis['language_consistency'] = language_consistency
+            
+        if cross_chunk_analysis:
+            analysis['cross_chunk_analysis'] = {
+                'similarity_with_previous': cross_chunk_analysis.similarity_with_previous,
+                'similarity_with_next': cross_chunk_analysis.similarity_with_next,
+                'topic_drift_score': cross_chunk_analysis.topic_drift_score,
+                'relationship_type': cross_chunk_analysis.relationship_type
+            }
+        
+        # Enhanced quality assessment
+        if embedding_coherence is not None:
+            if embedding_coherence >= 0.8:
+                analysis['strengths'].append("Excellent embedding-based coherence")
+            elif embedding_coherence < 0.5:
+                analysis['quality_issues'].append("Low embedding-based coherence")
+        
+        return analysis

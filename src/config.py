@@ -31,6 +31,9 @@ class RAGConfig:
         # Microservices Configuration
         self._setup_microservices_config()
         
+        # Phase 1: Advanced Semantic Chunking Configuration
+        self._setup_semantic_chunking_config()
+        
         # Model Definitions
         self._setup_model_definitions()
         
@@ -123,6 +126,83 @@ class RAGConfig:
         self.microservices_config = {
             'pdf_processor_url': os.getenv('PDF_PROCESSOR_URL', default_pdf_url),
             'model_inference_url': os.getenv('MODEL_INFERENCE_URL', default_model_inference_url)
+        }
+
+    def _setup_semantic_chunking_config(self):
+        """Setup Phase 1 Advanced Semantic Chunking Architecture Configuration"""
+        
+        self.semantic_chunking_config = {
+            # Core Chunking Parameters
+            'chunk_size': int(os.getenv('CHUNK_SIZE', '1000')),
+            'chunk_overlap': int(os.getenv('CHUNK_OVERLAP', '200')),
+            'min_chunk_size': int(os.getenv('MIN_CHUNK_SIZE', '100')),
+            'max_chunk_size': int(os.getenv('MAX_CHUNK_SIZE', '1500')),
+            
+            # Semantic Analysis Settings
+            'default_embedding_model': os.getenv(
+                'SEMANTIC_EMBEDDING_MODEL',
+                'paraphrase-multilingual-MiniLM-L12-v2'
+            ),
+            'embedding_cache_size': int(os.getenv('EMBEDDING_CACHE_SIZE', '10000')),
+            'batch_size': int(os.getenv('EMBEDDING_BATCH_SIZE', '32')),
+            'use_embedding_refinement': os.getenv('USE_EMBEDDING_REFINEMENT', 'true').lower() == 'true',
+            
+            # Language Support
+            'supported_languages': ['tr', 'en', 'auto'],
+            'default_language': os.getenv('DEFAULT_LANGUAGE', 'auto'),
+            'turkish_sentence_patterns_enabled': os.getenv('TURKISH_PATTERNS_ENABLED', 'true').lower() == 'true',
+            
+            # Advanced Chunk Validation Configuration
+            'validation_enabled': os.getenv('CHUNK_VALIDATION_ENABLED', 'true').lower() == 'true',
+            'semantic_coherence_threshold': float(os.getenv('SEMANTIC_COHERENCE_THRESHOLD', '0.75')),
+            'topic_consistency_threshold': float(os.getenv('TOPIC_CONSISTENCY_THRESHOLD', '0.70')),
+            'length_quality_threshold': float(os.getenv('LENGTH_QUALITY_THRESHOLD', '0.80')),
+            'overall_quality_threshold': float(os.getenv('OVERALL_QUALITY_THRESHOLD', '0.70')),
+            
+            # Validation Weights
+            'coherence_weight': float(os.getenv('COHERENCE_WEIGHT', '0.40')),  # 40%
+            'topic_weight': float(os.getenv('TOPIC_WEIGHT', '0.35')),          # 35%
+            'length_weight': float(os.getenv('LENGTH_WEIGHT', '0.25')),        # 25%
+            
+            # AST Markdown Parser Configuration
+            'ast_parser_enabled': os.getenv('AST_PARSER_ENABLED', 'true').lower() == 'true',
+            'header_hierarchy_preservation': os.getenv('HEADER_HIERARCHY_PRESERVATION', 'true').lower() == 'true',
+            'table_semantic_context': os.getenv('TABLE_SEMANTIC_CONTEXT', 'true').lower() == 'true',
+            'code_block_protection': os.getenv('CODE_BLOCK_PROTECTION', 'true').lower() == 'true',
+            'math_formula_protection': os.getenv('MATH_FORMULA_PROTECTION', 'true').lower() == 'true',
+            'cross_reference_resolution': os.getenv('CROSS_REFERENCE_RESOLUTION', 'true').lower() == 'true',
+            
+            # Performance Optimization
+            'cache_enabled': os.getenv('SEMANTIC_CACHE_ENABLED', 'true').lower() == 'true',
+            'cache_ttl_hours': int(os.getenv('SEMANTIC_CACHE_TTL_HOURS', '24')),
+            'memory_limit_mb': int(os.getenv('SEMANTIC_MEMORY_LIMIT_MB', '2048')),
+            'parallel_processing': os.getenv('PARALLEL_PROCESSING', 'true').lower() == 'true',
+            'max_workers': int(os.getenv('MAX_WORKERS', '4')),
+            
+            # Fallback Strategy Configuration
+            'fallback_strategy': os.getenv('FALLBACK_STRATEGY', 'ast_markdown'),  # ast_markdown, markdown, adaptive
+            'enable_fallback_logging': os.getenv('ENABLE_FALLBACK_LOGGING', 'true').lower() == 'true',
+            
+            # Turkish Language Specific Optimizations
+            'turkish_abbreviations': [
+                'Dr.', 'Prof.', 'Doç.', 'Yrd.', 'Öğr.', 'Arş.', 'Uzm.',
+                'vs.', 'vb.', 'örn.', 'yani', 'bkz.', 'bk.'
+            ],
+            'turkish_sentence_endings': ['.', '!', '?', '...'],
+            'turkish_conjunctions': [
+                've', 'veya', 'ya da', 'ama', 'ancak', 'fakat', 'lakin',
+                'çünkü', 'zira', 'nitekim', 'dolayısıyla', 'sonuç olarak'
+            ],
+            
+            # Quality Metrics Thresholds
+            'min_sentences_per_chunk': int(os.getenv('MIN_SENTENCES_PER_CHUNK', '2')),
+            'max_sentences_per_chunk': int(os.getenv('MAX_SENTENCES_PER_CHUNK', '20')),
+            'average_sentence_length_threshold': int(os.getenv('AVG_SENTENCE_LENGTH_THRESHOLD', '80')),
+            
+            # Error Handling
+            'max_retry_attempts': int(os.getenv('MAX_RETRY_ATTEMPTS', '3')),
+            'error_logging_enabled': os.getenv('ERROR_LOGGING_ENABLED', 'true').lower() == 'true',
+            'graceful_degradation': os.getenv('GRACEFUL_DEGRADATION', 'true').lower() == 'true'
         }
 
     def _setup_model_definitions(self):
@@ -312,6 +392,67 @@ def get_database_url() -> str:
     """Get database URL/path"""
     return config.get_database_url()
 
+# Phase 1: Advanced Semantic Chunking Configuration Helper Functions
+def get_semantic_chunking_config() -> Dict[str, Any]:
+    """Get Phase 1 semantic chunking configuration"""
+    return config.semantic_chunking_config
+
+def get_chunk_size() -> int:
+    """Get default chunk size"""
+    return config.semantic_chunking_config['chunk_size']
+
+def get_chunk_overlap() -> int:
+    """Get default chunk overlap"""
+    return config.semantic_chunking_config['chunk_overlap']
+
+def get_embedding_model() -> str:
+    """Get default embedding model for semantic analysis"""
+    return config.semantic_chunking_config['default_embedding_model']
+
+def is_embedding_refinement_enabled() -> bool:
+    """Check if embedding-based refinement is enabled"""
+    return config.semantic_chunking_config['use_embedding_refinement']
+
+def is_ast_parser_enabled() -> bool:
+    """Check if AST markdown parser is enabled"""
+    return config.semantic_chunking_config['ast_parser_enabled']
+
+def get_validation_thresholds() -> Dict[str, float]:
+    """Get chunk validation quality thresholds"""
+    return {
+        'semantic_coherence': config.semantic_chunking_config['semantic_coherence_threshold'],
+        'topic_consistency': config.semantic_chunking_config['topic_consistency_threshold'],
+        'length_quality': config.semantic_chunking_config['length_quality_threshold'],
+        'overall_quality': config.semantic_chunking_config['overall_quality_threshold']
+    }
+
+def get_validation_weights() -> Dict[str, float]:
+    """Get validation metric weights"""
+    return {
+        'coherence': config.semantic_chunking_config['coherence_weight'],
+        'topic': config.semantic_chunking_config['topic_weight'],
+        'length': config.semantic_chunking_config['length_weight']
+    }
+
+def get_turkish_language_config() -> Dict[str, Any]:
+    """Get Turkish language optimization configuration"""
+    return {
+        'patterns_enabled': config.semantic_chunking_config['turkish_sentence_patterns_enabled'],
+        'abbreviations': config.semantic_chunking_config['turkish_abbreviations'],
+        'sentence_endings': config.semantic_chunking_config['turkish_sentence_endings'],
+        'conjunctions': config.semantic_chunking_config['turkish_conjunctions']
+    }
+
+def get_performance_config() -> Dict[str, Any]:
+    """Get performance optimization configuration"""
+    return {
+        'cache_enabled': config.semantic_chunking_config['cache_enabled'],
+        'batch_size': config.semantic_chunking_config['batch_size'],
+        'memory_limit_mb': config.semantic_chunking_config['memory_limit_mb'],
+        'parallel_processing': config.semantic_chunking_config['parallel_processing'],
+        'max_workers': config.semantic_chunking_config['max_workers']
+    }
+
 def setup_directories():
     """Setup necessary directories for local development"""
     if not config.is_cloud:
@@ -331,6 +472,27 @@ def setup_directories():
 CLOUD_MODELS = config.cloud_models
 AVAILABLE_MODELS = config.available_models
 OLLAMA_BASE_URL = "http://localhost:11434"
+
+# Phase 1: Global semantic chunking constants for backward compatibility
+CHUNK_SIZE = config.semantic_chunking_config['chunk_size']
+CHUNK_OVERLAP = config.semantic_chunking_config['chunk_overlap']
+MIN_CHUNK_SIZE = config.semantic_chunking_config['min_chunk_size']
+MAX_CHUNK_SIZE = config.semantic_chunking_config['max_chunk_size']
+
+# Semantic analysis constants
+EMBEDDING_MODEL = config.semantic_chunking_config['default_embedding_model']
+EMBEDDING_CACHE_SIZE = config.semantic_chunking_config['embedding_cache_size']
+BATCH_SIZE = config.semantic_chunking_config['batch_size']
+
+# Validation thresholds
+SEMANTIC_COHERENCE_THRESHOLD = config.semantic_chunking_config['semantic_coherence_threshold']
+TOPIC_CONSISTENCY_THRESHOLD = config.semantic_chunking_config['topic_consistency_threshold']
+OVERALL_QUALITY_THRESHOLD = config.semantic_chunking_config['overall_quality_threshold']
+
+# Turkish language patterns
+TURKISH_ABBREVIATIONS = config.semantic_chunking_config['turkish_abbreviations']
+TURKISH_SENTENCE_ENDINGS = config.semantic_chunking_config['turkish_sentence_endings']
+TURKISH_CONJUNCTIONS = config.semantic_chunking_config['turkish_conjunctions']
 
 # Initialize directories on import
 setup_directories()

@@ -7,8 +7,17 @@ manageable chunks, which is a crucial step before generating embeddings.
 
 from typing import List, Literal, Sequence
 import re
-from .. import config
-from ..utils.helpers import setup_logging
+try:
+    # Try relative imports first (when used as package)
+    from .. import config
+    from ..utils.helpers import setup_logging
+except ImportError:
+    # Fallback to absolute imports (for testing and standalone use)
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent.parent.parent))
+    from src import config
+    from src.utils.helpers import setup_logging
 
 # Import semantic chunking functionality
 try:
@@ -16,6 +25,13 @@ try:
     SEMANTIC_CHUNKING_AVAILABLE = True
 except ImportError:
     SEMANTIC_CHUNKING_AVAILABLE = False
+
+# Import AST-based markdown parser - Phase 1 Enhancement
+try:
+    from .ast_markdown_parser import ASTMarkdownParser, MarkdownSection
+    AST_MARKDOWN_AVAILABLE = True
+except ImportError:
+    AST_MARKDOWN_AVAILABLE = False
 
 logger = setup_logging()
 
@@ -408,15 +424,246 @@ def _chunk_by_hybrid_strategy(text: str, chunk_size: int, chunk_overlap: int, la
         return _chunk_by_markdown_structure(text, chunk_size, chunk_overlap)
 
 
+def _chunk_by_ast_markdown(text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
+    """
+    Advanced AST-based markdown chunking with semantic structure preservation.
+    
+    Bu function yeni AST markdown parser'ı kullanarak intelligent chunking yapar:
+    - Header hierarchy korunur
+    - Table'lar semantic context ile korunur
+    - Code block'lar intact kalır
+    - Math formula'ları protect edilir
+    - Cross-reference'lar çözümlenir
+    """
+    if not text.strip():
+        return []
+    
+    if not AST_MARKDOWN_AVAILABLE:
+        logger.warning("AST Markdown parser not available, falling back to traditional markdown chunking")
+        return _chunk_by_markdown_structure(text, chunk_size, chunk_overlap)
+    
+    try:
+        logger.info("Using AST-based markdown chunking")
+        
+        # Initialize AST parser
+        ast_parser = ASTMarkdownParser()
+        
+        # Step 1: Parse markdown to AST
+        ast_nodes = ast_parser.parse_markdown_to_ast(text)
+        
+        if not ast_nodes:
+            logger.warning("No AST nodes generated, falling back to traditional markdown")
+            return _chunk_by_markdown_structure(text, chunk_size, chunk_overlap)
+        
+        # Step 2: Create semantic sections
+        sections = ast_parser.create_semantic_sections(ast_nodes)
+        
+        # Step 3: Convert sections to chunks with size control
+        chunks = []
+        
+        for section in sections:
+            section_text = section.content
+            
+            # If section fits in chunk size, use as-is
+            if len(section_text) <= chunk_size:
+                chunks.append(section_text)
+            
+            # If section is too large, apply intelligent splitting
+            else:
+                # Try to split at subsection boundaries first
+                if section.subsections:
+                    subsection_chunks = []
+                    current_chunk = section.title  # Start with section title
+                    current_size = len(current_chunk)
+                    
+                    for subsection in section.subsections:
+                        subsection_content = f"\n\n{subsection.content}"
+                        
+                        if current_size + len(subsection_content) <= chunk_size:
+                            current_chunk += subsection_content
+                            current_size += len(subsection_content)
+                        else:
+                            # Current chunk is ready
+                            if current_chunk.strip():
+                                subsection_chunks.append(current_chunk)
+                            
+                            # Start new chunk with subsection
+                            current_chunk = subsection.content
+                            current_size = len(current_chunk)
+                    
+                    # Add final chunk
+                    if current_chunk.strip():
+                        subsection_chunks.append(current_chunk)
+                    
+                    chunks.extend(subsection_chunks)
+                
+                else:
+                    # No subsections, apply semantic sentence splitting
+                    if SEMANTIC_CHUNKING_AVAILABLE:
+                        try:
+                            overlap_ratio = chunk_overlap / chunk_size if chunk_overlap > 0 else 0.1
+                            semantic_chunks = create_semantic_chunks(
+                                text=section_text,
+                                target_size=chunk_size,
+                                overlap_ratio=overlap_ratio,
+                                language="auto",
+                                fallback_strategy="markdown"
+                            )
+                            chunks.extend(semantic_chunks)
+                        except Exception as e:
+                            logger.warning(f"Semantic splitting failed for large section: {e}")
+                            # Fallback to traditional splitting
+                            chunks.extend(_split_large_text_preserving_structure(section_text, chunk_size))
+                    else:
+                        chunks.extend(_split_large_text_preserving_structure(section_text, chunk_size))
+        
+        # Step 4: Post-process chunks for optimal size
+        final_chunks = _optimize_chunk_sizes(chunks, chunk_size, chunk_overlap)
+        
+        logger.info(f"AST markdown chunking: {len(sections)} sections -> {len(final_chunks)} optimized chunks")
+        return final_chunks
+        
+    except Exception as e:
+        logger.error(f"AST markdown chunking failed: {e}")
+        logger.info("Falling back to traditional markdown chunking")
+        return _chunk_by_markdown_structure(text, chunk_size, chunk_overlap)
+
+
+def _split_large_text_preserving_structure(text: str, chunk_size: int) -> List[str]:
+    """Split large text while preserving markdown structure."""
+    chunks = []
+    
+    # Split by double newlines (paragraphs) first
+    paragraphs = text.split('\n\n')
+    
+    current_chunk = ""
+    
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        
+        # If adding this paragraph would exceed chunk size
+        if len(current_chunk) + len(paragraph) + 2 > chunk_size:
+            # Save current chunk if it has content
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+            
+            # If single paragraph is still too large, split by sentences
+            if len(paragraph) > chunk_size:
+                sentences = re.split(r'(?<=[.!?])\s+', paragraph)
+                current_chunk = ""
+                
+                for sentence in sentences:
+                    if len(current_chunk) + len(sentence) + 1 > chunk_size:
+                        if current_chunk.strip():
+                            chunks.append(current_chunk.strip())
+                        current_chunk = sentence
+                    else:
+                        if current_chunk:
+                            current_chunk += " " + sentence
+                        else:
+                            current_chunk = sentence
+            else:
+                current_chunk = paragraph
+        else:
+            if current_chunk:
+                current_chunk += "\n\n" + paragraph
+            else:
+                current_chunk = paragraph
+    
+    # Add final chunk
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+    
+    return chunks
+
+
+def _optimize_chunk_sizes(chunks: List[str], target_size: int, overlap: int) -> List[str]:
+    """Optimize chunk sizes by merging small chunks and handling overlap."""
+    if not chunks:
+        return []
+    
+    optimized = []
+    min_chunk_size = target_size // 4  # Minimum chunk size is 1/4 of target
+    
+    current_chunk = ""
+    
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        
+        # If chunk is too small, try to merge with current
+        if len(chunk) < min_chunk_size and current_chunk:
+            # Check if merging would exceed target size
+            if len(current_chunk) + len(chunk) + 2 <= target_size * 1.2:  # Allow 20% overflow
+                current_chunk += "\n\n" + chunk
+                continue
+        
+        # Save current chunk if it exists
+        if current_chunk:
+            optimized.append(current_chunk)
+        
+        current_chunk = chunk
+    
+    # Add final chunk
+    if current_chunk:
+        optimized.append(current_chunk)
+    
+    # Handle overlap if requested
+    if overlap > 0 and len(optimized) > 1:
+        overlapped = []
+        
+        for i, chunk in enumerate(optimized):
+            if i == 0:
+                overlapped.append(chunk)
+            else:
+                # Create overlap from previous chunk
+                prev_chunk = optimized[i-1]
+                
+                # Find natural overlap point (sentence boundary)
+                overlap_text = ""
+                sentences = re.split(r'(?<=[.!?])\s+', prev_chunk)
+                
+                if sentences:
+                    # Take last few sentences as overlap
+                    overlap_sentences = []
+                    overlap_length = 0
+                    
+                    for sentence in reversed(sentences):
+                        if overlap_length + len(sentence) <= overlap:
+                            overlap_sentences.insert(0, sentence)
+                            overlap_length += len(sentence)
+                        else:
+                            break
+                    
+                    if overlap_sentences:
+                        overlap_text = " ".join(overlap_sentences)
+                
+                # Add overlapped chunk
+                if overlap_text:
+                    overlapped_chunk = overlap_text + "\n\n" + chunk
+                else:
+                    overlapped_chunk = chunk
+                
+                overlapped.append(overlapped_chunk)
+        
+        return overlapped
+    
+    return optimized
+
+
 def chunk_text(
     text: str,
     chunk_size: int = None,
     chunk_overlap: int = None,
-    strategy: Literal["char", "paragraph", "sentence", "markdown", "semantic", "hybrid"] = "char",
+    strategy: Literal["char", "paragraph", "sentence", "markdown", "ast_markdown", "semantic", "hybrid"] = "char",
     language: str = "auto",
+    use_embedding_refinement: bool = True
 ) -> List[str]:
     """
-    Splits a text into overlapping chunks using various strategies.
+    Splits a text into overlapping chunks using various strategies with Phase 1 enhancements.
 
     Args:
         text: The input text to be chunked.
@@ -429,12 +676,20 @@ def chunk_text(
                   - "paragraph": Paragraph-based chunking
                   - "sentence": Sentence-based chunking
                   - "markdown": Markdown structure-aware chunking
-                  - "semantic": LLM-based semantic chunking
+                  - "ast_markdown": Advanced AST-based markdown with semantic structure preservation (NEW in Phase 1)
+                  - "semantic": LLM-based semantic chunking with embedding refinement
                   - "hybrid": Combination of markdown + semantic analysis
         language: Language of the text for semantic analysis ("tr", "en", or "auto")
+        use_embedding_refinement: Whether to use embedding-based refinement for semantic strategies (Phase 1)
 
     Returns:
         A list of text chunks.
+        
+    Phase 1 Enhancements:
+        - New "ast_markdown" strategy with intelligent structure preservation
+        - Enhanced semantic chunking with embedding-based boundary refinement
+        - Improved Turkish language support
+        - Batch processing optimizations for embeddings
     """
     if chunk_size is None:
         chunk_size = config.CHUNK_SIZE
@@ -509,8 +764,11 @@ def chunk_text(
     elif strategy == "markdown":
         # Markdown yapısına dayalı akıllı chunking
         chunks = _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
+    elif strategy == "ast_markdown":
+        # NEW in Phase 1: Advanced AST-based markdown chunking with semantic structure preservation
+        chunks = _chunk_by_ast_markdown(normalized, chunk_size, chunk_overlap)
     elif strategy == "semantic":
-        # LLM tabanlı semantic chunking
+        # LLM tabanlı semantic chunking with Phase 1 embedding refinement
         if SEMANTIC_CHUNKING_AVAILABLE:
             try:
                 overlap_ratio = chunk_overlap / chunk_size if chunk_overlap > 0 else 0.1
@@ -519,15 +777,23 @@ def chunk_text(
                     target_size=chunk_size,
                     overlap_ratio=overlap_ratio,
                     language=language,
-                    fallback_strategy="markdown"
+                    fallback_strategy="ast_markdown" if AST_MARKDOWN_AVAILABLE else "markdown",
+                    use_embedding_refinement=use_embedding_refinement  # Phase 1 enhancement
                 )
             except Exception as e:
                 logger.error(f"Semantic chunking failed: {e}")
-                logger.info("Falling back to markdown strategy")
-                chunks = _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
+                fallback = "ast_markdown" if AST_MARKDOWN_AVAILABLE else "markdown"
+                logger.info(f"Falling back to {fallback} strategy")
+                if AST_MARKDOWN_AVAILABLE:
+                    chunks = _chunk_by_ast_markdown(normalized, chunk_size, chunk_overlap)
+                else:
+                    chunks = _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
         else:
-            logger.warning("Semantic chunking not available, falling back to markdown")
-            chunks = _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
+            logger.warning("Semantic chunking not available, falling back to enhanced markdown")
+            if AST_MARKDOWN_AVAILABLE:
+                chunks = _chunk_by_ast_markdown(normalized, chunk_size, chunk_overlap)
+            else:
+                chunks = _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
     elif strategy == "hybrid":
         # Hibrit strateji: Markdown yapısal analiz + LLM semantic analiz
         chunks = _chunk_by_hybrid_strategy(normalized, chunk_size, chunk_overlap, language)
