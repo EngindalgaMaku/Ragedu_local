@@ -920,7 +920,7 @@ async def process_and_store_documents(
             try:
                 content = cloud_storage_manager.get_markdown_file_content(filename)
                 if content and content.strip():
-                    # Process each file individually
+                    # Process each file individually - CRITICAL FIX: Add chunk_strategy to root payload
                     payload = {
                         "text": content,  # Individual file content
                         "metadata": {
@@ -932,7 +932,8 @@ async def process_and_store_documents(
                         },
                         "collection_name": f"session_{session_id}",
                         "chunk_size": chunk_size,
-                        "chunk_overlap": chunk_overlap
+                        "chunk_overlap": chunk_overlap,
+                        "chunk_strategy": chunk_strategy  # CRITICAL: Pass chunk_strategy to enable semantic chunking
                     }
                     
                     file_response = requests.post(

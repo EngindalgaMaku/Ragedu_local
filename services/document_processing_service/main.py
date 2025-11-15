@@ -12,6 +12,18 @@ import logging
 import chromadb
 from chromadb.config import Settings
 
+# Import advanced semantic chunking system
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent.parent))
+try:
+    from src.text_processing.text_chunker import chunk_text
+    ADVANCED_CHUNKING_AVAILABLE = True
+    logging.getLogger(__name__).info("✅ Advanced semantic chunking system imported successfully")
+except ImportError as e:
+    ADVANCED_CHUNKING_AVAILABLE = False
+    logging.getLogger(__name__).warning(f"⚠️ Advanced chunking not available: {e}")
+
 # Import langdetect for language detection
 from langdetect import detect, LangDetectException
 
@@ -32,6 +44,7 @@ class ProcessRequest(BaseModel):
     collection_name: Optional[str] = "documents"
     chunk_size: Optional[int] = 1000
     chunk_overlap: Optional[int] = 200
+    chunk_strategy: Optional[str] = "semantic"  # NEW: Enable advanced semantic chunking by default
 
 class CRAGEvaluationRequest(BaseModel):
     query: str
@@ -852,10 +865,31 @@ async def process_and_store(request: ProcessRequest):
     try:
         logger.info(f"Starting text processing. Text length: {len(request.text)} characters")
         
-        # Split text into chunks using our custom implementation
+        # CRITICAL FIX: Use advanced semantic chunking instead of basic split_text
         chunk_size = request.chunk_size or 1000
         chunk_overlap = request.chunk_overlap or 200
-        chunks = processor.split_text(request.text, chunk_size, chunk_overlap)
+        chunk_strategy = request.chunk_strategy or "semantic"
+        
+        if ADVANCED_CHUNKING_AVAILABLE and chunk_strategy != "char":
+            # Use advanced semantic chunking system with AST markdown parsing
+            logger.info(f"🚀 USING ADVANCED SEMANTIC CHUNKING: strategy='{chunk_strategy}', size={chunk_size}, overlap={chunk_overlap}")
+            try:
+                chunks = chunk_text(
+                    text=request.text,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    strategy=chunk_strategy,
+                    language="auto",
+                    use_embedding_refinement=True
+                )
+                logger.info(f"✅ Advanced chunking successful: {len(chunks)} semantic chunks created")
+            except Exception as e:
+                logger.warning(f"⚠️ Advanced chunking failed, falling back to basic: {e}")
+                chunks = processor.split_text(request.text, chunk_size, chunk_overlap)
+        else:
+            # Fallback to basic chunking for char strategy or when advanced chunking unavailable
+            logger.info(f"📝 Using basic chunking: strategy='{chunk_strategy}' (advanced_available={ADVANCED_CHUNKING_AVAILABLE})")
+            chunks = processor.split_text(request.text, chunk_size, chunk_overlap)
         
         if not chunks:
             logger.warning("Text could not be split into any chunks.")
