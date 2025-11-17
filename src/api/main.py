@@ -432,26 +432,45 @@ def get_session(session_id: str, request: Request):
 
 @app.delete("/sessions/{session_id}")
 def delete_session(session_id: str, create_backup: bool = True, deleted_by: Optional[str] = None, request: Request = None):
-    """Delete session from SQLite database and ChromaDB collection"""
+    """Delete session from SQLite database and ChromaDB collection with enhanced retry logic"""
     try:
         # Access control
         metadata = _require_owner_or_admin(request, session_id)
         
-        # Delete ChromaDB collection first (if it exists)
+        # ENHANCED ChromaDB collection deletion with retry logic
         chromadb_deleted = False
-        try:
-            response = requests.delete(
-                f"{DOCUMENT_PROCESSOR_URL}/sessions/{session_id}/collection",
-                timeout=30
-            )
-            if response.status_code == 200:
-                result = response.json()
-                chromadb_deleted = result.get("success", False)
-                logger.info(f"ChromaDB collection deletion for session {session_id}: {result.get('message', 'Success')}")
-            else:
-                logger.warning(f"ChromaDB collection deletion failed for session {session_id}: {response.status_code} - {response.text}")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to call ChromaDB deletion endpoint for session {session_id}: {str(e)}")
+        chromadb_attempts = 0
+        max_chromadb_retries = 3
+        
+        logger.info(f"🔄 Starting enhanced ChromaDB cleanup for session {session_id}")
+        
+        while not chromadb_deleted and chromadb_attempts < max_chromadb_retries:
+            chromadb_attempts += 1
+            try:
+                logger.info(f"🔄 ChromaDB deletion attempt {chromadb_attempts}/{max_chromadb_retries}")
+                response = requests.delete(
+                    f"{DOCUMENT_PROCESSOR_URL}/sessions/{session_id}/collection",
+                    timeout=45  # Increased timeout
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    chromadb_deleted = result.get("success", False)
+                    logger.info(f"✅ ChromaDB collection deletion SUCCESS for session {session_id}: {result.get('message', 'Success')}")
+                    break
+                else:
+                    logger.warning(f"⚠️ ChromaDB deletion attempt {chromadb_attempts} failed: {response.status_code} - {response.text}")
+                    if chromadb_attempts < max_chromadb_retries:
+                        import time
+                        time.sleep(2 * chromadb_attempts)  # Exponential backoff
+            except requests.exceptions.RequestException as e:
+                logger.error(f"⚠️ ChromaDB deletion attempt {chromadb_attempts} error: {str(e)}")
+                if chromadb_attempts < max_chromadb_retries:
+                    import time
+                    time.sleep(2 * chromadb_attempts)  # Exponential backoff
+        
+        if not chromadb_deleted:
+            logger.error(f"❌ CRITICAL: ChromaDB collection deletion FAILED after {max_chromadb_retries} attempts for session {session_id}")
+            # Continue with session deletion but warn user
         
         # Delete session from SQLite database
         success = professional_session_manager.delete_session(
@@ -461,11 +480,14 @@ def delete_session(session_id: str, create_backup: bool = True, deleted_by: Opti
         )
         if not success:
             raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Return detailed status
         return {
             "deleted": True,
             "session_id": session_id,
             "chromadb_collection_deleted": chromadb_deleted,
-            "message": f"Session '{metadata.name}' and associated data deleted successfully"
+            "chromadb_deletion_attempts": chromadb_attempts,
+            "message": f"Session '{metadata.name}' deleted. ChromaDB cleanup: {'✅ SUCCESS' if chromadb_deleted else '❌ FAILED - may require manual cleanup'}"
         }
     except HTTPException:
         raise

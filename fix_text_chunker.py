@@ -1,4 +1,12 @@
+#!/usr/bin/env python3
 """
+Script to fix the text_chunker.py import issues and Turkish sentence boundary detection.
+"""
+
+import os
+
+# The fixed text_chunker.py content
+fixed_content = '''"""
 Text chunking module - FIXED VERSION.
 
 This module provides functions for splitting large texts into smaller,
@@ -145,7 +153,7 @@ def _split_turkish_sentences(text: str) -> List[str]:
     # Matches sentence endings [.!?…;:] followed by whitespace/newline and Turkish uppercase/digit
     # This replaces the problematic regex at lines 785-819 in the original code
     sentence_endings = r'([.!?…;:])'
-    next_word_pattern = r'\s*(?=\s*[A-ZÇĞIİÖŞÜ\d\n]|$)'
+    next_word_pattern = r'\\s*(?=\\s*[A-ZÇĞIİÖŞÜ\\d\\n]|$)'
     
     # Split text while preserving punctuation
     parts = re.split(f'{sentence_endings}{next_word_pattern}', text, flags=re.MULTILINE)
@@ -221,8 +229,8 @@ def _chunk_by_markdown_structure(text: str, chunk_size: int, chunk_overlap: int)
         return []
     
     # Normalize text - remove excessive empty lines
-    text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-    lines = [line.rstrip() for line in text.split('\n')]
+    text = re.sub(r'\\n\\s*\\n\\s*\\n+', '\\n\\n', text)
+    lines = [line.rstrip() for line in text.split('\\n')]
     
     sections = []
     current_section = []
@@ -232,7 +240,7 @@ def _chunk_by_markdown_structure(text: str, chunk_size: int, chunk_overlap: int)
     def add_section_safe():
         """Add current section safely with minimum size check"""
         if current_section:
-            section_text = '\n'.join(current_section).strip()
+            section_text = '\\n'.join(current_section).strip()
             if len(section_text) > 50:  # Minimum chunk size
                 sections.append(section_text)
     
@@ -242,7 +250,7 @@ def _chunk_by_markdown_structure(text: str, chunk_size: int, chunk_overlap: int)
             return prev_text
         
         # Priority 1: Complete lines (preserves markdown structure like headers, lists)
-        lines = prev_text.split('\n')
+        lines = prev_text.split('\\n')
         selected_lines = []
         current_len = 0
         
@@ -256,7 +264,7 @@ def _chunk_by_markdown_structure(text: str, chunk_size: int, chunk_overlap: int)
                 break
         
         if selected_lines and len(selected_lines) > 0:
-            return '\n'.join(selected_lines)
+            return '\\n'.join(selected_lines)
         
         # Priority 2: Turkish sentence boundaries
         sentences = _split_turkish_sentences(prev_text)
@@ -348,12 +356,12 @@ def _chunk_by_markdown_structure(text: str, chunk_size: int, chunk_overlap: int)
                 current_section_size += code_size
             else:
                 add_section_safe()
-                sections.append('\n'.join(code_block))
+                sections.append('\\n'.join(code_block))
                 current_section = []
                 current_section_size = 0
         
         # Lists - keep together when possible
-        elif re.match(r'^[\s]*[-\*\+][\s]|^[\s]*\d+\.[\s]', line):
+        elif re.match(r'^[\\s]*[-\\*\\+][\\s]|^[\\s]*\\d+\\.[\\s]', line):
             list_items = []
             list_size = 0
             
@@ -361,7 +369,7 @@ def _chunk_by_markdown_structure(text: str, chunk_size: int, chunk_overlap: int)
             while i < len(lines):
                 list_line = lines[i]
                 
-                if not re.match(r'^[\s]*[-\*\+][\s]|^[\s]*\d+\.[\s]|^[\s]*$', list_line):
+                if not re.match(r'^[\\s]*[-\\*\\+][\\s]|^[\\s]*\\d+\\.[\\s]|^[\\s]*$', list_line):
                     break
                 
                 list_items.append(list_line)
@@ -374,7 +382,7 @@ def _chunk_by_markdown_structure(text: str, chunk_size: int, chunk_overlap: int)
                 current_section_size += list_size
             else:
                 add_section_safe()
-                sections.append('\n'.join(list_items))
+                sections.append('\\n'.join(list_items))
                 current_section = []
                 current_section_size = 0
             continue
@@ -401,7 +409,7 @@ def _chunk_by_markdown_structure(text: str, chunk_size: int, chunk_overlap: int)
     final_sections = []
     for section in sections:
         if len(section) < 100 and final_sections and len(final_sections[-1]) < chunk_size * 0.8:
-            final_sections[-1] = final_sections[-1] + '\n\n' + section
+            final_sections[-1] = final_sections[-1] + '\\n\\n' + section
         else:
             final_sections.append(section)
     
@@ -418,7 +426,7 @@ def _chunk_by_markdown_structure(text: str, chunk_size: int, chunk_overlap: int)
                 overlap_text = smart_overlap_markdown(prev_section, chunk_overlap)
                 
                 if overlap_text:
-                    overlapped_section = overlap_text + '\n\n' + section
+                    overlapped_section = overlap_text + '\\n\\n' + section
                 else:
                     overlapped_section = section
                 
@@ -470,7 +478,7 @@ def chunk_text(
     logger.info(f"Chunking text with chunk_size={chunk_size}, chunk_overlap={chunk_overlap}, strategy={strategy}")
 
     # Normalize newlines
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = text.replace("\\r\\n", "\\n").replace("\\r", "\\n")
 
     if strategy == "char":
         # Smart character chunking with Turkish word boundaries
@@ -482,7 +490,7 @@ def chunk_text(
             # Find word boundary for Turkish text
             if end < len(normalized):
                 # Look backwards for safe cut point
-                while end > start and normalized[end] not in ' \n\t.,!?;:…':
+                while end > start and normalized[end] not in ' \\n\\t.,!?;:…':
                     end -= 1
                 
                 # If no suitable cut point found, force cut
@@ -500,7 +508,7 @@ def chunk_text(
         return chunks
     
     elif strategy == "paragraph":
-        paragraphs = [p.strip() for p in normalized.split("\n\n")]
+        paragraphs = [p.strip() for p in normalized.split("\\n\\n")]
         return _group_units(paragraphs, chunk_size, chunk_overlap)
     
     elif strategy == "sentence":
@@ -614,8 +622,15 @@ if __name__ == '__main__':
     if chunks:
         print(f"Successfully created {len(chunks)} chunks with enhanced markdown strategy.")
         for i, chunk in enumerate(chunks):
-            print(f"\n--- Chunk {i+1} (Length: {len(chunk)}) ---")
+            print(f"\\n--- Chunk {i+1} (Length: {len(chunk)}) ---")
             print(chunk)
             print("---")
     else:
         print("Failed to create chunks.")
+'''
+
+# Write the fixed content to text_chunker.py
+with open("src/text_processing/text_chunker.py", "w", encoding="utf-8") as f:
+    f.write(fixed_content)
+
+print("✅ Fixed text_chunker.py with enhanced Turkish support and resolved import issues")

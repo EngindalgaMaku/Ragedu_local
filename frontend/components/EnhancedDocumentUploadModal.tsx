@@ -200,10 +200,10 @@ export default function EnhancedDocumentUploadModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 z-50">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm sm:max-w-md md:max-w-lg lg:max-w-2xl xl:max-w-3xl max-h-[95vh] sm:max-h-[90vh] overflow-hidden">
         {/* Modal Header */}
-        <div className="relative bg-gradient-to-r from-blue-600 to-purple-600 text-white p-6">
+        <div className="relative bg-gradient-to-r from-blue-600 to-purple-600 text-white p-3 sm:p-4 md:p-6">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <div className="p-3 bg-white/20 rounded-xl backdrop-blur-sm">
@@ -226,10 +226,10 @@ export default function EnhancedDocumentUploadModal({
         </div>
 
         {/* Modal Content */}
-        <div className="p-8">
+        <div className="p-3 sm:p-4 md:p-6 lg:p-8">
           {isProcessing ? (
             // Processing State
-            <div className="text-center py-12">
+            <div className="text-center py-6 sm:py-8 md:py-12">
               <div className="flex flex-col items-center gap-6">
                 <div className="relative">
                   <div className="w-20 h-20 border-4 border-blue-200 rounded-full"></div>
@@ -248,10 +248,10 @@ export default function EnhancedDocumentUploadModal({
             </div>
           ) : (
             // Upload Form
-            <div className="space-y-8">
+            <div className="space-y-4 sm:space-y-6 lg:space-y-8">
               {/* Upload Mode Selector */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className={`p-6 rounded-xl border-2 cursor-pointer transition-all ${
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                <div className={`p-4 sm:p-5 lg:p-6 rounded-xl border-2 cursor-pointer transition-all ${
                   uploadMode === 'convert' 
                     ? 'border-blue-500 bg-blue-50' 
                     : 'border-gray-200 hover:border-gray-300'
@@ -265,7 +265,7 @@ export default function EnhancedDocumentUploadModal({
                   </p>
                 </div>
                 
-                <div className={`p-6 rounded-xl border-2 cursor-pointer transition-all ${
+                <div className={`p-4 sm:p-5 lg:p-6 rounded-xl border-2 cursor-pointer transition-all ${
                   uploadMode === 'direct' 
                     ? 'border-purple-500 bg-purple-50' 
                     : 'border-gray-200 hover:border-gray-300'
@@ -282,7 +282,7 @@ export default function EnhancedDocumentUploadModal({
 
               {/* Drag & Drop Zone */}
               <div
-                className={`relative border-2 border-dashed rounded-2xl p-12 text-center transition-all ${
+                className={`relative border-2 border-dashed rounded-2xl p-6 sm:p-8 lg:p-12 text-center transition-all ${
                   selectedFile ? "cursor-default" : "cursor-pointer"
                 } ${
                   isDragOver
@@ -326,16 +326,16 @@ export default function EnhancedDocumentUploadModal({
                     </div>
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center gap-6">
-                    <div className={`p-8 rounded-full ${
+                  <div className="flex flex-col items-center gap-4 sm:gap-6">
+                    <div className={`p-4 sm:p-6 lg:p-8 rounded-full ${
                       isDragOver 
                         ? uploadMode === 'direct' ? "bg-purple-100" : "bg-blue-100"
                         : "bg-gray-100"
                     }`}>
-                      <UploadIcon className="w-16 h-16 text-gray-400" />
+                      <UploadIcon className="w-12 h-12 sm:w-14 sm:h-14 lg:w-16 lg:h-16 text-gray-400" />
                     </div>
                     <div>
-                      <p className="text-2xl font-semibold text-gray-800 mb-2">
+                      <p className="text-lg sm:text-xl lg:text-2xl font-semibold text-gray-800 mb-2">
                         Dosyanızı buraya sürükleyin
                       </p>
                       <p className="text-gray-600 mb-4">
@@ -365,7 +365,7 @@ export default function EnhancedDocumentUploadModal({
                   <button
                     type="button"
                     onClick={() => (document.querySelector('input[type="file"]') as HTMLInputElement)?.click()}
-                    className={`inline-flex items-center gap-3 px-8 py-4 rounded-xl font-semibold text-white transition-all transform hover:scale-105 ${
+                    className={`inline-flex items-center gap-3 px-6 sm:px-8 py-3 sm:py-4 rounded-xl font-semibold text-white transition-all transform hover:scale-105 min-h-[44px] ${
                       uploadMode === 'direct'
                         ? 'bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700'
                         : 'bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700'
@@ -381,11 +381,11 @@ export default function EnhancedDocumentUploadModal({
         </div>
 
         {/* Modal Footer */}
-        <div className="px-8 py-6 bg-gray-50 border-t border-gray-200">
-          <div className="flex gap-4 justify-end">
+        <div className="px-3 sm:px-4 md:px-6 lg:px-8 py-4 sm:py-6 bg-gray-50 border-t border-gray-200">
+          <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-end">
             <button
               onClick={onClose}
-              className="px-6 py-3 text-gray-600 hover:text-gray-800 font-medium transition-colors"
+              className="px-6 py-3 text-gray-600 hover:text-gray-800 font-medium transition-colors min-h-[44px] order-2 sm:order-1"
             >
               {isProcessing ? "Arka Planda Devam Et" : "İptal"}
             </button>
@@ -393,7 +393,7 @@ export default function EnhancedDocumentUploadModal({
               <button
                 type="button"
                 onClick={() => handleFileUpload()}
-                className={`px-8 py-3 rounded-xl font-semibold text-white transition-all transform hover:scale-105 ${
+                className={`px-6 sm:px-8 py-3 rounded-xl font-semibold text-white transition-all transform hover:scale-105 min-h-[44px] order-1 sm:order-2 ${
                   uploadMode === 'direct'
                     ? 'bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700'
                     : 'bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700'

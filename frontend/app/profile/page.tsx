@@ -136,17 +136,17 @@ export default function ProfilePage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-cyan-100 py-8">
-      <div className="container mx-auto px-4 max-w-4xl">
+    <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-cyan-100 py-4 sm:py-6 lg:py-8">
+      <div className="container mx-auto px-3 sm:px-4 max-w-4xl">
         {/* Header */}
         <div className="mb-8">
           <button
             onClick={() => router.back()}
-            className="mb-4 px-4 py-2 rounded-lg font-medium border border-gray-200 text-gray-700 bg-white hover:bg-gray-50 cursor-pointer shadow-sm text-sm"
+            className="mb-4 px-4 py-3 rounded-lg font-medium border border-gray-200 text-gray-700 bg-white hover:bg-gray-50 cursor-pointer shadow-sm text-sm min-h-[44px]"
           >
             ← Geri Dön
           </button>
-          <h1 className="text-3xl font-bold text-gray-900">Profil Ayarları</h1>
+          <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-900">Profil Ayarları</h1>
           <p className="text-gray-600 mt-2">
             Profil bilgilerinizi ve şifrenizi yönetin
           </p>
@@ -170,9 +170,9 @@ export default function ProfilePage() {
           </div>
         )}
 
-        <div className="grid md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
           {/* Sidebar */}
-          <div className="md:col-span-1">
+          <div className="lg:col-span-1">
             <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
               <div className="p-6">
                 <h3 className="text-lg font-bold text-gray-900 mb-4">
@@ -238,7 +238,7 @@ export default function ProfilePage() {
               <div className="border-t border-gray-200 p-4 space-y-2">
                 <button
                   onClick={() => setActiveTab("profile")}
-                  className={`w-full text-left px-4 py-2 rounded-lg transition-colors ${
+                  className={`w-full text-left px-4 py-3 rounded-lg transition-colors min-h-[44px] ${
                     activeTab === "profile"
                       ? "bg-indigo-100 text-indigo-700 font-medium"
                       : "text-gray-600 hover:bg-gray-100"
@@ -248,7 +248,7 @@ export default function ProfilePage() {
                 </button>
                 <button
                   onClick={() => setActiveTab("password")}
-                  className={`w-full text-left px-4 py-2 rounded-lg transition-colors ${
+                  className={`w-full text-left px-4 py-3 rounded-lg transition-colors min-h-[44px] ${
                     activeTab === "password"
                       ? "bg-indigo-100 text-indigo-700 font-medium"
                       : "text-gray-600 hover:bg-gray-100"
@@ -261,7 +261,7 @@ export default function ProfilePage() {
           </div>
 
           {/* Main Content */}
-          <div className="md:col-span-2">
+          <div className="lg:col-span-2">
             {activeTab === "profile" && (
               <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
                 <div className="p-6 border-b border-gray-200">
@@ -271,7 +271,7 @@ export default function ProfilePage() {
                 </div>
                 <div className="p-6">
                   <form onSubmit={handleProfileUpdate} className="space-y-4">
-                    <div className="grid md:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">
                           Kullanıcı Adı
@@ -285,7 +285,7 @@ export default function ProfilePage() {
                               username: e.target.value,
                             })
                           }
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                          className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent min-h-[44px]"
                           required
                         />
                       </div>
@@ -302,7 +302,7 @@ export default function ProfilePage() {
                               email: e.target.value,
                             })
                           }
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                          className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent min-h-[44px]"
                           required
                         />
                       </div>
@@ -319,7 +319,7 @@ export default function ProfilePage() {
                               first_name: e.target.value,
                             })
                           }
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                          className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent min-h-[44px]"
                           required
                         />
                       </div>
@@ -336,7 +336,7 @@ export default function ProfilePage() {
                               last_name: e.target.value,
                             })
                           }
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                          className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent min-h-[44px]"
                           required
                         />
                       </div>
@@ -345,7 +345,7 @@ export default function ProfilePage() {
                       <button
                         type="submit"
                         disabled={updating}
-                        className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white px-4 py-3 rounded-lg font-semibold shadow-lg hover:shadow-xl transition-all"
+                        className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white px-4 py-3 rounded-lg font-semibold shadow-lg hover:shadow-xl transition-all min-h-[44px]"
                       >
                         {updating ? "Güncelleniyor..." : "Profil Güncelle"}
                       </button>
@@ -377,7 +377,7 @@ export default function ProfilePage() {
                             current_password: e.target.value,
                           })
                         }
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent min-h-[44px]"
                         required
                       />
                     </div>
@@ -394,7 +394,7 @@ export default function ProfilePage() {
                             new_password: e.target.value,
                           })
                         }
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent min-h-[44px]"
                         required
                         minLength={6}
                       />
@@ -415,7 +415,7 @@ export default function ProfilePage() {
                             confirm_password: e.target.value,
                           })
                         }
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                        className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent min-h-[44px]"
                         required
                       />
                       {passwordFormData.new_password &&
@@ -435,7 +435,7 @@ export default function ProfilePage() {
                           passwordFormData.new_password !==
                             passwordFormData.confirm_password
                         }
-                        className="w-full bg-gradient-to-r from-red-500 to-pink-600 hover:from-red-600 hover:to-pink-700 text-white px-4 py-3 rounded-lg font-semibold shadow-lg hover:shadow-xl transition-all"
+                        className="w-full bg-gradient-to-r from-red-500 to-pink-600 hover:from-red-600 hover:to-pink-700 text-white px-4 py-3 rounded-lg font-semibold shadow-lg hover:shadow-xl transition-all min-h-[44px]"
                       >
                         {changingPassword
                           ? "Değiştiriliyor..."

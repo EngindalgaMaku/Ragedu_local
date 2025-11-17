@@ -238,10 +238,10 @@ export default function DocumentUploadModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-      <div className="bg-card rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 z-50">
+      <div className="bg-card rounded-xl shadow-2xl w-full max-w-sm sm:max-w-md md:max-w-lg lg:max-w-2xl max-h-[95vh] sm:max-h-[90vh] overflow-hidden">
         {/* Modal Header */}
-        <div className="flex items-center justify-between p-6 border-b border-border">
+        <div className="flex items-center justify-between p-3 sm:p-4 md:p-6 border-b border-border">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-primary/10 text-primary rounded-lg">
               <UploadIcon className="w-6 h-6" />
@@ -272,10 +272,10 @@ export default function DocumentUploadModal({
         </div>
 
         {/* Modal Content */}
-        <div className="p-6">
+        <div className="p-3 sm:p-4 md:p-6">
           {isConverting ? (
             // Processing State
-            <div className="text-center py-8">
+            <div className="text-center py-4 sm:py-6 md:py-8">
               <div className="flex flex-col items-center gap-4">
                 <ProcessingIcon />
                 <div>
@@ -292,10 +292,10 @@ export default function DocumentUploadModal({
             </div>
           ) : (
             // Upload Form
-            <div className="space-y-6">
+            <div className="space-y-4 md:space-y-6">
               {/* Drag & Drop Zone */}
               <div
-                className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-all ${
+                className={`relative border-2 border-dashed rounded-xl p-4 sm:p-6 md:p-8 text-center transition-all ${
                   selectedFile ? "cursor-default" : "cursor-pointer"
                 } ${
                   isDragOver
@@ -365,11 +365,11 @@ export default function DocumentUploadModal({
         </div>
 
         {/* Modal Footer */}
-        <div className="p-6 border-t border-border bg-muted/30">
-          <div className="flex gap-3 justify-end">
+        <div className="p-3 sm:p-4 md:p-6 border-t border-border bg-muted/30">
+          <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 justify-end">
             <button
               onClick={onClose}
-              className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+              className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors min-h-[44px] order-2 sm:order-1"
             >
               {isConverting ? "Arka Planda Devam Et" : "İptal"}
             </button>
@@ -378,7 +378,7 @@ export default function DocumentUploadModal({
                 type="button"
                 onClick={() => handlePdfUpload()}
                 disabled={!selectedFile}
-                className="px-6 py-2 bg-primary text-primary-foreground rounded-lg font-medium text-sm hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                className="px-6 py-2 bg-primary text-primary-foreground rounded-lg font-medium text-sm hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all min-h-[44px] order-1 sm:order-2"
               >
                 Dönüştür ve Yükle
               </button>

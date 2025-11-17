@@ -9,15 +9,18 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file
-COPY requirements.txt .
+# Copy requirements file from service directory
+COPY services/document_processing_service/requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
-COPY main.py .
+# Copy source code and dependencies
+COPY services/document_processing_service/main.py .
+
+# Copy the src directory for advanced semantic chunking
+COPY src ./src
 
 # Expose port 8080
 EXPOSE 8080

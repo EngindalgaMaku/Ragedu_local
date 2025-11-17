@@ -219,9 +219,9 @@ export default function SessionPage() {
       <div className="space-y-6">
         {/* Minimal Header */}
         <div className="border-b border-border pb-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-semibold text-foreground mb-1">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <h1 className="text-lg sm:text-xl lg:text-2xl font-semibold text-foreground mb-1">
                 {session?.name || "Ders Oturumu Yükleniyor..."}
               </h1>
               {session?.description && (
@@ -232,10 +232,10 @@ export default function SessionPage() {
             </div>
             <Link
               href="/"
-              className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+              className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors min-h-[44px] px-2 py-2 rounded-md hover:bg-muted/50"
             >
               <BackIcon />
-              <span className="hidden sm:inline">Geri</span>
+              <span className="sm:inline">Geri</span>
             </Link>
           </div>
         </div>
@@ -258,9 +258,9 @@ export default function SessionPage() {
         )}
 
         {/* RAG Configuration Section - Minimal */}
-        <div className="bg-card border border-border rounded-lg p-5">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4">
-            <div>
+        <div className="bg-card border border-border rounded-lg p-3 sm:p-4 lg:p-5">
+          <div className="flex flex-col items-start justify-between gap-4 mb-4">
+            <div className="w-full">
               <h2 className="text-base font-semibold text-foreground mb-1">
                 Döküman Yönetimi
               </h2>
@@ -268,18 +268,18 @@ export default function SessionPage() {
                 Markdown yükleyin veya mevcut dökümanları yeniden işleyin
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col sm:flex-row w-full sm:w-auto gap-2">
               <button
                 onClick={() => setShowModal(true)}
                 disabled={processing || reprocessing}
-                className="py-2 px-4 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="py-3 px-4 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[44px]"
               >
                 Markdown Yükle
               </button>
               <button
                 onClick={() => setShowReprocessModal(true)}
                 disabled={processing || reprocessing || chunks.length === 0}
-                className="py-2 px-4 bg-secondary text-secondary-foreground rounded-md text-sm font-medium hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="py-3 px-4 bg-secondary text-secondary-foreground rounded-md text-sm font-medium hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[44px]"
                 title={
                   chunks.length === 0
                     ? "Yeniden işlemek için önce döküman yüklemelisiniz"
@@ -315,28 +315,28 @@ export default function SessionPage() {
         {/* Tab Navigation */}
         <div className="bg-card border border-border rounded-lg">
           <div className="border-b border-border">
-            <div className="flex gap-1 p-2">
+            <div className="flex flex-wrap gap-1 p-2">
               <button
                 onClick={() => setActiveTab('chunks')}
-                className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                className={`px-3 sm:px-4 py-3 text-sm font-medium rounded-md transition-colors min-h-[44px] ${
                   activeTab === 'chunks'
                     ? 'bg-primary text-primary-foreground'
                     : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
                 }`}
               >
-                Döküman Parçaları ({chunks.length})
+                <span className="hidden sm:inline">Döküman </span>Parçalar ({chunks.length})
               </button>
               {apragEnabled && (
                 <>
                   <button
                     onClick={() => setActiveTab('topics')}
-                    className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                    className={`px-3 sm:px-4 py-3 text-sm font-medium rounded-md transition-colors min-h-[44px] ${
                       activeTab === 'topics'
                         ? 'bg-primary text-primary-foreground'
                         : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
                     }`}
                   >
-                    Konu Yönetimi
+                    <span className="hidden sm:inline">Konu </span>Yönetimi
                   </button>
                   <button
                     onClick={() => {
@@ -345,13 +345,13 @@ export default function SessionPage() {
                         fetchInteractions();
                       }
                     }}
-                    className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                    className={`px-3 sm:px-4 py-3 text-sm font-medium rounded-md transition-colors min-h-[44px] ${
                       activeTab === 'interactions'
                         ? 'bg-primary text-primary-foreground'
                         : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
                     }`}
                   >
-                    Öğrenci Soruları ({interactions.length})
+                    <span className="hidden sm:inline">Öğrenci </span>Sorular ({interactions.length})
                   </button>
                 </>
               )}
@@ -395,8 +395,41 @@ export default function SessionPage() {
                 </div>
               ) : (
                 <>
-                  {/* Table */}
-                  <div className="overflow-x-auto">
+                  {/* Table - Mobile Card View for Small Screens */}
+                  <div className="block sm:hidden space-y-3 p-3">
+                    {chunks
+                      .slice(
+                        (chunkPage - 1) * CHUNKS_PER_PAGE,
+                        chunkPage * CHUNKS_PER_PAGE
+                      )
+                      .map((chunk) => (
+                        <div
+                          key={`${chunk.document_name}-${chunk.chunk_index}`}
+                          className="bg-muted/30 rounded-lg p-3 space-y-2"
+                        >
+                          <div className="flex justify-between items-center">
+                            <span className="text-sm font-medium">#{chunk.chunk_index}</span>
+                            <span className="text-xs text-muted-foreground">{chunk.chunk_text.length} karakter</span>
+                          </div>
+                          <div className="text-sm text-foreground font-medium truncate">
+                            {chunk.document_name}
+                          </div>
+                          <details className="group">
+                            <summary className="text-sm text-primary cursor-pointer hover:underline">
+                              İçeriği Göster
+                            </summary>
+                            <div className="mt-2 text-xs text-muted-foreground bg-muted/50 rounded p-3 max-h-48 overflow-y-auto">
+                              <p className="whitespace-pre-wrap leading-relaxed">
+                                {chunk.chunk_text}
+                              </p>
+                            </div>
+                          </details>
+                        </div>
+                      ))}
+                  </div>
+                  
+                  {/* Table - Desktop View */}
+                  <div className="hidden sm:block overflow-x-auto">
                     <table className="w-full">
                       <thead className="bg-muted/50">
                         <tr>
@@ -454,16 +487,16 @@ export default function SessionPage() {
 
                   {/* Pagination */}
                   {chunks.length > CHUNKS_PER_PAGE && (
-                    <div className="flex items-center justify-between px-5 py-3 border-t border-border">
+                    <div className="flex items-center justify-between px-3 sm:px-5 py-3 border-t border-border">
                       <button
                         onClick={() => setChunkPage((p) => Math.max(1, p - 1))}
                         disabled={chunkPage === 1}
-                        className="py-1.5 px-3 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        className="py-3 px-4 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[44px]"
                       >
                         Önceki
                       </button>
                       <span className="text-sm text-muted-foreground">
-                        Sayfa {chunkPage} /{" "}
+                        <span className="hidden sm:inline">Sayfa </span>{chunkPage} /{" "}
                         {Math.ceil(chunks.length / CHUNKS_PER_PAGE)}
                       </span>
                       <button
@@ -478,7 +511,7 @@ export default function SessionPage() {
                         disabled={
                           chunkPage >= Math.ceil(chunks.length / CHUNKS_PER_PAGE)
                         }
-                        className="py-1.5 px-3 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                        className="py-3 px-4 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[44px]"
                       >
                         Sonraki
                       </button>
@@ -605,7 +638,7 @@ export default function SessionPage() {
         {/* Reprocess Modal */}
         {showReprocessModal && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-card border border-border rounded-lg shadow-xl max-w-md w-full p-6">
+            <div className="bg-card border border-border rounded-lg shadow-xl max-w-sm sm:max-w-md w-full p-4 sm:p-6 mx-2">
               <h3 className="text-lg font-semibold text-foreground mb-3">
                 Dökümanları Yeniden İşle
               </h3>

@@ -164,11 +164,13 @@ export default function ModernDashboard() {
           variant="outline"
           size="sm"
           disabled={loading}
+          className="min-h-[44px]"
         >
           <RefreshCw
             className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`}
           />
-          Yenile
+          <span className="hidden sm:inline">Yenile</span>
+          <span className="sm:hidden">↻</span>
         </Button>
       </div>
 
@@ -211,9 +213,9 @@ export default function ModernDashboard() {
       </div>
 
       {/* Main Dashboard Grid */}
-      <div className="grid gap-6 grid-cols-1 lg:grid-cols-3">
+      <div className="grid gap-4 sm:gap-6 grid-cols-1 lg:grid-cols-3">
         {/* System Health Section */}
-        <div className="lg:col-span-2 space-y-6">
+        <div className="lg:col-span-2 space-y-4 sm:space-y-6">
           {/* System Status */}
           <Card>
             <CardHeader>
@@ -222,9 +224,9 @@ export default function ModernDashboard() {
                 Sistem Durumu
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-6">
+            <CardContent className="space-y-4 sm:space-y-6">
               {/* Overall Health */}
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
                 <div className="flex items-center space-x-3">
                   {getHealthIcon(health?.status || "unknown")}
                   <div>
@@ -236,13 +238,13 @@ export default function ModernDashboard() {
                     </div>
                   </div>
                 </div>
-                <Badge variant="secondary">
-                  Çalışma Süresi: {health?.uptime || "—"}
+                <Badge variant="secondary" className="text-xs">
+                  <span className="hidden sm:inline">Çalışma Süresi: </span>{health?.uptime || "—"}
                 </Badge>
               </div>
 
               {/* Resource Usage */}
-              <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
+              <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2">
                 <div className="space-y-2">
                   <div className="flex items-center justify-between text-sm">
                     <div className="flex items-center gap-2">
@@ -287,7 +289,7 @@ export default function ModernDashboard() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid gap-3 grid-cols-1 sm:grid-cols-3">
+              <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
                 {(
                   Object.entries(
                     (health?.services as ServiceMap) ?? {
@@ -329,7 +331,7 @@ export default function ModernDashboard() {
         </div>
 
         {/* Right sidebar */}
-        <div className="space-y-6">
+        <div className="space-y-4 sm:space-y-6">
           <ModernQuickActionsWidget />
           <ModernActivityFeedWidget />
         </div>

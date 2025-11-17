@@ -12,17 +12,17 @@ import logging
 import chromadb
 from chromadb.config import Settings
 
-# Import advanced semantic chunking system
+# Import UNIFIED chunking system (FIXED VERSION)
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 try:
     from src.text_processing.text_chunker import chunk_text
-    ADVANCED_CHUNKING_AVAILABLE = True
-    logging.getLogger(__name__).info("✅ Advanced semantic chunking system imported successfully")
+    UNIFIED_CHUNKING_AVAILABLE = True
+    logging.getLogger(__name__).info("✅ UNIFIED chunking system imported successfully with Turkish support and enhanced markdown structure preservation")
 except ImportError as e:
-    ADVANCED_CHUNKING_AVAILABLE = False
-    logging.getLogger(__name__).warning(f"⚠️ Advanced chunking not available: {e}")
+    UNIFIED_CHUNKING_AVAILABLE = False
+    logging.getLogger(__name__).warning(f"⚠️ CRITICAL: Unified chunking system not available: {e}")
 
 # Import langdetect for language detection
 from langdetect import detect, LangDetectException
@@ -171,202 +171,19 @@ def get_chroma_client():
         logger.error(f"Failed to create ChromaDB client: {e}")
         raise
 
-class DocumentProcessor:
-    def __init__(self):
-        pass
-        
-    def split_text(self, text: str, chunk_size: int = 1000, chunk_overlap: int = 200) -> List[str]:
-        """
-        Split text into semantic chunks that respect sentence boundaries and markdown structure
-        Uses advanced semantic chunking instead of basic regex splitting
-        """
-        if not text:
-            return []
-        
-        # Clean up the text
-        text = text.strip()
-        if not text:
-            return []
-        
-        # Detect language
-        try:
-            language = detect(text)
-            logger.info(f"Detected language: {language}")
-        except LangDetectException:
-            language = "en"
-            logger.warning("Could not detect language, defaulting to English")
-        
-        # Use markdown-aware semantic chunking
-        chunks = self.create_markdown_aware_semantic_chunks(
-            text=text,
-            target_size=chunk_size,
-            overlap_ratio=chunk_overlap / chunk_size if chunk_size > 0 else 0.1,
-            language=language
-        )
-        
-        logger.info(f"Text split into {len(chunks)} chunks using markdown-aware semantic chunking")
-        return chunks
-    
-    def create_markdown_aware_semantic_chunks(
-        self,
-        text: str,
-        target_size: int = 1000,
-        overlap_ratio: float = 0.1,
-        language: str = "auto"
-    ) -> List[str]:
-        """
-        Creates intelligent semantic chunks based on markdown structure and content.
-        
-        Features:
-        1. Header-based chunking (respects topic boundaries)
-        2. Question-answer grouping
-        3. List preservation
-        4. Sentence boundary respect
-        5. Named chunks based on content
-        """
-        
-        # Use advanced semantic chunking
-        return self._create_intelligent_semantic_chunks(text, target_size, overlap_ratio, language)
-    
-    def _create_intelligent_semantic_chunks(
-        self,
-        text: str,
-        target_size: int = 1000,
-        overlap_ratio: float = 0.1,
-        language: str = "auto"
-    ) -> List[str]:
-        """
-        Advanced semantic chunking with topic awareness
-        """
-        
-        # First, identify document structure
-        sections = self._identify_document_sections(text)
-        
-        if not sections:
-            logger.warning("No sections found, falling back to basic chunking")
-            return self._fallback_chunking(text, target_size)
-        
-        chunks = []
-        
-        for section in sections:
-            section_chunks = self._process_section_intelligently(
-                section, target_size, overlap_ratio
-            )
-            chunks.extend(section_chunks)
-        
-        logger.info(f"Generated {len(chunks)} intelligent semantic chunks")
-        return chunks
-    
-    def _split_into_markdown_blocks(self, text: str) -> List[str]:
-        """
-        Split text into semantic blocks that respect markdown structure.
-        
-        Returns a list of text blocks where each block is a semantically
-        meaningful unit (paragraph, header, code block, list, etc.)
-        """
-        lines = text.split('\n')
-        blocks = []
-        current_block_lines = []
-        in_code_block = False
-        in_list = False
-        
-        for i, line in enumerate(lines):
-            stripped_line = line.strip()
-            
-            # Handle code blocks (preserve them as single blocks)
-            if stripped_line.startswith('```'):
-                if in_code_block:
-                    # End of code block
-                    current_block_lines.append(line)
-                    blocks.append('\n'.join(current_block_lines))
-                    current_block_lines = []
-                    in_code_block = False
-                    in_list = False
-                else:
-                    # Start of code block - save any previous block
-                    if current_block_lines:
-                        blocks.append('\n'.join(current_block_lines))
-                        current_block_lines = []
-                    current_block_lines.append(line)
-                    in_code_block = True
-                    in_list = False
-                continue
-            
-            # If we're in a code block, just add the line
-            if in_code_block:
-                current_block_lines.append(line)
-                continue
-            
-            # Handle markdown headers (they start new blocks)
-            if stripped_line.startswith('#'):
-                # Save previous block
-                if current_block_lines:
-                    blocks.append('\n'.join(current_block_lines))
-                    current_block_lines = []
-                current_block_lines.append(line)
-                in_list = False
-                continue
-            
-            # Handle lists
-            if re.match(r'^\s*[\-\+\*]\s', line) or re.match(r'^\s*\d+\.\s', line):
-                if not in_list and current_block_lines:
-                    # Start of new list - save previous block
-                    blocks.append('\n'.join(current_block_lines))
-                    current_block_lines = []
-                current_block_lines.append(line)
-                in_list = True
-                continue
-            
-            # Handle empty lines
-            if not stripped_line:
-                if current_block_lines and not in_list:
-                    # Empty line ends a paragraph (but not a list)
-                    current_block_lines.append(line)
-                    blocks.append('\n'.join(current_block_lines))
-                    current_block_lines = []
-                    in_list = False
-                elif current_block_lines:
-                    # Keep empty line as part of current block
-                    current_block_lines.append(line)
-                continue
-            
-            # Regular text line
-            if in_list and not re.match(r'^\s*[\-\+\*]\s', line) and not re.match(r'^\s*\d+\.\s', line):
-                # End of list
-                if current_block_lines:
-                    blocks.append('\n'.join(current_block_lines))
-                    current_block_lines = []
-                in_list = False
-            
-            current_block_lines.append(line)
-        
-        # Don't forget the last block
-        if current_block_lines:
-            blocks.append('\n'.join(current_block_lines))
-        
-        # Filter out empty blocks
-        blocks = [block.strip() for block in blocks if block.strip()]
-        
-        return blocks
-    
-    def get_embeddings(self, texts: List[str], embedding_model: str = "nomic-embed-text") -> List[List[float]]:
-        """Get embeddings from local model inference service (Ollama)"""
-        try:
-            return self._get_local_embeddings(texts, embedding_model)
-                
-        except Exception as e:
-            # Don't raise HTTPException - let caller handle fallback
-            logger.warning(f"Embedding service error with {embedding_model}: {str(e)}")
-            raise  # Re-raise to allow fallback mechanism
-    
-    def _get_local_embeddings(self, texts: List[str], embedding_model: str) -> List[List[float]]:
-        """Get embeddings from model inference service"""
+# REMOVED: Internal DocumentProcessor class - now using unified external chunking system only
+
+def get_embeddings_direct(texts: List[str], embedding_model: str = "nomic-embed-text") -> List[List[float]]:
+    """
+    Direct embedding function for use with unified chunking system.
+    Get embeddings from local model inference service (Ollama)
+    """
+    try:
         embed_url = f"{MODEL_INFERENCER_URL}/embed"
         
         logger.info(f"Getting embeddings for {len(texts)} texts using model: {embedding_model}")
         
         # Send all texts in a single request for efficiency
-        # Increased timeout to handle multiple chunks with slow local Ollama embeddings
         response = requests.post(
             embed_url,
             json={"texts": texts, "model": embedding_model},
@@ -392,315 +209,28 @@ class DocumentProcessor:
         
         logger.info(f"Successfully retrieved {len(embeddings)} local embeddings")
         return embeddings
+        
+    except Exception as e:
+        logger.warning(f"Embedding service error with {embedding_model}: {str(e)}")
+        raise  # Re-raise to allow fallback mechanism
 
-    def _identify_document_sections(self, text: str) -> List[Dict[str, Any]]:
-        """
-        Identifies sections in a markdown document based on headers.
-        """
-        lines = text.split('\n')
-        sections = []
-        current_section = None
-        current_content = []
-
-        for i, line in enumerate(lines):
-            header_match = re.match(r'^(#+)\s+(.*)', line)
-            if header_match:
-                if current_section:
-                    current_section['content'] = '\n'.join(current_content).strip()
-                    current_section['end_line'] = i - 1
-                    if current_section['content']:
-                        sections.append(current_section)
-
-                level = len(header_match.group(1))
-                title = header_match.group(2).strip()
-                current_section = {
-                    'title': title,
-                    'level': level,
-                    'start_line': i,
-                    'type': 'header' if 'soru' not in title.lower() else 'question'
-                }
-                current_content = []
-            else:
-                if current_section is None:
-                    current_section = {
-                        'title': 'Giriş', 'level': 0, 'start_line': 0, 'type': 'text'
-                    }
-                    current_content = []
-                current_content.append(line)
-        
-        if current_section and current_content:
-            current_section['content'] = '\n'.join(current_content).strip()
-            current_section['end_line'] = len(lines) - 1
-            if current_section['content']:
-                sections.append(current_section)
-        
-        if not sections and text.strip():
-            sections.append({
-                'title': 'Genel İçerik', 'level': 0, 'start_line': 0,
-                'end_line': len(lines) - 1, 'content': text, 'type': 'text'
-            })
-
-        return sections
-
-    def _process_section_intelligently(
-        self,
-        section: dict,
-        target_size: int,
-        overlap_ratio: float
-    ) -> List[str]:
-        """
-        Process a section intelligently based on its type and content
-        """
-        content = section['content']
-        section_type = section.get('type', 'text')
-        title = section.get('title', 'Untitled')
-        
-        # If section is small enough, keep as single chunk
-        if len(content) <= target_size * 1.2:
-            chunk_title = self._generate_chunk_title(section_type, title, content)
-            return [f"# {chunk_title}\n\n{content}"]
-        
-        # For larger sections, split intelligently
-        if section_type == 'header':
-            return self._split_header_section(content, title, target_size, overlap_ratio)
-        elif section_type == 'question':
-            return self._split_question_section(content, title, target_size, overlap_ratio)
-        else:
-            return self._split_generic_section(content, title, target_size, overlap_ratio)
+def extract_chunk_title_from_content(content: str, fallback_title: str) -> str:
+    """
+    Extract meaningful title from chunk content for unified system compatibility
+    """
+    lines = content.split('\n')
     
-    def _generate_chunk_title(self, section_type: str, title: str, content: str) -> str:
-        """
-        Generate meaningful chunk titles based on content
-        """
-        if section_type == 'header':
-            return title
-        elif section_type == 'question':
-            return f"Soru: {title}"
-        else:
-            # Extract first meaningful sentence or phrase
-            lines = content.split('\n')
-            for line in lines:
-                line = line.strip()
-                if line and len(line) > 10 and not line.startswith('#'):
-                    # Take first 50 characters as title
-                    return line[:50] + ('...' if len(line) > 50 else '')
-            return "Metin Bölümü"
+    # Look for headers first
+    for line in lines:
+        header_match = re.match(r'^#{1,6}\s+(.+)$', line.strip())
+        if header_match:
+            return header_match.group(1).strip()
     
-    def _split_header_section(
-        self,
-        content: str,
-        title: str,
-        target_size: int,
-        overlap_ratio: float
-    ) -> List[str]:
-        """
-        Split header section while preserving sub-structure
-        """
-        chunks = []
-        lines = content.split('\n')
-        current_chunk_lines = []
-        current_size = 0
-        
-        for line in lines:
-            line_size = len(line) + 1  # +1 for newline
-            
-            # Check if this is a sub-header
-            if re.match(r'^#{2,6}\s+', line.strip()):
-                # If we have accumulated content, save it as a chunk
-                if current_chunk_lines and current_size > 200:
-                    chunk_content = '\n'.join(current_chunk_lines)
-                    chunk_title = self._extract_chunk_title_from_content(chunk_content, title)
-                    chunks.append(f"# {chunk_title}\n\n{chunk_content}")
-                    
-                    # Start new chunk with overlap
-                    overlap_lines = int(len(current_chunk_lines) * overlap_ratio)
-                    current_chunk_lines = current_chunk_lines[-overlap_lines:] if overlap_lines > 0 else []
-                    current_size = sum(len(line) + 1 for line in current_chunk_lines)
-            
-            current_chunk_lines.append(line)
-            current_size += line_size
-            
-            # If chunk is getting too large, split at sentence boundary
-            if current_size > target_size:
-                split_point = self._find_sentence_boundary(current_chunk_lines, target_size)
-                if split_point > 0:
-                    chunk_lines = current_chunk_lines[:split_point]
-                    chunk_content = '\n'.join(chunk_lines)
-                    chunk_title = self._extract_chunk_title_from_content(chunk_content, title)
-                    chunks.append(f"# {chunk_title}\n\n{chunk_content}")
-                    
-                    # Continue with remaining lines plus overlap
-                    overlap_lines = int(split_point * overlap_ratio)
-                    current_chunk_lines = current_chunk_lines[split_point-overlap_lines:]
-                    current_size = sum(len(line) + 1 for line in current_chunk_lines)
-        
-        # Don't forget the last chunk
-        if current_chunk_lines:
-            chunk_content = '\n'.join(current_chunk_lines)
-            chunk_title = self._extract_chunk_title_from_content(chunk_content, title)
-            chunks.append(f"# {chunk_title}\n\n{chunk_content}")
-        
-        return chunks
-    
-    def _split_question_section(
-        self,
-        content: str,
-        title: str,
-        target_size: int,
-        overlap_ratio: float
-    ) -> List[str]:
-        """
-        Split question sections, keeping Q&A pairs together
-        """
-        chunks = []
-        lines = content.split('\n')
-        current_qa_pair = []
-        current_size = 0
-        
-        for line in lines:
-            current_qa_pair.append(line)
-            current_size += len(line) + 1
-            
-            # If we hit a new question and current chunk is large enough
-            if (line.strip().endswith('?') and
-                len(current_qa_pair) > 1 and
-                current_size > target_size * 0.7):
-                
-                chunk_content = '\n'.join(current_qa_pair)
-                chunk_title = f"Soru: {current_qa_pair[0].strip()[:50]}..."
-                chunks.append(f"# {chunk_title}\n\n{chunk_content}")
-                
-                current_qa_pair = []
-                current_size = 0
-        
-        # Last chunk
-        if current_qa_pair:
-            chunk_content = '\n'.join(current_qa_pair)
-            chunk_title = f"Soru: {title}"
-            chunks.append(f"# {chunk_title}\n\n{chunk_content}")
-        
-        return chunks
-    
-    def _split_generic_section(
-        self,
-        content: str,
-        title: str,
-        target_size: int,
-        overlap_ratio: float
-    ) -> List[str]:
-        """
-        Split generic text sections at sentence boundaries
-        """
-        chunks = []
-        sentences = self._split_into_sentences(content)
-        
-        current_chunk_sentences = []
-        current_size = 0
-        
-        for sentence in sentences:
-            sentence_size = len(sentence) + 1
-            
-            # If adding this sentence would exceed target size
-            if current_size + sentence_size > target_size and current_chunk_sentences:
-                chunk_content = ' '.join(current_chunk_sentences)
-                chunk_title = self._extract_chunk_title_from_content(chunk_content, title)
-                chunks.append(f"# {chunk_title}\n\n{chunk_content}")
-                
-                # Start new chunk with overlap
-                overlap_count = int(len(current_chunk_sentences) * overlap_ratio)
-                current_chunk_sentences = current_chunk_sentences[-overlap_count:] if overlap_count > 0 else []
-                current_size = sum(len(s) + 1 for s in current_chunk_sentences)
-            
-            current_chunk_sentences.append(sentence)
-            current_size += sentence_size
-        
-        # Last chunk
-        if current_chunk_sentences:
-            chunk_content = ' '.join(current_chunk_sentences)
-            chunk_title = self._extract_chunk_title_from_content(chunk_content, title)
-            chunks.append(f"# {chunk_title}\n\n{chunk_content}")
-        
-        return chunks
-    
-    def _extract_chunk_title_from_content(self, content: str, fallback_title: str) -> str:
-        """
-        Extract meaningful title from chunk content
-        """
-        lines = content.split('\n')
-        
-        # Look for headers first
-        for line in lines:
-            header_match = re.match(r'^#{1,6}\s+(.+)$', line.strip())
-            if header_match:
-                return header_match.group(1).strip()
-        
-        # Look for first meaningful sentence
-        for line in lines:
-            if line.strip():
-                return line.strip()[:70] + ('...' if len(line.strip()) > 70 else '')
-        return fallback_title
-
-    def _split_into_sentences(self, text: str) -> List[str]:
-        """
-        Split text into sentences, handling Turkish punctuation
-        """
-        # Turkish sentence endings
-        sentence_endings = r'[.!?…]\s+'
-        sentences = re.split(sentence_endings, text)
-        
-        # Clean and filter sentences
-        cleaned_sentences = []
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if sentence and len(sentence) > 10:
-                cleaned_sentences.append(sentence)
-        
-        return cleaned_sentences
-    
-    def _find_sentence_boundary(self, lines: List[str], target_size: int) -> int:
-        """
-        Find the best sentence boundary to split at
-        """
-        current_size = 0
-        best_split = len(lines) // 2  # fallback
-        
-        for i, line in enumerate(lines):
-            current_size += len(line) + 1
-            
-            # Look for sentence endings
-            if (re.search(r'[.!?]\s*$', line.strip()) and
-                current_size >= target_size * 0.7):
-                return i + 1
-            
-            if current_size >= target_size:
-                return max(1, i)  # Don't return 0
-        
-        return best_split
-    
-    def _fallback_chunking(self, text: str, target_size: int) -> List[str]:
-        """
-        Fallback to basic chunking if advanced parsing fails
-        """
-        chunks = []
-        words = text.split()
-        current_chunk = []
-        current_size = 0
-        
-        for word in words:
-            word_size = len(word) + 1
-            
-            if current_size + word_size > target_size and current_chunk:
-                chunks.append(' '.join(current_chunk))
-                current_chunk = []
-                current_size = 0
-            
-            current_chunk.append(word)
-            current_size += word_size
-        
-        if current_chunk:
-            chunks.append(' '.join(current_chunk))
-        
-        return chunks
+    # Look for first meaningful sentence
+    for line in lines:
+        if line.strip():
+            return line.strip()[:70] + ('...' if len(line.strip()) > 70 else '')
+    return fallback_title
 
 class CRAGEvaluator:
     """
@@ -809,8 +339,7 @@ class CRAGEvaluator:
             }
         }
 
-# Global processor instance
-processor = DocumentProcessor()
+# REMOVED: Global processor instance - now using unified external chunking system only
 
 @app.on_event("startup")
 async def startup_event():
@@ -870,26 +399,32 @@ async def process_and_store(request: ProcessRequest):
         chunk_overlap = request.chunk_overlap or 200
         chunk_strategy = request.chunk_strategy or "semantic"
         
-        if ADVANCED_CHUNKING_AVAILABLE and chunk_strategy != "char":
-            # Use advanced semantic chunking system with AST markdown parsing
-            logger.info(f"🚀 USING ADVANCED SEMANTIC CHUNKING: strategy='{chunk_strategy}', size={chunk_size}, overlap={chunk_overlap}")
+        if UNIFIED_CHUNKING_AVAILABLE:
+            # Use UNIFIED chunking system with Turkish support and enhanced markdown structure preservation
+            logger.info(f"🚀 USING UNIFIED CHUNKING SYSTEM: strategy='{chunk_strategy}', size={chunk_size}, overlap={chunk_overlap}")
             try:
                 chunks = chunk_text(
                     text=request.text,
                     chunk_size=chunk_size,
                     chunk_overlap=chunk_overlap,
                     strategy=chunk_strategy,
-                    language="auto",
-                    use_embedding_refinement=True
+                    language="auto"  # Auto-detect Turkish/English
                 )
-                logger.info(f"✅ Advanced chunking successful: {len(chunks)} semantic chunks created")
+                logger.info(f"✅ Unified chunking successful: {len(chunks)} chunks created with Turkish support and markdown structure preservation")
             except Exception as e:
-                logger.warning(f"⚠️ Advanced chunking failed, falling back to basic: {e}")
-                chunks = processor.split_text(request.text, chunk_size, chunk_overlap)
+                logger.error(f"❌ CRITICAL: Unified chunking failed: {e}")
+                logger.info("⚠️ No fallback available - unified chunking system is required")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Critical chunking system failure: {str(e)}"
+                )
         else:
-            # Fallback to basic chunking for char strategy or when advanced chunking unavailable
-            logger.info(f"📝 Using basic chunking: strategy='{chunk_strategy}' (advanced_available={ADVANCED_CHUNKING_AVAILABLE})")
-            chunks = processor.split_text(request.text, chunk_size, chunk_overlap)
+            # No fallback - unified chunking is required
+            logger.error("❌ CRITICAL: Unified chunking system not available and no fallback exists")
+            raise HTTPException(
+                status_code=500,
+                detail="Critical system error: Unified chunking system not available"
+            )
         
         if not chunks:
             logger.warning("Text could not be split into any chunks.")
@@ -900,7 +435,7 @@ async def process_and_store(request: ProcessRequest):
         # Get embeddings - check for embedding model preference in metadata
         embedding_model = request.metadata.get("embedding_model", "nomic-embed-text")
         logger.info(f"Using embedding model: {embedding_model}")
-        embeddings = processor.get_embeddings(chunks, embedding_model)
+        embeddings = get_embeddings_direct(chunks, embedding_model)
         
         if len(embeddings) != len(chunks):
             logger.error(f"Mismatch between chunk count ({len(chunks)}) and embedding count ({len(embeddings)}).")
@@ -912,27 +447,43 @@ async def process_and_store(request: ProcessRequest):
         # Generate chunk IDs
         chunk_ids = [str(uuid.uuid4()) for _ in chunks]
         
-        # Use default collection name if None, and ensure ChromaDB compatibility
+        # ENHANCED COLLECTION NAMING WITH TIMESTAMP TO PREVENT COLLISIONS
         collection_name = request.collection_name or "documents"
         logger.info(f"🔍 DIAGNOSTIC: Initial collection_name: '{collection_name}'")
         
-        # If collection name starts with "session_", use just the UUID part (ChromaDB rejects "session_" prefix)
+        # If collection name starts with "session_", use enhanced naming with timestamp
         if collection_name.startswith("session_"):
             session_id = collection_name[8:]  # Remove "session_" prefix
             logger.info(f"🔍 DIAGNOSTIC: Extracted session_id: '{session_id}' (length: {len(session_id)})")
             
+            # Generate timestamp for collision prevention
+            timestamp = int(time.time())  # Unix timestamp
+            logger.info(f"🔍 ENHANCED NAMING: Using timestamp {timestamp} to prevent collection collisions")
+            
             # Convert 32-char hex string to proper UUID format (8-4-4-4-12)
             if len(session_id) == 32 and session_id.replace('-', '').isalnum():
                 original_collection_name = collection_name
-                collection_name = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
-                logger.info(f"🔍 DIAGNOSTIC: Transformed '{original_collection_name}' -> '{collection_name}'")
-                logger.info(f"Using pure UUID as collection name: {collection_name}")
+                base_uuid = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
+                # Use timestamp-based naming: uuid_timestamp
+                collection_name = f"{base_uuid}_{timestamp}"
+                logger.info(f"🔍 ENHANCED NAMING: Transformed '{original_collection_name}' -> '{collection_name}'")
+                logger.info(f"✅ Using timestamped UUID collection name: {collection_name}")
             elif len(session_id) == 36:  # Already formatted UUID
-                collection_name = session_id
-                logger.info(f"🔍 DIAGNOSTIC: Session ID already in UUID format: '{collection_name}'")
-                logger.info(f"Using existing UUID as collection name: {collection_name}")
+                # Use timestamp-based naming: uuid_timestamp
+                collection_name = f"{session_id}_{timestamp}"
+                logger.info(f"🔍 ENHANCED NAMING: Session ID already in UUID format, adding timestamp: '{collection_name}'")
+                logger.info(f"✅ Using timestamped UUID collection name: {collection_name}")
             else:
                 logger.warning(f"🔍 DIAGNOSTIC: Unusual session_id format: '{session_id}' (length: {len(session_id)}, isalnum: {session_id.replace('-', '').isalnum()})")
+                # Still add timestamp for collision prevention
+                collection_name = f"{session_id}_{timestamp}"
+                logger.info(f"✅ Using timestamped unusual format collection name: {collection_name}")
+        else:
+            # For non-session collections, also add timestamp to prevent collisions
+            if collection_name != "documents":  # Don't timestamp the default collection
+                timestamp = int(time.time())
+                collection_name = f"{collection_name}_{timestamp}"
+                logger.info(f"🔍 ENHANCED NAMING: Added timestamp to non-session collection: '{collection_name}'")
         
         # Store chunks and embeddings in ChromaDB
         if not CHROMA_SERVICE_URL:
@@ -989,7 +540,7 @@ async def process_and_store(request: ProcessRequest):
                 chunk_metadata["chunk_preview"] = chunk_preview
                 
                 # Extract chunk title from content (if chunk starts with #)
-                chunk_title = processor._extract_chunk_title_from_content(chunk, f"Bölüm {i + 1}")
+                chunk_title = extract_chunk_title_from_content(chunk, f"Bölüm {i + 1}")
                 chunk_metadata["chunk_title"] = chunk_title
                 
                 chunk_metadatas.append(chunk_metadata)
@@ -1160,7 +711,7 @@ async def rag_query(request: RAGQueryRequest):
                 for model_to_try in embedding_models_to_try:
                     try:
                         logger.info(f"🔄 Trying embedding model: {model_to_try}")
-                        query_embeddings = processor.get_embeddings([request.query], model_to_try)
+                        query_embeddings = get_embeddings_direct([request.query], model_to_try)
                         if query_embeddings and len(query_embeddings) > 0 and len(query_embeddings[0]) > 0:
                             successful_model = model_to_try
                             logger.info(f"✅ Successfully got {len(query_embeddings)} query embeddings using {model_to_try}")
@@ -1437,7 +988,7 @@ async def retrieve_documents(request: RetrieveRequest):
         embedding_model = request.embedding_model or "nomic-embed-text"
         logger.info(f"🔍 Getting embeddings for query using {embedding_model}")
         
-        query_embeddings = processor.get_embeddings([request.query], embedding_model)
+        query_embeddings = get_embeddings_direct([request.query], embedding_model)
         
         if not query_embeddings or not query_embeddings[0]:
             logger.error("Failed to generate query embeddings")
@@ -1735,8 +1286,27 @@ async def reprocess_session_documents(
                 if not combined_text:
                     combined_text = "\n\n".join([chunk["text"] for chunk in chunks])
                 
-                # Re-split into chunks
-                new_chunks = processor.split_text(combined_text, chunk_size, chunk_overlap)
+                # 🚀 CRITICAL FIX: Use same advanced chunking as main processing
+                if UNIFIED_CHUNKING_AVAILABLE:
+                    logger.info(f"🚀 REPROCESS: Using unified chunking system for {source_file}")
+                    try:
+                        new_chunks = chunk_text(
+                            text=combined_text,
+                            chunk_size=chunk_size,
+                            chunk_overlap=chunk_overlap,
+                            strategy="markdown",  # Use consistent markdown strategy with Turkish support
+                            language="auto"  # Auto-detect Turkish/English
+                        )
+                        logger.info(f"✅ Unified chunking for reprocess: {len(new_chunks)} chunks created with enhanced structure preservation")
+                    except Exception as e:
+                        logger.error(f"❌ CRITICAL: Unified chunking failed in reprocess: {e}")
+                        failed_files.append(f"{source_file}: Unified chunking system failure - {str(e)}")
+                        continue
+                else:
+                    # No fallback - unified chunking is required
+                    logger.error(f"❌ CRITICAL: Unified chunking system not available for reprocessing {source_file}")
+                    failed_files.append(f"{source_file}: Unified chunking system not available")
+                    continue
                 
                 if not new_chunks:
                     logger.warning(f"No chunks generated for {source_file}")
@@ -1758,7 +1328,7 @@ async def reprocess_session_documents(
                 
                 for attempt in range(max_retries):
                     try:
-                        new_embeddings = processor.get_embeddings(new_chunks, embedding_model)
+                        new_embeddings = get_embeddings_direct(new_chunks, embedding_model)
                         if len(new_embeddings) == len(new_chunks):
                             break  # Success
                         else:

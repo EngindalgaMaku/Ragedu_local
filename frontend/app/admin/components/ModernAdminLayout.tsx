@@ -226,12 +226,12 @@ export default function ModernAdminLayout({
         >
           {/* Header */}
           <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/95">
-            <div className="flex h-16 items-center px-6 gap-4">
+            <div className="flex h-16 items-center px-3 sm:px-4 lg:px-6 gap-2 sm:gap-4">
               {/* Mobile menu button */}
               <Button
                 variant="ghost"
                 size="icon"
-                className="lg:hidden"
+                className="lg:hidden min-h-[44px] min-w-[44px]"
                 onClick={() => setSidebarOpen(true)}
               >
                 <Menu className="h-6 w-6" />
@@ -240,16 +240,16 @@ export default function ModernAdminLayout({
               {/* Page title */}
               <div className="flex-1">
                 {title && (
-                  <h1 className="text-2xl font-bold text-foreground tracking-tight">
+                  <h1 className="text-lg sm:text-xl lg:text-2xl font-bold text-foreground tracking-tight">
                     {title}
                   </h1>
                 )}
               </div>
 
               {/* Header actions */}
-              <div className="flex items-center space-x-4">
+              <div className="flex items-center space-x-2 sm:space-x-4">
                 {/* Notifications */}
-                <Button variant="ghost" size="icon" className="relative">
+                <Button variant="ghost" size="icon" className="relative min-h-[44px] min-w-[44px]">
                   <Bell className="h-5 w-5" />
                   <span className="absolute -top-1 -right-1 h-3 w-3 bg-destructive rounded-full"></span>
                 </Button>
@@ -258,18 +258,18 @@ export default function ModernAdminLayout({
                 <div className="relative">
                   <Button
                     variant="ghost"
-                    className="pl-3 pr-2"
+                    className="pl-2 sm:pl-3 pr-2 min-h-[44px]"
                     onClick={() => setUserMenuOpen(!userMenuOpen)}
                   >
                     <div className="flex items-center space-x-2">
-                      <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center">
+                      <div className="w-8 h-8 bg-primary rounded-full flex items-center justify-center flex-shrink-0">
                         <span className="text-sm font-bold text-primary-foreground">
                           {user?.first_name?.charAt(0) ||
                             user?.username?.charAt(0) ||
                             "A"}
                         </span>
                       </div>
-                      <div className="text-left hidden md:block">
+                      <div className="text-left hidden sm:block">
                         <div className="text-sm font-medium">
                           {user?.first_name} {user?.last_name}
                         </div>
@@ -287,7 +287,7 @@ export default function ModernAdminLayout({
                         className="fixed inset-0 z-40"
                         onClick={() => setUserMenuOpen(false)}
                       />
-                      <Card className="absolute right-0 top-full mt-2 w-56 z-50">
+                      <Card className="absolute right-0 top-full mt-2 w-48 sm:w-56 z-50">
                         <CardContent className="p-0">
                           <div className="px-4 py-3 border-b">
                             <p className="text-sm font-semibold">
@@ -342,7 +342,7 @@ export default function ModernAdminLayout({
           </header>
 
           {/* Page content */}
-          <main className="flex-1 p-6 bg-slate-50">{children}</main>
+          <main className="flex-1 p-3 sm:p-4 lg:p-6 bg-slate-50">{children}</main>
         </div>
       </div>
     </NotificationProvider>

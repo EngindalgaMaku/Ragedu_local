@@ -10,6 +10,11 @@
 
 @layer base {
   :root {
+    /* Layout Custom Properties */
+    --sidebar-width: 16rem;
+    --sidebar-collapsed-width: 4rem;
+    --header-height: 4rem;
+    
     /* HSL Color System */
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;

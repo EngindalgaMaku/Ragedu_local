@@ -145,17 +145,17 @@ function SessionCard({
 
   return (
     <div
-      className={`relative group bg-gradient-to-br ${c.bg} ${c.text} rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1 cursor-pointer p-6 animate-slide-up`}
+      className={`relative group bg-gradient-to-br ${c.bg} ${c.text} rounded-xl sm:rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1 cursor-pointer p-4 sm:p-6 animate-slide-up`}
       style={{ animationDelay: `${index * 0.1}s` }}
       onClick={() => onNavigate(session.session_id)}
     >
-      <div className="flex items-start justify-between">
-        <div className="flex-1 pr-4">
-          <h3 className="text-lg font-bold mb-1">{session.name}</h3>
-          <p className="text-sm opacity-80 mb-4 line-clamp-2">
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+        <div className="flex-1 min-w-0">
+          <h3 className="text-base sm:text-lg font-bold mb-1 truncate">{session.name}</h3>
+          <p className="text-xs sm:text-sm opacity-80 mb-3 sm:mb-4 line-clamp-2">
             {session.description}
           </p>
-          <div className="flex items-center gap-4 text-sm opacity-90">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-4 text-xs sm:text-sm opacity-90">
             <div className="flex items-center gap-1.5">
               <DocumentIcon />
               <span>{session.document_count}</span>
@@ -171,7 +171,7 @@ function SessionCard({
           </div>
         </div>
 
-        <div className="flex flex-col items-end gap-3 min-w-fit">
+        <div className="flex flex-col items-end gap-2 sm:gap-3 min-w-fit">
           {/* Status Display */}
           <div
             className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium transition-colors ${
@@ -188,15 +188,15 @@ function SessionCard({
             {session.status === "active" ? "Aktif" : "Pasif"}
           </div>
 
-          {/* Action Buttons - GÖRÜNÜR HALE GETİRİLDİ */}
-          <div className="flex items-center gap-2 bg-white/20 p-1.5 rounded-lg backdrop-blur-sm">
+          {/* Action Buttons - Mobile Optimized */}
+          <div className="flex flex-wrap items-center gap-1 sm:gap-2 bg-white/20 p-1.5 rounded-lg backdrop-blur-sm">
             {/* Toggle Status Button */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleStatus(session.session_id, session.status);
               }}
-              className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${
+              className={`px-2 py-1 text-xs font-medium rounded-md transition-colors min-h-[32px] min-w-[32px] ${
                 session.status === "active"
                   ? "bg-red-500/50 text-white hover:bg-red-500/80"
                   : "bg-green-500/50 text-white hover:bg-green-500/80"
@@ -212,10 +212,10 @@ function SessionCard({
                 e.stopPropagation();
                 onOpenRecent(session.session_id);
               }}
-              className="px-3 py-1 text-xs font-medium rounded-md bg-white text-indigo-700 hover:bg-indigo-50 border border-indigo-200"
+              className="px-2 sm:px-3 py-1 text-xs font-medium rounded-md bg-white text-indigo-700 hover:bg-indigo-50 border border-indigo-200 min-h-[32px] whitespace-nowrap"
               title="Bu oturumun öğrenci sorguları"
             >
-              👥 Sorgular
+              👥 <span className="hidden sm:inline">Sorgular</span>
             </button>
 
             {/* Export Button */}
@@ -236,10 +236,10 @@ function SessionCard({
                   // no-op; error banner already handled upstream if needed
                 }
               }}
-              className="px-2 py-1 text-xs font-medium rounded-md bg-white text-purple-700 hover:bg-purple-50 border border-purple-200"
+              className="px-2 py-1 text-xs font-medium rounded-md bg-white text-purple-700 hover:bg-purple-50 border border-purple-200 min-h-[32px] whitespace-nowrap"
               title="Dışa Aktar"
             >
-              ⬇️ Export
+              ⬇️ <span className="hidden sm:inline">Export</span>
             </button>
 
             {/* Delete Button */}
@@ -248,7 +248,7 @@ function SessionCard({
                 e.stopPropagation();
                 onDelete(session.session_id, session.name);
               }}
-              className="p-1.5 text-white hover:bg-red-500/80 rounded-md transition-colors"
+              className="p-1.5 text-white hover:bg-red-500/80 rounded-md transition-colors min-h-[32px] min-w-[32px]"
               title="Oturumu sil"
             >
               <svg
@@ -1531,7 +1531,7 @@ export default function HomePage() {
             </div>
 
             {/* Available Courses Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 sm:gap-6 mb-8">
               {sessions
                 .filter((s) => s.status === "active")
                 .map((session, index) => {
@@ -1593,7 +1593,7 @@ export default function HomePage() {
                           </p>
 
                           {/* Course Stats */}
-                          <div className="grid grid-cols-3 gap-3 mb-4">
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3 mb-4">
                             <div className="text-center p-3 bg-white/50 rounded-lg backdrop-blur-sm border border-white/50">
                               <div className="text-2xl font-bold text-gray-800">
                                 {session.total_chunks}
@@ -1738,7 +1738,7 @@ export default function HomePage() {
                           Ders Yapılandırması
                         </span>
                       </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 gap-3">
                         {/* Model Display - More spacious */}
                         <div className="flex items-center gap-2 p-2 bg-blue-50 rounded-lg">
                           <span className="w-3 h-3 bg-blue-500 rounded-full flex-shrink-0"></span>
@@ -1853,14 +1853,14 @@ export default function HomePage() {
             {/* Clean Chat Interface */}
             <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
               {/* Chat Input - Top */}
-              <div className="border-b border-gray-100 p-6">
-                <form onSubmit={handleQuery} className="flex gap-3">
+              <div className="border-b border-gray-100 p-4 sm:p-6">
+                <form onSubmit={handleQuery} className="flex flex-col sm:flex-row gap-3">
                   <div className="flex-1 relative">
                     <input
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       placeholder="Ders hakkında soru sorabilirsiniz..."
-                      className="w-full px-6 py-4 border-2 border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all shadow-sm text-gray-800 placeholder-gray-400"
+                      className="w-full px-4 sm:px-6 py-3 sm:py-4 border-2 border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all shadow-sm text-gray-800 placeholder-gray-400 text-sm sm:text-base"
                       disabled={isQuerying || studentChatLoading}
                     />
                     <div className="absolute right-4 top-1/2 transform -translate-y-1/2 text-gray-400">
@@ -1870,7 +1870,7 @@ export default function HomePage() {
                   <button
                     type="submit"
                     disabled={isQuerying || studentChatLoading || !query.trim()}
-                    className={`px-8 py-4 rounded-2xl bg-gradient-to-r ${styling.gradient} text-white font-semibold hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 transform hover:scale-105 active:scale-95 shadow-md`}
+                    className={`w-full sm:w-auto px-6 sm:px-8 py-3 sm:py-4 rounded-2xl bg-gradient-to-r ${styling.gradient} text-white font-semibold hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 transform hover:scale-105 active:scale-95 shadow-md text-sm sm:text-base min-h-[44px]`}
                   >
                     {isQuerying || studentChatLoading ? (
                       <div className="flex items-center gap-2">
@@ -1888,7 +1888,7 @@ export default function HomePage() {
               </div>
 
               {/* Chat History */}
-              <div className="h-[calc(100vh-400px)] overflow-y-auto p-6 space-y-6">
+              <div className="min-h-[50vh] max-h-[70vh] overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-6">
                 {studentMessages.length === 0 &&
                   !isQuerying &&
                   !studentChatLoading && (
@@ -1904,7 +1904,7 @@ export default function HomePage() {
 
                       {/* Quick Start Suggestions - Dynamic course questions */}
                       <div className="space-y-4">
-                        <div className="flex flex-wrap justify-center gap-2 max-w-2xl mx-auto">
+                        <div className="flex flex-wrap justify-center gap-3 max-w-2xl mx-auto">
                           {courseQuestions.map((suggestion, i) => (
                             <button
                               key={i}
@@ -1918,7 +1918,7 @@ export default function HomePage() {
                                   handleSuggestionClick(suggestion);
                                 }
                               }}
-                              className="px-4 py-2 text-sm bg-gray-50 hover:bg-gray-100 text-gray-700 rounded-full border border-gray-200 hover:border-gray-300 transition-all transform hover:scale-105"
+                              className="px-4 py-3 text-sm bg-gray-50 hover:bg-gray-100 text-gray-700 rounded-full border border-gray-200 hover:border-gray-300 transition-all transform hover:scale-105 min-h-[44px] min-w-[44px]"
                             >
                               {suggestion}
                             </button>
@@ -2110,7 +2110,7 @@ export default function HomePage() {
                                                     );
                                                   }
                                                 }}
-                                                className={`px-3 py-2 text-sm bg-gradient-to-r ${styling.gradient} text-white rounded-full hover:shadow-md transition-all duration-200 transform hover:scale-105`}
+                                                className={`px-4 py-3 text-sm bg-gradient-to-r ${styling.gradient} text-white rounded-full hover:shadow-md transition-all duration-200 transform hover:scale-105 min-h-[44px]`}
                                                 title="Bu soruyu sor"
                                               >
                                                 {suggestion}
@@ -2146,57 +2146,57 @@ export default function HomePage() {
               <div className="text-green-800">{success}</div>
             </div>
           )}
-          {/* Educational Stats Cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-6 pt-4">
-            <div className="bg-gradient-to-br from-blue-500 to-blue-600 p-6 rounded-2xl text-white shadow-xl transform hover:scale-105 transition-all">
+          {/* Educational Stats Cards - Mobile Optimized */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 lg:gap-6 pt-4">
+            <div className="bg-gradient-to-br from-blue-500 to-blue-600 p-4 sm:p-6 rounded-xl sm:rounded-2xl text-white shadow-lg sm:shadow-xl transform hover:scale-105 transition-all">
               <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-blue-100 text-sm font-medium">
+                <div className="flex-1 min-w-0">
+                  <p className="text-blue-100 text-xs sm:text-sm font-medium truncate">
                     Ders Oturumları
                   </p>
-                  <p className="text-3xl font-bold">{totalSessions}</p>
-                  <p className="text-blue-200 text-xs">Aktif sınıflar</p>
+                  <p className="text-2xl sm:text-3xl font-bold">{totalSessions}</p>
+                  <p className="text-blue-200 text-xs truncate">Aktif sınıflar</p>
                 </div>
-                <div className="text-4xl opacity-80">📚</div>
+                <div className="text-3xl sm:text-4xl opacity-80 ml-2 flex-shrink-0">📚</div>
               </div>
             </div>
 
-            <div className="bg-gradient-to-br from-green-500 to-green-600 p-6 rounded-2xl text-white shadow-xl transform hover:scale-105 transition-all">
+            <div className="bg-gradient-to-br from-green-500 to-green-600 p-4 sm:p-6 rounded-xl sm:rounded-2xl text-white shadow-lg sm:shadow-xl transform hover:scale-105 transition-all">
               <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-green-100 text-sm font-medium">
+                <div className="flex-1 min-w-0">
+                  <p className="text-green-100 text-xs sm:text-sm font-medium truncate">
                     Ders Materyalleri
                   </p>
-                  <p className="text-3xl font-bold">{totalDocuments}</p>
-                  <p className="text-green-200 text-xs">Yüklenen belgeler</p>
+                  <p className="text-2xl sm:text-3xl font-bold">{totalDocuments}</p>
+                  <p className="text-green-200 text-xs truncate">Yüklenen belgeler</p>
                 </div>
-                <div className="text-4xl opacity-80">📄</div>
+                <div className="text-3xl sm:text-4xl opacity-80 ml-2 flex-shrink-0">📄</div>
               </div>
             </div>
 
-            <div className="bg-gradient-to-br from-purple-500 to-purple-600 p-6 rounded-2xl text-white shadow-xl transform hover:scale-105 transition-all">
+            <div className="bg-gradient-to-br from-purple-500 to-purple-600 p-4 sm:p-6 rounded-xl sm:rounded-2xl text-white shadow-lg sm:shadow-xl transform hover:scale-105 transition-all">
               <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-purple-100 text-sm font-medium">
+                <div className="flex-1 min-w-0">
+                  <p className="text-purple-100 text-xs sm:text-sm font-medium truncate">
                     Bilgi Parçaları
                   </p>
-                  <p className="text-3xl font-bold">{totalChunks}</p>
-                  <p className="text-purple-200 text-xs">İşlenmiş içerik</p>
+                  <p className="text-2xl sm:text-3xl font-bold">{totalChunks}</p>
+                  <p className="text-purple-200 text-xs truncate">İşlenmiş içerik</p>
                 </div>
-                <div className="text-4xl opacity-80">🧩</div>
+                <div className="text-3xl sm:text-4xl opacity-80 ml-2 flex-shrink-0">🧩</div>
               </div>
             </div>
 
-            <div className="bg-gradient-to-br from-orange-500 to-orange-600 p-6 rounded-2xl text-white shadow-xl transform hover:scale-105 transition-all">
+            <div className="bg-gradient-to-br from-orange-500 to-orange-600 p-4 sm:p-6 rounded-xl sm:rounded-2xl text-white shadow-lg sm:shadow-xl transform hover:scale-105 transition-all">
               <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-orange-100 text-sm font-medium">
+                <div className="flex-1 min-w-0">
+                  <p className="text-orange-100 text-xs sm:text-sm font-medium truncate">
                     Öğrenci Soruları
                   </p>
-                  <p className="text-3xl font-bold">{totalQueries}</p>
-                  <p className="text-orange-200 text-xs">Yanıtlanan sorular</p>
+                  <p className="text-2xl sm:text-3xl font-bold">{totalQueries}</p>
+                  <p className="text-orange-200 text-xs truncate">Yanıtlanan sorular</p>
                 </div>
-                <div className="text-4xl opacity-80">❓</div>
+                <div className="text-3xl sm:text-4xl opacity-80 ml-2 flex-shrink-0">❓</div>
               </div>
             </div>
           </div>
@@ -3366,7 +3366,7 @@ export default function HomePage() {
                   {/* Chat History - Reversed order (newest on top) */}
                   <div
                     id="chat-history-container"
-                    className="relative h-[60vh] overflow-y-auto bg-gradient-to-b from-indigo-50/40 to-white rounded-xl border border-gray-200 p-4 space-y-4 flex flex-col"
+                    className="relative min-h-[50vh] max-h-[65vh] overflow-y-auto bg-gradient-to-b from-indigo-50/40 to-white rounded-xl border border-gray-200 p-3 sm:p-4 space-y-3 sm:space-y-4 flex flex-col"
                   >
                     {chatHistory.length === 0 && (
                       <div className="text-center py-12">
@@ -4254,7 +4254,7 @@ export default function HomePage() {
           <div className="text-gray-600">Kayıt bulunamadı.</div>
         ) : (
           <>
-            <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+            <div className="space-y-3 max-h-[50vh] sm:max-h-[60vh] overflow-y-auto">
               {recentInteractions.map((it, idx) => (
                 <div
                   key={it.interaction_id || idx}

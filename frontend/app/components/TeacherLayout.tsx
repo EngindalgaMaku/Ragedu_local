@@ -17,7 +17,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-// Dropdown menu components will be created inline
 
 type TabType = "dashboard" | "sessions" | "upload" | "query";
 
@@ -68,7 +67,6 @@ function TeacherLayout({
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-
   const [userMenuOpen, setUserMenuOpen] = useState(false);
 
   const handleLogout = async () => {
@@ -92,18 +90,23 @@ function TeacherLayout({
       {/* Mobile Sidebar Overlay */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm lg:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-30 ${
-          sidebarCollapsed ? "w-16" : "w-64"
-        } transform ${
-          sidebarOpen ? "translate-x-0" : "-translate-x-full"
-        } lg:translate-x-0 transition-all duration-300 ease-in-out bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col`}
+        className={`
+          fixed inset-y-0 left-0 z-40
+          ${sidebarCollapsed ? 'w-16' : 'w-64'}
+          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+          lg:relative lg:translate-x-0
+          transition-all duration-300 ease-in-out
+          bg-white dark:bg-gray-800
+          border-r border-gray-200 dark:border-gray-700
+          flex flex-col
+        `}
       >
         {/* Sidebar Header */}
         <div className="flex items-center justify-between h-16 px-4 border-b border-gray-200 dark:border-gray-700">
@@ -156,11 +159,17 @@ function TeacherLayout({
               <button
                 key={item.id}
                 onClick={() => handleTabClick(item.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
-                  isActive
-                    ? "bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md"
-                    : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-                } ${sidebarCollapsed ? "justify-center" : ""}`}
+                className={`
+                  w-full flex items-center gap-3 px-3 py-3 rounded-lg 
+                  transition-all duration-200 
+                  min-h-[44px] touch-manipulation
+                  ${
+                    isActive
+                      ? "bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-md"
+                      : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  } 
+                  ${sidebarCollapsed ? "justify-center" : ""}
+                `}
                 title={sidebarCollapsed ? item.name : undefined}
               >
                 <Icon className="h-5 w-5 flex-shrink-0" />
@@ -190,7 +199,7 @@ function TeacherLayout({
             <div className="relative">
               <Button
                 variant="ghost"
-                className="w-full justify-start gap-3 h-auto p-2 hover:bg-gray-100 dark:hover:bg-gray-700"
+                className="w-full justify-start gap-3 h-auto p-2 hover:bg-gray-100 dark:hover:bg-gray-700 min-h-[44px] touch-manipulation"
                 onClick={() => setUserMenuOpen(!userMenuOpen)}
               >
                 <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center flex-shrink-0">
@@ -219,7 +228,7 @@ function TeacherLayout({
                     <div className="p-1">
                       <Button
                         variant="ghost"
-                        className="w-full justify-start gap-2"
+                        className="w-full justify-start gap-2 min-h-[44px] touch-manipulation"
                         onClick={() => {
                           router.push("/profile");
                           setUserMenuOpen(false);
@@ -230,7 +239,7 @@ function TeacherLayout({
                       </Button>
                       <Button
                         variant="ghost"
-                        className="w-full justify-start gap-2"
+                        className="w-full justify-start gap-2 min-h-[44px] touch-manipulation"
                         onClick={() => {
                           router.push("/");
                           setUserMenuOpen(false);
@@ -242,7 +251,7 @@ function TeacherLayout({
                       <div className="border-t my-1" />
                       <Button
                         variant="ghost"
-                        className="w-full justify-start gap-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                        className="w-full justify-start gap-2 text-red-600 hover:text-red-700 hover:bg-red-50 min-h-[44px] touch-manipulation"
                         onClick={handleLogout}
                       >
                         <LogOut className="h-4 w-4" />
@@ -258,7 +267,7 @@ function TeacherLayout({
               <Button
                 variant="ghost"
                 size="icon"
-                className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600"
+                className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 min-h-[44px] min-w-[44px] touch-manipulation"
                 onClick={() => setUserMenuOpen(!userMenuOpen)}
               >
                 <span className="text-white text-xs font-bold">
@@ -277,7 +286,7 @@ function TeacherLayout({
                     <div className="p-1">
                       <Button
                         variant="ghost"
-                        className="w-full justify-start gap-2"
+                        className="w-full justify-start gap-2 min-h-[44px] touch-manipulation"
                         onClick={() => {
                           router.push("/profile");
                           setUserMenuOpen(false);
@@ -288,7 +297,7 @@ function TeacherLayout({
                       </Button>
                       <Button
                         variant="ghost"
-                        className="w-full justify-start gap-2"
+                        className="w-full justify-start gap-2 min-h-[44px] touch-manipulation"
                         onClick={() => {
                           router.push("/");
                           setUserMenuOpen(false);
@@ -300,7 +309,7 @@ function TeacherLayout({
                       <div className="border-t my-1" />
                       <Button
                         variant="ghost"
-                        className="w-full justify-start gap-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                        className="w-full justify-start gap-2 text-red-600 hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:text-red-300 dark:hover:bg-red-900/20 min-h-[44px] touch-manipulation"
                         onClick={handleLogout}
                       >
                         <LogOut className="h-4 w-4" />
@@ -326,31 +335,26 @@ function TeacherLayout({
         </div>
       </aside>
 
-      {/* Top Header - Fixed Position */}
-      <header 
-        className="fixed top-0 right-0 h-16 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between z-40"
-        style={{
-          left: sidebarCollapsed ? '4rem' : '16rem',
-          paddingLeft: '1.5rem',
-          paddingRight: '1.5rem'
-        }}
-      >
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col">
+        {/* Header */}
+        <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between px-4 lg:px-6 z-30 h-16 flex-shrink-0">
         <div className="flex items-center gap-4 flex-1">
           <Button
             variant="ghost"
             size="icon"
-            className="lg:hidden"
+            className="lg:hidden min-h-[44px] min-w-[44px] touch-manipulation"
             onClick={() => setSidebarOpen(true)}
           >
             <Menu className="h-5 w-5" />
           </Button>
         </div>
         <div className="flex items-center gap-2">
-          {/* User Menu Dropdown */}
-          <div className="relative">
+          {/* User Menu Dropdown - Mobile Header */}
+          <div className="relative lg:hidden">
             <Button
               variant="ghost"
-              className="flex items-center gap-2 h-auto p-2 hover:bg-gray-100 dark:hover:bg-gray-700"
+              className="flex items-center gap-2 h-auto p-2 hover:bg-gray-100 dark:hover:bg-gray-700 min-h-[44px] touch-manipulation"
               onClick={() => setUserMenuOpen(!userMenuOpen)}
             >
               <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center flex-shrink-0">
@@ -359,14 +363,6 @@ function TeacherLayout({
                     user?.username?.charAt(0) ||
                     "U"}
                 </span>
-              </div>
-              <div className="hidden md:block text-left">
-                <div className="text-sm font-medium text-gray-900 dark:text-white">
-                  {user?.first_name} {user?.last_name}
-                </div>
-                <div className="text-xs text-gray-500 dark:text-gray-400">
-                  {user?.email}
-                </div>
               </div>
             </Button>
             {userMenuOpen && (
@@ -379,7 +375,7 @@ function TeacherLayout({
                   <div className="p-1">
                     <Button
                       variant="ghost"
-                      className="w-full justify-start gap-2"
+                      className="w-full justify-start gap-2 min-h-[44px] touch-manipulation"
                       onClick={() => {
                         router.push("/profile");
                         setUserMenuOpen(false);
@@ -390,7 +386,7 @@ function TeacherLayout({
                     </Button>
                     <Button
                       variant="ghost"
-                      className="w-full justify-start gap-2"
+                      className="w-full justify-start gap-2 min-h-[44px] touch-manipulation"
                       onClick={() => {
                         router.push("/");
                         setUserMenuOpen(false);
@@ -402,7 +398,7 @@ function TeacherLayout({
                     <div className="border-t my-1" />
                     <Button
                       variant="ghost"
-                      className="w-full justify-start gap-2 text-red-600 hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:text-red-300 dark:hover:bg-red-900/20"
+                      className="w-full justify-start gap-2 text-red-600 hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:text-red-300 dark:hover:bg-red-900/20 min-h-[44px] touch-manipulation"
                       onClick={handleLogout}
                     >
                       <LogOut className="h-4 w-4" />
@@ -414,18 +410,10 @@ function TeacherLayout({
             )}
           </div>
         </div>
-      </header>
+        </header>
 
-      {/* Main Content */}
-      <div 
-        className="flex-1 flex flex-col transition-all duration-300 min-w-0"
-        style={{
-          marginLeft: sidebarCollapsed ? '4rem' : '16rem',
-          marginTop: '4rem'
-        }}
-      >
-        {/* Page Content */}
-        <main className="flex-1 overflow-y-auto px-4 lg:px-6 py-0 bg-gray-50 dark:bg-gray-900">
+        {/* Main Content */}
+        <main className="flex-1 overflow-y-auto px-3 sm:px-4 lg:px-6 py-4 sm:py-6 bg-gray-50 dark:bg-gray-900">
           {children}
         </main>
       </div>

@@ -272,8 +272,8 @@ const LoginForm: React.FC<LoginFormProps> = ({
             autoComplete={autoComplete}
             disabled={isLoading}
             className={`
-              w-full px-12 py-4 text-base rounded-xl border-2 transition-all duration-300
-              bg-white/80 backdrop-blur-sm
+              w-full px-10 sm:px-12 py-3 sm:py-4 text-base rounded-xl border-2 transition-all duration-300
+              bg-white/80 backdrop-blur-sm min-h-[44px]
               ${
                 hasError
                   ? "border-red-300 bg-red-50/50 focus:border-red-500 focus:ring-red-500/20"
@@ -438,8 +438,8 @@ const LoginForm: React.FC<LoginFormProps> = ({
   // ===== ANA GÖRSELLEŞTİRME =====
 
   return (
-    <div className={`w-full max-w-md mx-auto ${className}`}>
-      <div className="bg-white/95 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/20 p-8 space-y-8 relative overflow-hidden">
+    <div className={`w-full max-w-sm sm:max-w-md mx-auto ${className}`}>
+      <div className="bg-white/95 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/20 p-4 sm:p-6 lg:p-8 space-y-6 sm:space-y-8 relative overflow-hidden">
         <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 via-transparent to-indigo-500/5 pointer-events-none"></div>
 
         <div className="text-center relative z-10">
@@ -516,8 +516,8 @@ const LoginForm: React.FC<LoginFormProps> = ({
               isLoading || !credentials.username || !credentials.password
             }
             className={`
-              group relative w-full py-4 px-6 text-base font-semibold rounded-2xl
-              transition-all duration-300 min-h-[56px] overflow-hidden
+              group relative w-full py-3 sm:py-4 px-4 sm:px-6 text-base font-semibold rounded-2xl
+              transition-all duration-300 min-h-[44px] sm:min-h-[56px] overflow-hidden
               transform hover:scale-[1.02] active:scale-[0.98]
               disabled:transform-none disabled:cursor-not-allowed
               ${

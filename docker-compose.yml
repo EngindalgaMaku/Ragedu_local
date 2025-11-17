@@ -210,8 +210,8 @@ services:
 
   document-processing-service:
     build:
-      context: ./services/document_processing_service
-      dockerfile: Dockerfile.local
+      context: .
+      dockerfile: services/document_processing_service/Dockerfile
     container_name: document-processing-service
     ports:
       - "${DOCUMENT_PROCESSOR_PORT:-8003}:8080"
