@@ -1,32 +1,36 @@
+# API Gateway - Lightweight FastAPI service
 FROM python:3.11-slim
 
-# Set working directory
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
+# Install system dependencies (minimal)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy and install requirements
+COPY src/api/requirements.txt .
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt
 
-# Copy source code
+# Copy source code (API Gateway needs access to src.services)
 COPY src/ ./src/
-COPY *.py ./
+RUN mkdir -p /app/data/markdown
 
-# Create necessary directories
-RUN mkdir -p /app/sessions /app/data/markdown
+# Set environment variables
+ENV PYTHONPATH=/app \
+    PORT=8000
 
-# Expose port - Google Cloud Run için PORT environment variable runtime'da kullanılır
-# Default 8000, Google Cloud Run PORT environment variable'ını otomatik ayarlar
 EXPOSE 8000
 
-# Health check - PORT environment variable runtime'da kullanılır
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD sh -c 'curl -f http://localhost:${PORT:-8000}/ || exit 1'
+# Health check - using env variable for port
+HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-# Run the API gateway - Google Cloud Run için PORT ve HOST environment variable'ları runtime'da kullanılır
-# main.py içinde PORT environment variable kontrol edilir
-CMD ["python", "-m", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the API Gateway
+CMD ["python", "src/api/main.py"]

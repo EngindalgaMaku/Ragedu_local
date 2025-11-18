@@ -297,6 +297,19 @@ async def check_microservices():
 # Session Management - Real Implementation with SQLite Database
 def _convert_metadata_to_response(metadata: SessionMetadata) -> SessionResponse:
     """Convert SessionMetadata to SessionResponse"""
+    # Provide default RAG settings if none exist
+    default_rag_settings = {
+        "top_k": 5,
+        "use_rerank": True,
+        "min_score": 0.5,
+        "max_context_chars": 8000,
+        "model": None,
+        "chain_type": None,
+        "use_direct_llm": False,
+        "embedding_model": "nomic-embed-text"
+    }
+    rag_settings = metadata.rag_settings or default_rag_settings
+    
     return SessionResponse(
         session_id=metadata.session_id,
         name=metadata.name,
@@ -317,7 +330,7 @@ def _convert_metadata_to_response(metadata: SessionMetadata) -> SessionResponse:
         user_rating=metadata.user_rating,
         is_public=metadata.is_public,
         backup_count=metadata.backup_count,
-        rag_settings=metadata.rag_settings,
+        rag_settings=rag_settings,
     )
 
 @app.get("/sessions", response_model=List[SessionResponse])
@@ -913,10 +926,13 @@ async def convert_document_to_markdown(file: UploadFile = File(...)):
 async def process_and_store_documents(
     session_id: str = Form(...),
     markdown_files: str = Form(...),  # JSON string of file list
-    chunk_strategy: str = Form("semantic"),
+    chunk_strategy: str = Form("lightweight"),
     chunk_size: int = Form(1000),
     chunk_overlap: int = Form(100),
-    embedding_model: str = Form("mixedbread-ai/mxbai-embed-large-v1")
+    embedding_model: str = Form("mixedbread-ai/mxbai-embed-large-v1"),
+    use_llm_post_processing: bool = Form(False),  # NEW: Optional LLM post-processing for chunk refinement
+    llm_model_name: str = Form("llama-3.1-8b-instant"),  # NEW: LLM model for post-processing
+    model_inference_url: str = Form(None)  # NEW: Override model inference URL for LLM post-processing
 ):
     """Process documents and store vectors - Route to Document Processing Service"""
     try:
@@ -942,7 +958,7 @@ async def process_and_store_documents(
             try:
                 content = cloud_storage_manager.get_markdown_file_content(filename)
                 if content and content.strip():
-                    # Process each file individually - CRITICAL FIX: Add chunk_strategy to root payload
+                    # Process each file individually - CRITICAL FIX: Add chunk_strategy and LLM post-processing to root payload
                     payload = {
                         "text": content,  # Individual file content
                         "metadata": {
@@ -955,7 +971,10 @@ async def process_and_store_documents(
                         "collection_name": f"session_{session_id}",
                         "chunk_size": chunk_size,
                         "chunk_overlap": chunk_overlap,
-                        "chunk_strategy": chunk_strategy  # CRITICAL: Pass chunk_strategy to enable semantic chunking
+                        "chunk_strategy": chunk_strategy,  # CRITICAL: Pass chunk_strategy to enable semantic chunking
+                        "use_llm_post_processing": use_llm_post_processing,  # NEW: Optional LLM post-processing
+                        "llm_model_name": llm_model_name,  # NEW: LLM model for post-processing
+                        "model_inference_url": model_inference_url or MODEL_INFERENCE_URL  # NEW: Model inference URL for LLM post-processing
                     }
                     
                     file_response = requests.post(
@@ -1214,7 +1233,11 @@ def update_rag_settings(session_id: str, req: RAGSettings, request: Request):
         current_user = _get_current_user(request)
         _require_owner_or_admin(request, session_id)
         uid = current_user.get("id") if current_user else None
-        success = professional_session_manager.save_session_rag_settings(session_id, req.model_dump(exclude_none=True), uid)
+        
+        # Filter out None values from request to preserve existing settings
+        update_data = {k: v for k, v in req.model_dump(exclude_none=True).items() if v is not None}
+        
+        success = professional_session_manager.save_session_rag_settings(session_id, update_data, uid)
         if not success:
             raise HTTPException(status_code=404, detail="Session not found")
         md = professional_session_manager.get_session_metadata(session_id)
@@ -1372,7 +1395,8 @@ async def rag_query(req: RAGQueryRequest, request: Request):
             "max_context_chars": req.max_context_chars or saved_settings.get("max_context_chars", 8000),
             "model": req.model or saved_settings.get("model"),
             "chain_type": req.chain_type or saved_settings.get("chain_type"),
-            "use_direct_llm": req.use_direct_llm or bool(saved_settings.get("use_direct_llm")),
+            # FIX: Frontend explicitly sends False, respect it (don't use 'or' which treats False as falsy)
+            "use_direct_llm": req.use_direct_llm if req.use_direct_llm is not None else bool(saved_settings.get("use_direct_llm")),
             "embedding_model": req.embedding_model or saved_settings.get("embedding_model"),
         }
         
@@ -2012,7 +2036,7 @@ async def import_session(file: UploadFile = File(...), auto_reindex: bool = True
                 form = {
                     "session_id": created.session_id,
                     "markdown_files": json.dumps(markdown_files),
-                    "chunk_strategy": "semantic",
+                    "chunk_strategy": "lightweight",
                     "chunk_size": 1500,
                     "chunk_overlap": 150,
                     "embedding_model": embedding_model,
@@ -3144,9 +3168,65 @@ async def get_student_progress_proxy(user_id: str, session_id: str, request: Req
         }
 
 
+@app.post("/chunks/improve-single")
+async def improve_single_chunk_proxy(request: Request):
+    """Proxy to Document Processing Service for single chunk LLM improvement"""
+    try:
+        body = await request.json()
+        
+        logger.info(f"🤖 Proxying single chunk improvement request to document processing service")
+        
+        # Forward to document processing service
+        response = requests.post(
+            f"{DOCUMENT_PROCESSOR_URL}/chunks/improve-single",
+            json=body,
+            timeout=60  # LLM processing can take time
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Document processing service error: {response.status_code} - {response.text}")
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+            
+    except HTTPException:
+        raise
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Document processing service unavailable: {e}")
+        raise HTTPException(status_code=503, detail="Document processing service unavailable")
+
+
+@app.post("/sessions/{session_id}/chunks/improve-all")
+async def improve_all_chunks_proxy(session_id: str, request: Request):
+    """Proxy to Document Processing Service for bulk chunk LLM improvement"""
+    try:
+        body = await request.json()
+        
+        logger.info(f"🚀 Proxying bulk chunk improvement request for session {session_id}")
+        
+        # Forward to document processing service (with longer timeout for bulk processing)
+        response = requests.post(
+            f"{DOCUMENT_PROCESSOR_URL}/sessions/{session_id}/chunks/improve-all",
+            json=body,
+            timeout=600  # 10 minutes for bulk processing
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Document processing service error: {response.status_code} - {response.text}")
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+            
+    except HTTPException:
+        raise
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Document processing service unavailable: {e}")
+        raise HTTPException(status_code=503, detail="Document processing service unavailable")
+
+
 if __name__ == "__main__":
     import uvicorn
-    from ports import API_GATEWAY_PORT
+    # API_GATEWAY_PORT is already defined above in the fallback logic
     port = int(os.environ.get("PORT", API_GATEWAY_PORT))
     print(f"🚀 Starting RAG3 API Gateway on 0.0.0.0:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port)

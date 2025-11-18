@@ -36,6 +36,30 @@ except ImportError:
 from database.database import DatabaseManager
 from api import interactions, feedback, profiles, personalization, recommendations, analytics, settings, topics
 
+# Import CACS scoring (Faz 2 - Eğitsel-KBRAG)
+try:
+    from api import scoring
+    SCORING_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"CACS scoring module not available: {e}")
+    SCORING_AVAILABLE = False
+
+# Import Emoji Feedback (Faz 4 - Eğitsel-KBRAG)
+try:
+    from api import emoji_feedback
+    EMOJI_FEEDBACK_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Emoji feedback module not available: {e}")
+    EMOJI_FEEDBACK_AVAILABLE = False
+
+# Import Adaptive Query (Faz 5 - Eğitsel-KBRAG Full Pipeline)
+try:
+    from api import adaptive_query
+    ADAPTIVE_QUERY_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Adaptive query module not available: {e}")
+    ADAPTIVE_QUERY_AVAILABLE = False
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -140,7 +164,15 @@ async def health_check():
         "status": "healthy",
         "service": "aprag-service",
         "version": "1.0.0",
-        "aprag_enabled": FeatureFlags.is_aprag_enabled()
+        "aprag_enabled": FeatureFlags.is_aprag_enabled(),
+        "egitsel_kbrag_enabled": FeatureFlags.is_egitsel_kbrag_enabled(),
+        "features": {
+            "cacs": FeatureFlags.is_cacs_enabled(),
+            "zpd": FeatureFlags.is_zpd_enabled(),
+            "bloom": FeatureFlags.is_bloom_enabled(),
+            "cognitive_load": FeatureFlags.is_cognitive_load_enabled(),
+            "emoji_feedback": FeatureFlags.is_emoji_feedback_enabled()
+        }
     }
 
 
@@ -154,6 +186,19 @@ app.include_router(analytics.router, prefix="/api/aprag/analytics", tags=["Analy
 app.include_router(settings.router, prefix="/api/aprag/settings", tags=["Settings"])
 app.include_router(topics.router, prefix="/api/aprag/topics", tags=["Topics"])
 
+# Include Eğitsel-KBRAG routers (use Depends(get_db) for db access)
+if SCORING_AVAILABLE and FeatureFlags.is_cacs_enabled():
+    app.include_router(scoring.router, prefix="/api/aprag/scoring", tags=["CACS Scoring"])
+    logger.info("CACS Scoring endpoints enabled")
+
+if EMOJI_FEEDBACK_AVAILABLE and FeatureFlags.is_emoji_feedback_enabled():
+    app.include_router(emoji_feedback.router, prefix="/api/aprag/emoji-feedback", tags=["Emoji Feedback"])
+    logger.info("Emoji Feedback endpoints enabled")
+
+if ADAPTIVE_QUERY_AVAILABLE and FeatureFlags.is_egitsel_kbrag_enabled():
+    app.include_router(adaptive_query.router, prefix="/api/aprag/adaptive-query", tags=["Adaptive Query"])
+    logger.info("Adaptive Query (Full Pipeline) endpoints enabled")
+
 
 if __name__ == "__main__":
     import uvicorn
@@ -162,10 +207,10 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     
     uvicorn.run(
-        "main:app",
+        app,  # Direct app reference instead of string
         host=host,
         port=port,
-        reload=True,
+        reload=False,  # Disable reload for stability
         log_level="info"
     )
 

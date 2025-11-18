@@ -13,6 +13,7 @@ import {
   clearStudentChatHistory,
   ragQuery,
   generateSuggestions,
+  createAPRAGInteraction,
 } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -174,6 +175,43 @@ export function useStudentChat({
 
         // Save to database
         await saveMessage(completeMessage);
+
+        // Log interaction to APRAG service for analytics and tracking
+        let apragInteractionId: number | null = null;
+        if (user?.id) {
+          try {
+            const apragResult = await createAPRAGInteraction({
+              user_id: user.id.toString(),
+              session_id: sessionId,
+              query: query,
+              response: result.answer,
+              processing_time_ms: actualDurationMs,
+              model_used: payload.model,
+              chain_type: payload.chain_type,
+              sources: result.sources?.map((s: any) => ({
+                content: s.content || s.text || "",
+                score: s.score || 0,
+                metadata: s.metadata,
+              })),
+            });
+            apragInteractionId = apragResult.interaction_id;
+
+            // Update message with interaction_id for emoji feedback
+            setMessages((prev) => {
+              const updated = [...prev];
+              if (updated[updated.length - 1]) {
+                updated[updated.length - 1] = {
+                  ...updated[updated.length - 1],
+                  aprag_interaction_id: apragInteractionId || undefined,
+                };
+              }
+              return updated;
+            });
+          } catch (apragError) {
+            // Don't fail the whole request if APRAG logging fails
+            console.error("Failed to log interaction to APRAG:", apragError);
+          }
+        }
 
         // Generate suggestions asynchronously (non-blocking)
         if (result.sources && result.sources.length > 0) {

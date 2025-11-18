@@ -52,6 +52,21 @@ except ImportError:
         chunk_overlap = int(target_size * overlap_ratio)
         return _chunk_by_markdown_structure(text, target_size, chunk_overlap)
 
+# Import NEW lightweight chunking system - Zero ML dependencies
+LIGHTWEIGHT_CHUNKING_AVAILABLE = False
+try:
+    from .lightweight_chunker import create_semantic_chunks as create_lightweight_chunks
+    from .lightweight_chunker import LightweightSemanticChunker
+    LIGHTWEIGHT_CHUNKING_AVAILABLE = True
+    logger.info("✅ Lightweight Turkish chunking system available")
+except ImportError:
+    logger.warning("⚠️ Lightweight chunking not available - using fallback")
+    # Create safe fallback function
+    def create_lightweight_chunks(text, target_size=1000, overlap_ratio=0.1, language="auto"):
+        """Fallback to enhanced markdown when lightweight chunking unavailable."""
+        chunk_overlap = int(target_size * overlap_ratio)
+        return _chunk_by_markdown_structure(text, target_size, chunk_overlap)
+
 # Import AST-based markdown parser with safe fallback  
 AST_MARKDOWN_AVAILABLE = False
 try:
@@ -433,29 +448,41 @@ def chunk_text(
     text: str,
     chunk_size: int = None,
     chunk_overlap: int = None,
-    strategy: Literal["char", "paragraph", "sentence", "markdown", "semantic", "hybrid"] = "markdown",
+    strategy: Literal["char", "paragraph", "sentence", "markdown", "semantic", "hybrid", "lightweight"] = "lightweight",
     language: str = "auto",
-    use_embedding_refinement: bool = True
+    use_embedding_refinement: bool = True,
+    use_lightweight_chunker: bool = True,
+    use_llm_post_processing: bool = False,
+    llm_model_name: str = "llama-3.1-8b-instant",
+    model_inference_url: str = "http://model-inference-service:8002"
 ) -> List[str]:
     """
-    UNIFIED text chunking with Turkish support and consolidated import handling.
+    UNIFIED text chunking with Turkish support and NEW lightweight chunking system.
 
     Args:
         text: The input text to be chunked.
         chunk_size: The desired maximum size of each chunk (in characters).
         chunk_overlap: The desired overlap between consecutive chunks (in characters).
         strategy: Chunking strategy to use:
+                  - "lightweight": NEW Turkish-optimized lightweight chunker (DEFAULT)
                   - "char": Character-based chunking with word boundaries
                   - "paragraph": Paragraph-based chunking
                   - "sentence": Turkish-aware sentence-based chunking
-                  - "markdown": Enhanced markdown structure-aware chunking (DEFAULT)
+                  - "markdown": Enhanced markdown structure-aware chunking
                   - "semantic": LLM-based semantic chunking (with safe fallback)
                   - "hybrid": Combination of markdown + semantic analysis
         language: Language of the text ("tr", "en", or "auto")
         use_embedding_refinement: Whether to use embedding-based refinement
+        use_lightweight_chunker: Whether to use the new lightweight chunker (DEFAULT: True)
+        use_llm_post_processing: Whether to apply LLM post-processing for chunk refinement
+        llm_model_name: LLM model to use for post-processing (default: llama-3.1-8b-instant)
+        model_inference_url: URL of the model inference service
 
     Returns:
-        A list of text chunks optimized for Turkish content and markdown structure.
+        A list of text chunks optimized for Turkish content following core principles:
+        1. Never break sentences in the middle (kesinlikle cümleyi bölmemelisin)
+        2. Seamless chunk transitions (bir chunkın bittiği yerden diğer chunk başlamalı)
+        3. Header preservation with content (başlıkları chunk içinde tutmak)
     """
     # Use config defaults if not provided
     if chunk_size is None:
@@ -512,9 +539,34 @@ def chunk_text(
         # Enhanced markdown structure-aware chunking - DEFAULT and RECOMMENDED
         return _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
     
+    elif strategy == "lightweight" or (use_lightweight_chunker and strategy in ["semantic", "markdown"]):
+        # NEW Lightweight Turkish chunking system - PREFERRED METHOD
+        if LIGHTWEIGHT_CHUNKING_AVAILABLE:
+            try:
+                overlap_ratio = chunk_overlap / chunk_size if chunk_overlap > 0 else 0.1
+                chunks = create_lightweight_chunks(
+                    text=normalized,
+                    target_size=chunk_size,
+                    overlap_ratio=overlap_ratio,
+                    language=language,
+                    use_llm_post_processing=use_llm_post_processing,
+                    llm_model_name=llm_model_name,
+                    model_inference_url=model_inference_url
+                )
+                logger.info(f"✅ Lightweight Turkish chunking successful: {len(chunks)} chunks")
+                logger.info("✅ Applied core principles: No sentence breaks, seamless transitions, header preservation")
+                return chunks
+            except Exception as e:
+                logger.error(f"❌ Lightweight chunking failed: {e}")
+                logger.info("⚠️ Falling back to enhanced markdown strategy")
+                return _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
+        else:
+            logger.info("⚠️ Lightweight chunking not available, using enhanced markdown")
+            return _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
+    
     elif strategy == "semantic":
-        # Semantic chunking with safe fallback
-        if SEMANTIC_CHUNKING_AVAILABLE:
+        # Legacy semantic chunking with safe fallback
+        if SEMANTIC_CHUNKING_AVAILABLE and not use_lightweight_chunker:
             try:
                 overlap_ratio = chunk_overlap / chunk_size if chunk_overlap > 0 else 0.1
                 chunks = create_semantic_chunks(
@@ -524,15 +576,15 @@ def chunk_text(
                     language=language,
                     fallback_strategy="markdown"
                 )
-                logger.info(f"✅ Semantic chunking successful: {len(chunks)} chunks")
+                logger.info(f"✅ Legacy semantic chunking successful: {len(chunks)} chunks")
                 return chunks
             except Exception as e:
-                logger.error(f"❌ Semantic chunking failed: {e}")
+                logger.error(f"❌ Legacy semantic chunking failed: {e}")
                 logger.info("⚠️ Falling back to enhanced markdown strategy")
                 return _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
         else:
-            logger.info("⚠️ Semantic chunking not available, using enhanced markdown")
-            return _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
+            logger.info("⚠️ Using lightweight chunker instead of legacy semantic chunking")
+            return chunk_text(text, chunk_size, chunk_overlap, "lightweight", language, use_embedding_refinement, True, use_llm_post_processing, llm_model_name, model_inference_url)
     
     elif strategy == "hybrid":
         # Hybrid strategy: Start with markdown, enhance with semantic analysis if available
@@ -581,8 +633,11 @@ def chunk_text(
             return _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
     
     else:
-        logger.warning(f"Unknown chunking strategy '{strategy}', falling back to enhanced markdown.")
-        return _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
+        logger.warning(f"Unknown chunking strategy '{strategy}', falling back to lightweight chunker.")
+        if LIGHTWEIGHT_CHUNKING_AVAILABLE:
+            return chunk_text(text, chunk_size, chunk_overlap, "lightweight", language, use_embedding_refinement, True)
+        else:
+            return _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
 
 
 if __name__ == '__main__':

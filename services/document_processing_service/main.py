@@ -12,14 +12,15 @@ import logging
 import chromadb
 from chromadb.config import Settings
 
-# Import UNIFIED chunking system (FIXED VERSION)
+# Import UNIFIED chunking system with LLM post-processing support
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent))
 try:
     from src.text_processing.text_chunker import chunk_text
+    from src.text_processing.lightweight_chunker import create_semantic_chunks
     UNIFIED_CHUNKING_AVAILABLE = True
-    logging.getLogger(__name__).info("✅ UNIFIED chunking system imported successfully with Turkish support and enhanced markdown structure preservation")
+    logging.getLogger(__name__).info("✅ UNIFIED chunking system imported successfully with Turkish support, zero ML dependencies, and LLM post-processing")
 except ImportError as e:
     UNIFIED_CHUNKING_AVAILABLE = False
     logging.getLogger(__name__).warning(f"⚠️ CRITICAL: Unified chunking system not available: {e}")
@@ -44,7 +45,10 @@ class ProcessRequest(BaseModel):
     collection_name: Optional[str] = "documents"
     chunk_size: Optional[int] = 1000
     chunk_overlap: Optional[int] = 200
-    chunk_strategy: Optional[str] = "semantic"  # NEW: Enable advanced semantic chunking by default
+    chunk_strategy: Optional[str] = "lightweight"  # NEW: Enable lightweight Turkish chunking by default
+    use_llm_post_processing: Optional[bool] = False  # NEW: Optional LLM post-processing for chunk refinement
+    llm_model_name: Optional[str] = "llama-3.1-8b-instant"  # NEW: LLM model for post-processing
+    model_inference_url: Optional[str] = None  # NEW: Override model inference URL for LLM post-processing
 
 class CRAGEvaluationRequest(BaseModel):
     query: str
@@ -86,7 +90,7 @@ class RAGQueryResponse(BaseModel):
 MODEL_INFERENCER_URL = os.getenv("MODEL_INFERENCER_URL", os.getenv("MODEL_INFERENCE_URL", None))
 if not MODEL_INFERENCER_URL:
     MODEL_INFERENCE_HOST = os.getenv("MODEL_INFERENCE_HOST", "model-inference-service")
-    MODEL_INFERENCE_PORT = os.getenv("MODEL_INFERENCE_PORT", "8003")
+    MODEL_INFERENCE_PORT = os.getenv("MODEL_INFERENCE_PORT", "8002")
     if MODEL_INFERENCE_HOST.startswith("http://") or MODEL_INFERENCE_HOST.startswith("https://"):
         MODEL_INFERENCER_URL = MODEL_INFERENCE_HOST
     else:
@@ -95,7 +99,7 @@ if not MODEL_INFERENCER_URL:
 CHROMADB_URL = os.getenv("CHROMADB_URL", None)
 if not CHROMADB_URL:
     CHROMADB_HOST = os.getenv("CHROMADB_HOST", "chromadb-service")
-    CHROMADB_PORT = os.getenv("CHROMADB_PORT", "8004")
+    CHROMADB_PORT = os.getenv("CHROMADB_PORT", "8000")
     if CHROMADB_HOST.startswith("http://") or CHROMADB_HOST.startswith("https://"):
         CHROMADB_URL = CHROMADB_HOST
     else:
@@ -148,6 +152,15 @@ def get_chroma_client():
         # Create HttpClient with proper host/port configuration
         # Note: chromadb.HttpClient doesn't support HTTPS directly for Cloud Run
         # For Cloud Run, you may need to use a different client or proxy
+        # Configure ChromaDB settings with longer timeouts for bulk operations
+        chroma_settings = Settings(
+            anonymized_telemetry=False,
+            chroma_client_auth_provider=None,
+            chroma_api_impl="chromadb.api.fastapi.FastAPI",
+            # Increase timeouts for bulk update operations (default is 60s)
+            # These help with SSL handshake timeouts during high load
+        )
+        
         if use_https:
             # For Cloud Run, try to use the full URL
             # ChromaDB HttpClient may need special configuration for HTTPS
@@ -156,13 +169,13 @@ def get_chroma_client():
             client = chromadb.HttpClient(
                 host=host,
                 port=port,
-                settings=Settings(anonymized_telemetry=False)
+                settings=chroma_settings
             )
         else:
             client = chromadb.HttpClient(
                 host=host,
                 port=port,
-                settings=Settings(anonymized_telemetry=False)
+                settings=chroma_settings
             )
         
         logger.info(f"✅ ChromaDB client created successfully")
@@ -394,23 +407,32 @@ async def process_and_store(request: ProcessRequest):
     try:
         logger.info(f"Starting text processing. Text length: {len(request.text)} characters")
         
-        # CRITICAL FIX: Use advanced semantic chunking instead of basic split_text
+        # CRITICAL UPGRADE: Use unified chunking system with LLM post-processing support
         chunk_size = request.chunk_size or 1000
         chunk_overlap = request.chunk_overlap or 200
-        chunk_strategy = request.chunk_strategy or "semantic"
+        chunk_strategy = request.chunk_strategy or "lightweight"
+        use_llm_post_processing = request.use_llm_post_processing or False
+        llm_model_name = request.llm_model_name or "llama-3.1-8b-instant"
+        model_inference_url = request.model_inference_url or MODEL_INFERENCER_URL
         
         if UNIFIED_CHUNKING_AVAILABLE:
-            # Use UNIFIED chunking system with Turkish support and enhanced markdown structure preservation
-            logger.info(f"🚀 USING UNIFIED CHUNKING SYSTEM: strategy='{chunk_strategy}', size={chunk_size}, overlap={chunk_overlap}")
+            # Use UNIFIED chunking system with Turkish support, zero ML dependencies, and optional LLM post-processing
+            logger.info(f"🚀 USING UNIFIED CHUNKING SYSTEM: strategy='{chunk_strategy}', size={chunk_size}, overlap={chunk_overlap}, llm_post_processing={use_llm_post_processing}")
             try:
                 chunks = chunk_text(
                     text=request.text,
                     chunk_size=chunk_size,
                     chunk_overlap=chunk_overlap,
                     strategy=chunk_strategy,
-                    language="auto"  # Auto-detect Turkish/English
+                    use_llm_post_processing=use_llm_post_processing,
+                    llm_model_name=llm_model_name,
+                    model_inference_url=model_inference_url
                 )
-                logger.info(f"✅ Unified chunking successful: {len(chunks)} chunks created with Turkish support and markdown structure preservation")
+                
+                if use_llm_post_processing:
+                    logger.info(f"✅ Unified chunking with LLM post-processing successful: {len(chunks)} chunks created with enhanced Turkish support and semantic refinement")
+                else:
+                    logger.info(f"✅ Unified chunking successful: {len(chunks)} chunks created with Turkish support and zero ML dependencies")
             except Exception as e:
                 logger.error(f"❌ CRITICAL: Unified chunking failed: {e}")
                 logger.info("⚠️ No fallback available - unified chunking system is required")
@@ -645,52 +667,102 @@ async def rag_query(request: RAGQueryRequest):
             try:
                 client = get_chroma_client()
                 
-                # Try to get collection - if it doesn't exist, check alternative formats
+                # Try to get collection - if it doesn't exist, check alternative formats including timestamped
                 try:
                     collection = client.get_collection(name=collection_name)
                     logger.info(f"✅ Found collection '{collection_name}'")
                 except Exception as collection_error:
-                    # Try alternative collection name formats
+                    # Try alternative collection name formats including timestamped ones
                     logger.warning(f"⚠️ Collection '{collection_name}' not found. Trying alternatives...")
-                    alternative_names = []
                     
-                    # If collection_name is UUID format, try with session_ prefix
+                    # CRITICAL: First list ALL collections to find timestamped versions
+                    alternative_names = []
+                    all_collection_names = []
+                    
+                    try:
+                        logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Listing all collections...")
+                        all_collections = client.list_collections()
+                        all_collection_names = [c.name for c in all_collections]
+                        logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Available collections ({len(all_collection_names)}): {all_collection_names}")
+                    except Exception as list_error:
+                        logger.error(f"🔍 RAG QUERY TIMESTAMPED SEARCH FAILED: Could not list collections: {list_error}")
+                    
+                    # Build list of base names to search for (with and without timestamp)
+                    search_patterns = [collection_name]  # Start with the exact collection_name
+                    
+                    # If collection_name is UUID format, also try with session_ prefix
                     if '-' in collection_name and len(collection_name) == 36:
                         uuid_part = collection_name.replace('-', '')
-                        alternative_names.append(f"session_{uuid_part}")
+                        search_patterns.append(f"session_{uuid_part}")
                     
                     # If session_id is 32-char hex, try both formats
-                    # IMPORTANT: Try session_ prefix FIRST (this is how chunks are stored)
                     if len(session_id) == 32:
-                        # Try with session_ prefix FIRST (most likely format)
-                        alternative_names.insert(0, f"session_{session_id}")
-                        # Also try UUID format
+                        # session_ prefix format (how it's stored in process_and_store)
+                        search_patterns.append(f"session_{session_id}")
+                        # UUID format
                         uuid_format = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
-                        if uuid_format != collection_name:
-                            alternative_names.append(uuid_format)
+                        search_patterns.append(uuid_format)
+                    
+                    logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Search patterns: {search_patterns}")
+                    
+                    # Now search for both exact matches AND timestamped versions
+                    for pattern in search_patterns:
+                        # First try exact match (non-timestamped)
+                        if pattern in all_collection_names and pattern not in alternative_names:
+                            alternative_names.append(pattern)
+                            logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Found exact match: {pattern}")
+                        
+                        # Then try timestamped versions (pattern_TIMESTAMP)
+                        for coll_name in all_collection_names:
+                            if coll_name.startswith(pattern + "_"):
+                                # Check if suffix is a timestamp (all digits)
+                                suffix = coll_name[len(pattern)+1:]
+                                if suffix.isdigit() and coll_name not in alternative_names:
+                                    alternative_names.append(coll_name)
+                                    logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Found timestamped version: {coll_name} (pattern: {pattern})")
+                    
+                    logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Total alternatives found: {len(alternative_names)}")
+                    logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Alternatives list: {alternative_names}")
+                    
+                    # Try each alternative (prefer timestamped versions - they're more recent)
+                    # Sort by timestamp (newest first) if multiple timestamped versions exist
+                    timestamped_alternatives = []
+                    non_timestamped_alternatives = []
+                    
+                    for alt_name in alternative_names:
+                        # Check if it ends with _TIMESTAMP
+                        parts = alt_name.rsplit('_', 1)
+                        if len(parts) == 2 and parts[1].isdigit():
+                            timestamped_alternatives.append((alt_name, int(parts[1])))
+                        else:
+                            non_timestamped_alternatives.append(alt_name)
+                    
+                    # Sort timestamped by timestamp (newest first)
+                    timestamped_alternatives.sort(key=lambda x: x[1], reverse=True)
+                    
+                    # Try timestamped first (newest), then non-timestamped
+                    sorted_alternatives = [name for name, _ in timestamped_alternatives] + non_timestamped_alternatives
+                    
+                    logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Trying alternatives in order: {sorted_alternatives}")
                     
                     # Try each alternative
                     collection = None
-                    for alt_name in alternative_names:
+                    for alt_name in sorted_alternatives:
                         try:
                             logger.info(f"🔍 Trying alternative collection name: '{alt_name}'")
                             collection = client.get_collection(name=alt_name)
                             logger.info(f"✅ Found collection with alternative name: '{alt_name}'")
                             collection_name = alt_name  # Update collection_name for consistency
                             break
-                        except:
+                        except Exception as alt_error:
+                            logger.debug(f"Failed to get collection '{alt_name}': {alt_error}")
                             continue
                     
                     if collection is None:
-                        # List all collections to help debug
-                        try:
-                            all_collections = client.list_collections()
-                            collection_names = [c.name for c in all_collections]
-                            logger.error(f"❌ Collection not found. Available collections: {collection_names}")
-                            raise Exception(f"Collection '{collection_name}' not found. Available: {collection_names}")
-                        except Exception as list_error:
-                            logger.error(f"❌ Could not list collections: {list_error}")
-                            raise Exception(f"Collection '{collection_name}' not found and could not list alternatives: {collection_error}")
+                        logger.error(f"❌ Collection not found with any alternative names")
+                        logger.error(f"❌ Tried alternatives: {sorted_alternatives}")
+                        logger.error(f"❌ Available collections: {all_collection_names}")
+                        raise Exception(f"Collection '{collection_name}' not found. Tried alternatives: {sorted_alternatives}")
                 
                 # Get embeddings for the query using our model inference service
                 # Prefer embedding model provided with the request; fallback to default
@@ -946,43 +1018,98 @@ async def retrieve_documents(request: RetrieveRequest):
             collection = client.get_collection(name=collection_name)
             logger.info(f"✅ Found collection '{collection_name}'")
         except Exception as collection_error:
-            # Try alternative collection name formats
+            # Try alternative collection name formats including timestamped ones
             logger.warning(f"⚠️ Collection '{collection_name}' not found. Trying alternatives...")
+            
+            # CRITICAL: First list ALL collections to find timestamped versions
             alternative_names = []
+            all_collection_names = []
+            
+            try:
+                logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Listing all collections...")
+                all_collections = client.list_collections()
+                all_collection_names = [c.name for c in all_collections]
+                logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Available collections ({len(all_collection_names)}): {all_collection_names}")
+            except Exception as list_error:
+                logger.error(f"🔍 RETRIEVE TIMESTAMPED SEARCH FAILED: Could not list collections: {list_error}")
+            
+            # Build list of base names to search for (with and without timestamp)
+            search_patterns = [collection_name]  # Start with the exact collection_name
             
             # If collection_name has session_ prefix, try without it
             if collection_name.startswith("session_"):
                 session_part = collection_name.replace("session_", "")
-                alternative_names.append(session_part)
+                search_patterns.append(session_part)
                 # Try UUID format
                 if len(session_part) == 32:
                     uuid_format = f"{session_part[:8]}-{session_part[8:12]}-{session_part[12:16]}-{session_part[16:20]}-{session_part[20:]}"
-                    alternative_names.append(uuid_format)
+                    search_patterns.append(uuid_format)
             else:
                 # Try with session_ prefix
-                alternative_names.append(f"session_{collection_name}")
+                search_patterns.append(f"session_{collection_name}")
+                # If it's a 32-char hex, try UUID format too
+                if len(collection_name) == 32 and collection_name.replace('-', '').isalnum():
+                    uuid_format = f"{collection_name[:8]}-{collection_name[8:12]}-{collection_name[12:16]}-{collection_name[16:20]}-{collection_name[20:]}"
+                    search_patterns.append(uuid_format)
+            
+            logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Search patterns: {search_patterns}")
+            
+            # Now search for both exact matches AND timestamped versions
+            for pattern in search_patterns:
+                # First try exact match (non-timestamped)
+                if pattern in all_collection_names and pattern not in alternative_names:
+                    alternative_names.append(pattern)
+                    logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Found exact match: {pattern}")
+                
+                # Then try timestamped versions (pattern_TIMESTAMP)
+                for coll_name in all_collection_names:
+                    if coll_name.startswith(pattern + "_"):
+                        # Check if suffix is a timestamp (all digits)
+                        suffix = coll_name[len(pattern)+1:]
+                        if suffix.isdigit() and coll_name not in alternative_names:
+                            alternative_names.append(coll_name)
+                            logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Found timestamped version: {coll_name} (pattern: {pattern})")
+            
+            logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Total alternatives found: {len(alternative_names)}")
+            
+            # Try each alternative (prefer timestamped versions - they're more recent)
+            # Sort by timestamp (newest first) if multiple timestamped versions exist
+            timestamped_alternatives = []
+            non_timestamped_alternatives = []
+            
+            for alt_name in alternative_names:
+                # Check if it ends with _TIMESTAMP
+                parts = alt_name.rsplit('_', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    timestamped_alternatives.append((alt_name, int(parts[1])))
+                else:
+                    non_timestamped_alternatives.append(alt_name)
+            
+            # Sort timestamped by timestamp (newest first)
+            timestamped_alternatives.sort(key=lambda x: x[1], reverse=True)
+            
+            # Try timestamped first (newest), then non-timestamped
+            sorted_alternatives = [name for name, _ in timestamped_alternatives] + non_timestamped_alternatives
+            
+            logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Trying alternatives in order: {sorted_alternatives}")
             
             # Try each alternative
-            for alt_name in alternative_names:
+            for alt_name in sorted_alternatives:
                 try:
                     logger.info(f"🔍 Trying alternative collection name: '{alt_name}'")
                     collection = client.get_collection(name=alt_name)
                     logger.info(f"✅ Found collection with alternative name: '{alt_name}'")
                     collection_name = alt_name
                     break
-                except:
+                except Exception as alt_error:
+                    logger.debug(f"Failed to get collection '{alt_name}': {alt_error}")
                     continue
             
             if collection is None:
-                # List all collections to help debug
-                try:
-                    all_collections = client.list_collections()
-                    collection_names = [c.name for c in all_collections]
-                    logger.error(f"❌ Collection not found. Available collections: {collection_names}")
-                    return RetrieveResponse(success=False, results=[], total=0)
-                except Exception as list_error:
-                    logger.error(f"❌ Could not list collections: {list_error}")
-                    return RetrieveResponse(success=False, results=[], total=0)
+                logger.error(f"❌ Collection not found with any alternative names")
+                logger.error(f"❌ Tried alternatives: {sorted_alternatives}")
+                logger.error(f"❌ Available collections: {all_collection_names}")
+                return RetrieveResponse(success=False, results=[], total=0)
         
         # Get embeddings for the query
         embedding_model = request.embedding_model or "nomic-embed-text"
@@ -1037,100 +1164,183 @@ async def get_session_chunks(session_id: str):
     """
     Get chunks for a specific session from ChromaDB
     """
+    logger.info(f"Getting chunks for session: {session_id}")
+    
+    # Convert session_id to collection name format
+    if len(session_id) == 32 and session_id.replace('-', '').isalnum():
+        # Convert 32-char hex string to proper UUID format
+        collection_name = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
+        logger.info(f"Converted session_id '{session_id}' -> collection_name '{collection_name}'")
+    elif len(session_id) == 36:  # Already formatted UUID
+        collection_name = session_id
+        logger.info(f"Session ID already in UUID format: '{collection_name}'")
+    else:
+        collection_name = session_id
+        logger.warning(f"Using session_id as-is for collection name: '{collection_name}'")
+    
+    # Get ChromaDB client and collection
+    client = get_chroma_client()
+    
+    # Try to get collection - if it doesn't exist, check alternative formats including timestamped ones
+    collection = None
     try:
-        logger.info(f"Getting chunks for session: {session_id}")
+        collection = client.get_collection(name=collection_name)
+        logger.info(f"✅ Found collection '{collection_name}'")
+    except Exception as collection_error:
+        # Try alternative collection name formats including timestamped ones
+        logger.warning(f"⚠️ Collection '{collection_name}' not found. Original error: {collection_error}")
+        logger.warning(f"⚠️ Starting alternative collection name search...")
         
-        # Convert session_id to collection name format
-        if len(session_id) == 32 and session_id.replace('-', '').isalnum():
-            # Convert 32-char hex string to proper UUID format
-            collection_name = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
-            logger.info(f"Converted session_id '{session_id}' -> collection_name '{collection_name}'")
-        elif len(session_id) == 36:  # Already formatted UUID
-            collection_name = session_id
-            logger.info(f"Session ID already in UUID format: '{collection_name}'")
-        else:
-            collection_name = session_id
-            logger.warning(f"Using session_id as-is for collection name: '{collection_name}'")
+        # CRITICAL: First list ALL collections to find timestamped versions
+        alternative_names = []
+        all_collection_names = []
         
         try:
-            # Get ChromaDB client and collection
-            client = get_chroma_client()
-            collection = client.get_collection(name=collection_name)
+            logger.info(f"🔍 TIMESTAMPED SEARCH: Listing all collections...")
+            all_collections = client.list_collections()
+            all_collection_names = [c.name for c in all_collections]
+            logger.info(f"🔍 TIMESTAMPED SEARCH: Available collections ({len(all_collection_names)}): {all_collection_names}")
+        except Exception as list_error:
+            logger.error(f"🔍 TIMESTAMPED SEARCH FAILED: Could not list collections: {list_error}")
+        
+        # Build list of base names to search for (with and without timestamp)
+        search_patterns = [collection_name]  # Start with the exact collection_name
+        
+        # If collection_name is UUID format, also try with session_ prefix
+        if '-' in collection_name and len(collection_name) == 36:
+            uuid_part = collection_name.replace('-', '')
+            search_patterns.append(f"session_{uuid_part}")
+        
+        # If session_id is 32-char hex, try both formats
+        if len(session_id) == 32:
+            # session_ prefix format (how it's stored in process_and_store)
+            search_patterns.append(f"session_{session_id}")
+            # UUID format
+            uuid_format = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
+            search_patterns.append(uuid_format)
+        
+        logger.info(f"🔍 TIMESTAMPED SEARCH: Search patterns: {search_patterns}")
+        
+        # Now search for both exact matches AND timestamped versions
+        for pattern in search_patterns:
+            # First try exact match (non-timestamped)
+            if pattern in all_collection_names and pattern not in alternative_names:
+                alternative_names.append(pattern)
+                logger.info(f"🔍 TIMESTAMPED SEARCH: Found exact match: {pattern}")
             
-            # Get all documents from the collection
-            results = collection.get()
-            
-            # Format chunks for frontend
-            chunks = []
-            documents = results.get('documents', [])
-            metadatas = results.get('metadatas', [])
-            ids = results.get('ids', [])
-            
-            for i, document in enumerate(documents):
-                metadata = metadatas[i] if i < len(metadatas) else {}
-                chunk_id = ids[i] if i < len(ids) else f"chunk_{i}"
-                
-                # Robust metadata parsing - check multiple possible keys for source information
-                source_files = ["Unknown"]
-                source_value = None
-                
-                # Check multiple possible keys that could contain source file information
-                for key in ["source_files", "source_file", "filename", "document_name", "file_name"]:
-                    if metadata.get(key):
-                        source_value = metadata.get(key)
-                        logger.debug(f"🔍 METADATA FIX: Found source info in key '{key}': {source_value}")
-                        break
-                
-                if source_value:
-                    try:
-                        # Try to parse as JSON string first (for source_files array)
-                        parsed_value = json.loads(source_value)
-                        if isinstance(parsed_value, list):
-                            source_files = [str(item) for item in parsed_value if item]
-                        else:
-                            source_files = [str(parsed_value)]
-                        logger.debug(f"🔍 METADATA FIX: Parsed JSON source_files: {source_files}")
-                    except (json.JSONDecodeError, TypeError):
-                        # If it's not JSON, treat as string
-                        source_files = [str(source_value)]
-                        logger.debug(f"🔍 METADATA FIX: Using string source_files: {source_files}")
-                else:
-                    logger.warning(f"🔍 METADATA FIX: No source file information found in metadata keys: {list(metadata.keys())}")
-                
-                document_name = source_files[0] if source_files and source_files[0] != "Unknown" else "Unknown"
-                logger.debug(f"🔍 METADATA FIX: Final document_name: '{document_name}'")
-                
-                chunks.append({
-                    "document_name": document_name,
-                    "chunk_index": i + 1,
-                    "chunk_text": document,
-                    "chunk_metadata": metadata,
-                    "chunk_id": chunk_id
-                })
-            
-            logger.info(f"Retrieved {len(chunks)} chunks for session {session_id}")
-            
-            return {
-                "chunks": chunks,
-                "total_count": len(chunks),
-                "session_id": session_id
-            }
-            
-        except Exception as chromadb_error:
-            logger.error(f"ChromaDB error for session {session_id}: {str(chromadb_error)}")
+            # Then try timestamped versions (pattern_TIMESTAMP)
+            for coll_name in all_collection_names:
+                if coll_name.startswith(pattern + "_"):
+                    # Check if suffix is a timestamp (all digits)
+                    suffix = coll_name[len(pattern)+1:]
+                    if suffix.isdigit() and coll_name not in alternative_names:
+                        alternative_names.append(coll_name)
+                        logger.info(f"🔍 TIMESTAMPED SEARCH: Found timestamped version: {coll_name} (pattern: {pattern})")
+        
+        logger.info(f"🔍 TIMESTAMPED SEARCH: Total alternatives found: {len(alternative_names)}")
+        logger.info(f"🔍 TIMESTAMPED SEARCH: Alternatives list: {alternative_names}")
+        
+        # Try each alternative (prefer timestamped versions - they're more recent)
+        # Sort by timestamp (newest first) if multiple timestamped versions exist
+        timestamped_alternatives = []
+        non_timestamped_alternatives = []
+        
+        for alt_name in alternative_names:
+            # Check if it ends with _TIMESTAMP
+            parts = alt_name.rsplit('_', 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                timestamped_alternatives.append((alt_name, int(parts[1])))
+            else:
+                non_timestamped_alternatives.append(alt_name)
+        
+        # Sort timestamped by timestamp (newest first)
+        timestamped_alternatives.sort(key=lambda x: x[1], reverse=True)
+        
+        # Try timestamped first (newest), then non-timestamped
+        sorted_alternatives = [name for name, _ in timestamped_alternatives] + non_timestamped_alternatives
+        
+        logger.info(f"🔍 TIMESTAMPED SEARCH: Trying alternatives in order: {sorted_alternatives}")
+        
+        for alt_name in sorted_alternatives:
+            try:
+                logger.info(f"🔍 Trying alternative collection name: '{alt_name}'")
+                collection = client.get_collection(name=alt_name)
+                logger.info(f"✅ Found collection with alternative name: '{alt_name}'")
+                collection_name = alt_name  # Update collection_name for consistency
+                break
+            except Exception as alt_error:
+                logger.debug(f"Failed to get collection '{alt_name}': {alt_error}")
+                continue
+        
+        if collection is None:
+            logger.error(f"❌ Collection not found with any alternative names. Original error: {collection_error}")
+            logger.error(f"❌ Tried alternatives: {sorted_alternatives}")
+            # Return empty result
             return {
                 "chunks": [],
                 "total_count": 0,
                 "session_id": session_id
             }
-            
-    except Exception as e:
-        logger.error(f"Error getting chunks for session {session_id}: {str(e)}")
-        return {
-            "chunks": [],
-            "total_count": 0,
-            "session_id": session_id
-        }
+    
+    # If we reach here, we have a valid collection
+    # Get all documents from the collection
+    results = collection.get()
+    
+    # Format chunks for frontend
+    chunks = []
+    documents = results.get('documents', [])
+    metadatas = results.get('metadatas', [])
+    ids = results.get('ids', [])
+    
+    for i, document in enumerate(documents):
+        metadata = metadatas[i] if i < len(metadatas) else {}
+        chunk_id = ids[i] if i < len(ids) else f"chunk_{i}"
+        
+        # Robust metadata parsing - check multiple possible keys for source information
+        source_files = ["Unknown"]
+        source_value = None
+        
+        # Check multiple possible keys that could contain source file information
+        for key in ["source_files", "source_file", "filename", "document_name", "file_name"]:
+            if metadata.get(key):
+                source_value = metadata.get(key)
+                logger.debug(f"🔍 METADATA FIX: Found source info in key '{key}': {source_value}")
+                break
+        
+        if source_value:
+            try:
+                # Try to parse as JSON string first (for source_files array)
+                parsed_value = json.loads(source_value)
+                if isinstance(parsed_value, list):
+                    source_files = [str(item) for item in parsed_value if item]
+                else:
+                    source_files = [str(parsed_value)]
+                logger.debug(f"🔍 METADATA FIX: Parsed JSON source_files: {source_files}")
+            except (json.JSONDecodeError, TypeError):
+                # If it's not JSON, treat as string
+                source_files = [str(source_value)]
+                logger.debug(f"🔍 METADATA FIX: Using string source_files: {source_files}")
+        else:
+            logger.warning(f"🔍 METADATA FIX: No source file information found in metadata keys: {list(metadata.keys())}")
+        
+        document_name = source_files[0] if source_files and source_files[0] != "Unknown" else "Unknown"
+        logger.debug(f"🔍 METADATA FIX: Final document_name: '{document_name}'")
+        
+        chunks.append({
+            "document_name": document_name,
+            "chunk_index": i + 1,
+            "chunk_text": document,
+            "chunk_metadata": metadata,
+            "chunk_id": chunk_id
+        })
+    
+    logger.info(f"Retrieved {len(chunks)} chunks for session {session_id}")
+    
+    return {
+        "chunks": chunks,
+        "total_count": len(chunks),
+        "session_id": session_id
+    }
 
 @app.post("/sessions/{session_id}/reprocess")
 async def reprocess_session_documents(
@@ -1146,10 +1356,34 @@ async def reprocess_session_documents(
     4. Delete old chunks and add new ones
     """
     try:
-        embedding_model = request.get("embedding_model", "nomic-embed-text")
+        # CRITICAL FIX: Try to get embedding_model from session settings first, then from request
+        embedding_model_from_request = request.get("embedding_model", None)
         source_files = request.get("source_files", None)  # Optional: filter by specific files
         chunk_size = request.get("chunk_size", 1000)
         chunk_overlap = request.get("chunk_overlap", 200)
+        
+        # Get session RAG settings from API Gateway to retrieve the correct embedding model
+        embedding_model = None
+        try:
+            api_gateway_url = os.getenv("API_GATEWAY_URL", "http://api-gateway:8000")
+            session_response = requests.get(
+                f"{api_gateway_url}/sessions/{session_id}",
+                timeout=10
+            )
+            if session_response.status_code == 200:
+                session_data = session_response.json()
+                rag_settings = session_data.get("rag_settings", {})
+                session_embedding_model = rag_settings.get("embedding_model")
+                if session_embedding_model:
+                    embedding_model = session_embedding_model
+                    logger.info(f"✅ Retrieved embedding model from session settings: {embedding_model}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not retrieve session settings for embedding model: {e}")
+        
+        # Fallback to request parameter, then to default
+        if not embedding_model:
+            embedding_model = embedding_model_from_request or "nomic-embed-text"
+            logger.info(f"Using embedding model from request/default: {embedding_model}")
         
         logger.info(f"Re-processing session {session_id} with embedding model: {embedding_model}")
         
@@ -1165,53 +1399,105 @@ async def reprocess_session_documents(
         # Get ChromaDB client
         client = get_chroma_client()
         
-        # Try to get collection - if it doesn't exist, check alternative formats
+        # Try to get collection - if it doesn't exist, check alternative formats including timestamped ones
         try:
             collection = client.get_collection(name=collection_name)
             logger.info(f"✅ Found collection '{collection_name}' for reprocessing")
         except Exception as collection_error:
-            # Try alternative collection name formats
-            logger.warning(f"⚠️ Collection '{collection_name}' not found. Trying alternatives...")
+            # Try alternative collection name formats including timestamped ones
+            logger.warning(f"⚠️ Collection '{collection_name}' not found for reprocessing. Original error: {collection_error}")
+            logger.warning(f"⚠️ Starting alternative collection name search for reprocessing...")
+            
+            # CRITICAL: First list ALL collections to find timestamped versions
             alternative_names = []
+            all_collection_names = []
             
-            # IMPORTANT: Try session_ prefix FIRST (this is how chunks are stored)
-            if len(session_id) == 32:
-                alternative_names.insert(0, f"session_{session_id}")
+            try:
+                logger.info(f"🔍 REPROCESS TIMESTAMPED SEARCH: Listing all collections...")
+                all_collections = client.list_collections()
+                all_collection_names = [c.name for c in all_collections]
+                logger.info(f"🔍 REPROCESS TIMESTAMPED SEARCH: Available collections ({len(all_collection_names)}): {all_collection_names}")
+            except Exception as list_error:
+                logger.error(f"🔍 REPROCESS TIMESTAMPED SEARCH FAILED: Could not list collections: {list_error}")
             
-            # If collection_name is UUID format, try with session_ prefix (without dashes)
+            # Build list of base names to search for (with and without timestamp)
+            search_patterns = [collection_name]  # Start with the exact collection_name
+            
+            # If collection_name is UUID format, also try with session_ prefix
             if '-' in collection_name and len(collection_name) == 36:
                 uuid_part = collection_name.replace('-', '')
-                if f"session_{uuid_part}" not in alternative_names:
-                    alternative_names.append(f"session_{uuid_part}")
+                search_patterns.append(f"session_{uuid_part}")
+            
+            # If session_id is 32-char hex, try both formats
+            if len(session_id) == 32:
+                # session_ prefix format (how it's stored in process_and_store)
+                search_patterns.append(f"session_{session_id}")
+                # UUID format
+                uuid_format = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
+                search_patterns.append(uuid_format)
+            
+            logger.info(f"🔍 REPROCESS TIMESTAMPED SEARCH: Search patterns: {search_patterns}")
+            
+            # Now search for both exact matches AND timestamped versions
+            for pattern in search_patterns:
+                # First try exact match (non-timestamped)
+                if pattern in all_collection_names and pattern not in alternative_names:
+                    alternative_names.append(pattern)
+                    logger.info(f"🔍 REPROCESS TIMESTAMPED SEARCH: Found exact match: {pattern}")
+                
+                # Then try timestamped versions (pattern_TIMESTAMP)
+                for coll_name in all_collection_names:
+                    if coll_name.startswith(pattern + "_"):
+                        # Check if suffix is a timestamp (all digits)
+                        suffix = coll_name[len(pattern)+1:]
+                        if suffix.isdigit() and coll_name not in alternative_names:
+                            alternative_names.append(coll_name)
+                            logger.info(f"🔍 REPROCESS TIMESTAMPED SEARCH: Found timestamped version: {coll_name} (pattern: {pattern})")
+            
+            logger.info(f"🔍 REPROCESS TIMESTAMPED SEARCH: Total alternatives found: {len(alternative_names)}")
+            logger.info(f"🔍 REPROCESS TIMESTAMPED SEARCH: Alternatives list: {alternative_names}")
+            
+            # Try each alternative (prefer timestamped versions - they're more recent)
+            # Sort by timestamp (newest first) if multiple timestamped versions exist
+            timestamped_alternatives = []
+            non_timestamped_alternatives = []
+            
+            for alt_name in alternative_names:
+                # Check if it ends with _TIMESTAMP
+                parts = alt_name.rsplit('_', 1)
+                if len(parts) == 2 and parts[1].isdigit():
+                    timestamped_alternatives.append((alt_name, int(parts[1])))
+                else:
+                    non_timestamped_alternatives.append(alt_name)
+            
+            # Sort timestamped by timestamp (newest first)
+            timestamped_alternatives.sort(key=lambda x: x[1], reverse=True)
+            
+            # Try timestamped first (newest), then non-timestamped
+            sorted_alternatives = [name for name, _ in timestamped_alternatives] + non_timestamped_alternatives
+            
+            logger.info(f"🔍 REPROCESS TIMESTAMPED SEARCH: Trying alternatives in order: {sorted_alternatives}")
             
             # Try each alternative
             collection = None
-            for alt_name in alternative_names:
+            for alt_name in sorted_alternatives:
                 try:
-                    logger.info(f"🔍 Trying alternative collection name: '{alt_name}'")
+                    logger.info(f"🔍 Trying alternative collection name for reprocessing: '{alt_name}'")
                     collection = client.get_collection(name=alt_name)
-                    logger.info(f"✅ Found collection with alternative name: '{alt_name}'")
+                    logger.info(f"✅ Found collection with alternative name for reprocessing: '{alt_name}'")
                     collection_name = alt_name  # Update collection_name for consistency
                     break
-                except:
+                except Exception as alt_error:
+                    logger.debug(f"Failed to get collection '{alt_name}': {alt_error}")
                     continue
             
             if collection is None:
-                # List all collections to help debug
-                try:
-                    all_collections = client.list_collections()
-                    collection_names = [c.name for c in all_collections]
-                    logger.error(f"❌ Collection not found. Available collections: {collection_names}")
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"Collection '{collection_name}' not found. Available: {collection_names}"
-                    )
-                except Exception as list_error:
-                    logger.error(f"❌ Could not list collections: {list_error}")
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"Collection '{collection_name}' not found and could not list alternatives: {collection_error}"
-                    )
+                logger.error(f"❌ Collection not found with any alternative names for reprocessing. Original error: {collection_error}")
+                logger.error(f"❌ Tried alternatives: {sorted_alternatives}")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Collection '{collection_name}' not found. Tried alternatives: {sorted_alternatives}"
+                )
         
         # Get all existing chunks
         results = collection.get()
@@ -1266,50 +1552,16 @@ async def reprocess_session_documents(
             try:
                 logger.info(f"Re-processing {len(chunks)} chunks from file: {source_file}")
                 
-                # Try to get original file from API gateway first
-                combined_text = None
-                api_gateway_url = os.getenv("API_GATEWAY_URL", "http://api-gateway:8000")
-                try:
-                    response = requests.get(
-                        f"{api_gateway_url}/documents/markdown/{source_file}",
-                        timeout=30
-                    )
-                    if response.status_code == 200:
-                        data = response.json()
-                        combined_text = data.get("content", "")
-                        if combined_text and combined_text.strip():
-                            logger.info(f"Retrieved original file content for {source_file} from API gateway")
-                except Exception as e:
-                    logger.warning(f"Could not retrieve original file {source_file} from API gateway: {e}. Using combined chunks.")
+                # ✅ CRITICAL FIX: Do NOT re-chunk! Just keep existing chunks and re-embed them
+                # This preserves LLM improvements and metadata
+                logger.info(f"✅ REPROCESS: Keeping existing {len(chunks)} chunks (preserving LLM improvements and metadata)")
+                logger.info(f"✅ REPROCESS: Only re-embedding with new model: {embedding_model}")
                 
-                # Fallback: combine chunks back into original text
-                if not combined_text:
-                    combined_text = "\n\n".join([chunk["text"] for chunk in chunks])
-                
-                # 🚀 CRITICAL FIX: Use same advanced chunking as main processing
-                if UNIFIED_CHUNKING_AVAILABLE:
-                    logger.info(f"🚀 REPROCESS: Using unified chunking system for {source_file}")
-                    try:
-                        new_chunks = chunk_text(
-                            text=combined_text,
-                            chunk_size=chunk_size,
-                            chunk_overlap=chunk_overlap,
-                            strategy="markdown",  # Use consistent markdown strategy with Turkish support
-                            language="auto"  # Auto-detect Turkish/English
-                        )
-                        logger.info(f"✅ Unified chunking for reprocess: {len(new_chunks)} chunks created with enhanced structure preservation")
-                    except Exception as e:
-                        logger.error(f"❌ CRITICAL: Unified chunking failed in reprocess: {e}")
-                        failed_files.append(f"{source_file}: Unified chunking system failure - {str(e)}")
-                        continue
-                else:
-                    # No fallback - unified chunking is required
-                    logger.error(f"❌ CRITICAL: Unified chunking system not available for reprocessing {source_file}")
-                    failed_files.append(f"{source_file}: Unified chunking system not available")
-                    continue
+                # Extract chunk texts (preserving order and content)
+                new_chunks = [chunk["text"] for chunk in chunks]
                 
                 if not new_chunks:
-                    logger.warning(f"No chunks generated for {source_file}")
+                    logger.warning(f"No chunks found for {source_file}")
                     continue
                 
                 # Get new embeddings with new model
@@ -1353,42 +1605,68 @@ async def reprocess_session_documents(
                 if new_embeddings is None or len(new_embeddings) != len(new_chunks):
                     raise Exception(f"Embedding count mismatch: {len(new_chunks)} chunks but {len(new_embeddings)} embeddings")
                 
-                # Generate new chunk IDs
-                new_chunk_ids = [str(uuid.uuid4()) for _ in new_chunks]
+                # ✅ CRITICAL FIX: Keep original chunk IDs and metadata (preserving LLM improvements!)
+                logger.info(f"✅ REPROCESS: Preserving original chunk IDs and metadata (including LLM improvements)")
                 
-                # Prepare metadata
+                # Use original chunk IDs
+                new_chunk_ids = [chunk["id"] for chunk in chunks]
+                
+                # Preserve original metadata and only update embedding-related fields
                 new_metadatas = []
-                for i, chunk in enumerate(new_chunks):
-                    chunk_metadata = {
-                        "session_id": collection_name,
-                        "source_file": source_file,
-                        "filename": source_file,
-                        "embedding_model": embedding_model,
-                        "chunk_index": i + 1,
-                        "total_chunks": len(new_chunks),
-                        "chunk_length": len(chunk),
-                        "reprocessed": True,
-                        "reprocessed_at": datetime.now().isoformat()
-                    }
+                for i, chunk_data in enumerate(chunks):
+                    # Start with original metadata (preserves llm_improved, llm_model, etc.)
+                    chunk_metadata = chunk_data["metadata"].copy() if chunk_data.get("metadata") else {}
+                    
+                    # Only update embedding-related fields
+                    chunk_metadata["embedding_model"] = embedding_model
+                    chunk_metadata["reprocessed"] = True
+                    chunk_metadata["reprocessed_at"] = datetime.now().isoformat()
+                    
+                    # Update chunk_length if needed
+                    chunk_metadata["chunk_length"] = len(new_chunks[i])
+                    
                     new_metadatas.append(chunk_metadata)
+                    
+                    # Log if this chunk was LLM improved
+                    if chunk_metadata.get("llm_improved"):
+                        logger.debug(f"✅ Preserved LLM improvement for chunk {i+1} (model: {chunk_metadata.get('llm_model', 'unknown')})")
                 
-                # Delete old chunks for this file
-                old_ids_to_delete = [chunk["id"] for chunk in chunks]
-                if old_ids_to_delete:
-                    collection.delete(ids=old_ids_to_delete)
-                    logger.info(f"Deleted {len(old_ids_to_delete)} old chunks for {source_file}")
+                # Count how many LLM-improved chunks we're preserving
+                llm_improved_count = sum(1 for m in new_metadatas if m.get("llm_improved"))
+                logger.info(f"✅ REPROCESS: Preserving {llm_improved_count}/{len(new_metadatas)} LLM-improved chunks")
                 
-                # Add new chunks
-                collection.add(
-                    documents=new_chunks,
-                    embeddings=new_embeddings,
-                    metadatas=new_metadatas,
-                    ids=new_chunk_ids
-                )
+                # ✅ CRITICAL FIX: Use UPDATE instead of DELETE+ADD to safely preserve chunks
+                # This prevents data loss if operation fails mid-way
+                logger.info(f"✅ REPROCESS: Updating {len(new_chunk_ids)} chunks in-place (safer than delete+add)")
+                
+                try:
+                    # Update all chunks in one go (atomic operation)
+                    collection.update(
+                        ids=new_chunk_ids,
+                        documents=new_chunks,
+                        embeddings=new_embeddings,
+                        metadatas=new_metadatas
+                    )
+                    logger.info(f"✅ Successfully updated {len(new_chunk_ids)} chunks for {source_file}")
+                except Exception as update_error:
+                    # If update fails (e.g., IDs don't exist), fall back to delete+add
+                    logger.warning(f"⚠️ Update failed for {source_file}, falling back to delete+add: {update_error}")
+                    
+                    old_ids_to_delete = [chunk["id"] for chunk in chunks]
+                    if old_ids_to_delete:
+                        collection.delete(ids=old_ids_to_delete)
+                        logger.info(f"Deleted {len(old_ids_to_delete)} old chunks for {source_file}")
+                    
+                    collection.add(
+                        documents=new_chunks,
+                        embeddings=new_embeddings,
+                        metadatas=new_metadatas,
+                        ids=new_chunk_ids
+                    )
                 
                 total_chunks_processed += len(new_chunks)
                 successful_files.append(source_file)
-                logger.info(f"✅ Successfully re-processed {source_file}: {len(old_ids_to_delete)} old chunks -> {len(new_chunks)} new chunks")
+                logger.info(f"✅ Successfully re-processed {source_file}: {len(new_chunks)} chunks updated with new embeddings")
                 
             except Exception as e:
                 logger.error(f"Error re-processing {source_file}: {str(e)}")
@@ -1508,6 +1786,422 @@ async def evaluate_with_crag(request: CRAGEvaluationRequest):
             success=False,
             evaluation=fallback_evaluation,
             filtered_docs=request.retrieved_docs if avg_score >= 0.3 else []
+        )
+
+
+
+class ImproveSingleChunkRequest(BaseModel):
+    chunk_text: str
+    language: Optional[str] = "tr"
+    model_name: Optional[str] = "llama-3.1-8b-instant"
+    session_id: Optional[str] = None  # NEW: For ChromaDB update
+    chunk_id: Optional[str] = None  # NEW: For ChromaDB update (if known)
+    document_name: Optional[str] = None  # NEW: Alternative to chunk_id
+    chunk_index: Optional[int] = None  # NEW: Alternative to chunk_id
+
+class ImproveSingleChunkResponse(BaseModel):
+    success: bool
+    original_text: str
+    improved_text: Optional[str] = None
+    message: Optional[str] = None
+    processing_time_ms: Optional[float] = None
+
+class ImproveAllChunksRequest(BaseModel):
+    language: Optional[str] = "tr"
+    model_name: Optional[str] = "llama-3.1-8b-instant"
+    skip_already_improved: Optional[bool] = True
+
+class ImproveAllChunksResponse(BaseModel):
+    success: bool
+    total_chunks: int
+    processed: int
+    improved: int
+    failed: int
+    skipped: int
+    message: str
+    processing_time_ms: float
+
+
+@app.post("/chunks/improve-single", response_model=ImproveSingleChunkResponse)
+async def improve_single_chunk(request: ImproveSingleChunkRequest):
+    """
+    Improve a single chunk using LLM post-processing.
+    This is more efficient than batch processing for on-demand improvements.
+    """
+    start_time = time.time()
+    
+    try:
+        logger.info(f"🤖 Improving single chunk ({len(request.chunk_text)} chars) with {request.model_name}")
+        
+        # Import the standard post-processor (single chunk, simpler)
+        try:
+            from src.text_processing.chunk_post_processor_grok import GrokChunkPostProcessor, PostProcessingConfig
+        except ImportError:
+            try:
+                from src.text_processing.chunk_post_processor import ChunkPostProcessor as GrokChunkPostProcessor, PostProcessingConfig
+            except ImportError:
+                return ImproveSingleChunkResponse(
+                    success=False,
+                    original_text=request.chunk_text,
+                    improved_text=None,
+                    message="LLM post-processing not available",
+                    processing_time_ms=(time.time() - start_time) * 1000
+                )
+        
+        # Create post-processor configuration
+        config = PostProcessingConfig(
+            enabled=True,
+            model_name=request.model_name,
+            model_inference_url=MODEL_INFERENCER_URL,
+            language=request.language,
+            timeout_seconds=30,
+            retry_attempts=2
+        )
+        
+        # Create and use post-processor
+        post_processor = GrokChunkPostProcessor(config)
+        
+        # IMPORTANT: Temporarily disable "worth processing" check for manual improvements
+        # User explicitly wants to improve this chunk, so we should always try
+        original_check = post_processor._is_chunk_worth_processing
+        post_processor._is_chunk_worth_processing = lambda x: True  # Always process
+        
+        try:
+            # Process single chunk
+            improved_chunks = post_processor.process_chunks([request.chunk_text])
+        finally:
+            # Restore original check
+            post_processor._is_chunk_worth_processing = original_check
+        
+        if improved_chunks and len(improved_chunks) > 0:
+            improved_text = improved_chunks[0]
+            
+            # Check if actually improved (not just echoed back)
+            if improved_text != request.chunk_text and len(improved_text.strip()) > 10:
+                processing_time = (time.time() - start_time) * 1000
+                logger.info(f"✅ Chunk improved successfully in {processing_time:.0f}ms")
+                
+                # ✅ NEW: Update ChromaDB if session_id provided
+                if request.session_id:
+                    try:
+                        # Get ChromaDB client and collection
+                        client = get_chroma_client()
+                        
+                        # Find collection (handle various formats)
+                        collection_name = request.session_id
+                        if len(request.session_id) == 32:
+                            collection_name = f"{request.session_id[:8]}-{request.session_id[8:12]}-{request.session_id[12:16]}-{request.session_id[16:20]}-{request.session_id[20:]}"
+                        
+                        collection = None
+                        try:
+                            collection = client.get_collection(name=collection_name)
+                        except:
+                            # Try timestamped versions
+                            try:
+                                all_collections = client.list_collections()
+                                for coll in all_collections:
+                                    if coll.name.startswith(collection_name):
+                                        collection = client.get_collection(name=coll.name)
+                                        break
+                            except:
+                                pass
+                        
+                        if collection:
+                            # Find chunk by ID or by document_name + chunk_index
+                            target_chunk_id = None
+                            existing = None
+                            
+                            if request.chunk_id:
+                                # Direct ID lookup
+                                existing = collection.get(ids=[request.chunk_id], include=['embeddings', 'metadatas'])
+                                if existing and existing['ids']:
+                                    target_chunk_id = request.chunk_id
+                            elif request.document_name is not None and request.chunk_index is not None:
+                                # Search by document_name and chunk_index in metadata
+                                all_chunks = collection.get(include=['embeddings', 'metadatas'])
+                                for i, metadata in enumerate(all_chunks.get('metadatas', [])):
+                                    doc_name = metadata.get('document_name') or metadata.get('filename') or metadata.get('source_file')
+                                    chunk_idx = metadata.get('chunk_index')
+                                    if doc_name == request.document_name and chunk_idx == request.chunk_index:
+                                        target_chunk_id = all_chunks['ids'][i]
+                                        existing = {
+                                            'ids': [target_chunk_id],
+                                            'embeddings': [all_chunks['embeddings'][i]],
+                                            'metadatas': [metadata]
+                                        }
+                                        break
+                            
+                            if existing and existing['ids'] and target_chunk_id:
+                                # Update with improved text, preserving embedding and metadata
+                                updated_metadata = existing['metadatas'][0].copy() if existing['metadatas'] else {}
+                                updated_metadata['llm_improved'] = True
+                                updated_metadata['llm_model'] = request.model_name
+                                updated_metadata['improvement_timestamp'] = datetime.now().isoformat()
+                                
+                                # Update ChromaDB (preserve original embedding!)
+                                collection.update(
+                                    ids=[target_chunk_id],
+                                    documents=[improved_text],
+                                    metadatas=[updated_metadata],
+                                    embeddings=[existing['embeddings'][0]]  # Preserve original embedding
+                                )
+                                
+                                logger.info(f"✅ Chunk updated in ChromaDB (ID: {target_chunk_id}, doc: {request.document_name}, idx: {request.chunk_index})")
+                            else:
+                                logger.warning(f"⚠️ Chunk not found in ChromaDB (doc: {request.document_name}, idx: {request.chunk_index})")
+                        else:
+                            logger.warning(f"⚠️ Collection not found for session {request.session_id}")
+                    except Exception as db_error:
+                        logger.error(f"❌ Failed to update ChromaDB: {db_error}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+                        # Don't fail the whole request if DB update fails
+                
+                return ImproveSingleChunkResponse(
+                    success=True,
+                    original_text=request.chunk_text,
+                    improved_text=improved_text,
+                    message="Chunk improved successfully",
+                    processing_time_ms=processing_time
+                )
+            else:
+                return ImproveSingleChunkResponse(
+                    success=False,
+                    original_text=request.chunk_text,
+                    improved_text=None,
+                    message="LLM did not improve the chunk",
+                    processing_time_ms=(time.time() - start_time) * 1000
+                )
+        else:
+            return ImproveSingleChunkResponse(
+                success=False,
+                original_text=request.chunk_text,
+                improved_text=None,
+                message="LLM post-processing failed",
+                processing_time_ms=(time.time() - start_time) * 1000
+            )
+            
+    except Exception as e:
+        logger.error(f"❌ Error improving single chunk: {e}")
+        return ImproveSingleChunkResponse(
+            success=False,
+            original_text=request.chunk_text,
+            improved_text=None,
+            message=f"Error: {str(e)}",
+            processing_time_ms=(time.time() - start_time) * 1000
+        )
+
+
+@app.post("/sessions/{session_id}/chunks/improve-all", response_model=ImproveAllChunksResponse)
+async def improve_all_chunks(session_id: str, request: ImproveAllChunksRequest):
+    """
+    Improve all chunks in a session using LLM post-processing.
+    Skips chunks that are already marked as improved (unless skip_already_improved=False).
+    Updates chunk metadata to mark improved chunks.
+    """
+    start_time = time.time()
+    
+    try:
+        logger.info(f"🚀 Starting bulk chunk improvement for session {session_id} with {request.model_name}")
+        
+        # Get ChromaDB client
+        client = get_chroma_client()
+        
+        # Find the collection (handle timestamped names)
+        collection_name = session_id
+        if len(session_id) == 32:
+            collection_name = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
+        
+        collection = None
+        try:
+            collection = client.get_collection(name=collection_name)
+        except:
+            # Try alternatives including timestamped
+            alternative_names = [f"session_{session_id}"]
+            
+            # Try timestamped versions
+            try:
+                all_collections = client.list_collections()
+                for coll in all_collections:
+                    if coll.name.startswith(collection_name + "_"):
+                        alternative_names.insert(0, coll.name)
+            except:
+                pass
+            
+            for alt_name in alternative_names:
+                try:
+                    collection = client.get_collection(name=alt_name)
+                    collection_name = alt_name
+                    break
+                except:
+                    continue
+        
+        if not collection:
+            return ImproveAllChunksResponse(
+                success=False,
+                total_chunks=0,
+                processed=0,
+                improved=0,
+                failed=0,
+                skipped=0,
+                message=f"Collection not found for session {session_id}",
+                processing_time_ms=(time.time() - start_time) * 1000
+            )
+        
+        # Get all chunks from collection INCLUDING embeddings
+        results = collection.get(include=['documents', 'metadatas', 'embeddings'])
+        documents = results.get('documents', [])
+        metadatas = results.get('metadatas', [])
+        ids = results.get('ids', [])
+        embeddings = results.get('embeddings', [])  # Get existing embeddings!
+        
+        total_chunks = len(documents)
+        logger.info(f"📊 Found {total_chunks} chunks to process")
+        logger.info(f"📊 Retrieved {len(embeddings)} existing embeddings (will be preserved)")
+        
+        # Import post-processor
+        try:
+            from src.text_processing.chunk_post_processor_grok import GrokChunkPostProcessor, PostProcessingConfig
+        except ImportError:
+            try:
+                from src.text_processing.chunk_post_processor import ChunkPostProcessor as GrokChunkPostProcessor, PostProcessingConfig
+            except ImportError:
+                return ImproveAllChunksResponse(
+                    success=False,
+                    total_chunks=total_chunks,
+                    processed=0,
+                    improved=0,
+                    failed=0,
+                    skipped=0,
+                    message="LLM post-processing not available",
+                    processing_time_ms=(time.time() - start_time) * 1000
+                )
+        
+        # Create post-processor
+        config = PostProcessingConfig(
+            enabled=True,
+            model_name=request.model_name,
+            model_inference_url=MODEL_INFERENCER_URL,
+            language=request.language,
+            timeout_seconds=30,
+            retry_attempts=2
+        )
+        post_processor = GrokChunkPostProcessor(config)
+        
+        # Process chunks
+        processed_count = 0
+        improved_count = 0
+        failed_count = 0
+        skipped_count = 0
+        
+        for i, (doc, metadata, chunk_id, embedding) in enumerate(zip(documents, metadatas, ids, embeddings)):
+            # Check if already improved
+            if request.skip_already_improved and metadata.get('llm_improved'):
+                logger.debug(f"⏭️  Skipping chunk {i+1}/{total_chunks} (already improved)")
+                skipped_count += 1
+                continue
+            
+            # Force processing (disable worth check)
+            original_check = post_processor._is_chunk_worth_processing
+            post_processor._is_chunk_worth_processing = lambda x: True
+            
+            try:
+                # Process chunk
+                improved_chunks = post_processor.process_chunks([doc])
+                
+                if improved_chunks and len(improved_chunks) > 0:
+                    improved_text = improved_chunks[0]
+                    
+                    # Check if actually improved
+                    if improved_text != doc and len(improved_text.strip()) > 10:
+                        # Update chunk in ChromaDB
+                        updated_metadata = metadata.copy()
+                        updated_metadata['llm_improved'] = True
+                        updated_metadata['llm_model'] = request.model_name
+                        updated_metadata['improvement_timestamp'] = datetime.now().isoformat()
+                        
+                        # IMPORTANT: Update document and metadata while PRESERVING original embeddings!
+                        # We pass the original embedding back to ChromaDB to prevent automatic re-calculation
+                        # This avoids: 1) Model download, 2) Dimension mismatch, 3) Slow processing
+                        
+                        # Retry logic for ChromaDB update (SSL timeout handling)
+                        max_retries = 5  # Increased from 3
+                        retry_delay = 3.0  # Increased from 2.0
+                        
+                        for retry in range(max_retries):
+                            try:
+                                collection.update(
+                                    ids=[chunk_id],
+                                    documents=[improved_text],
+                                    metadatas=[updated_metadata],
+                                    embeddings=[embedding]  # CRITICAL: Pass original embedding to prevent re-calculation!
+                                )
+                                if retry > 0:
+                                    logger.info(f"✅ ChromaDB update succeeded on attempt {retry+1}")
+                                break  # Success, exit retry loop
+                            except Exception as update_error:
+                                if retry < max_retries - 1:
+                                    logger.warning(f"⚠️ ChromaDB update failed (attempt {retry+1}/{max_retries}): {update_error}")
+                                    # Exponential backoff: 3s, 6s, 9s, 12s
+                                    wait_time = retry_delay * (retry + 1)
+                                    logger.info(f"⏳ Waiting {wait_time}s before retry...")
+                                    time.sleep(wait_time)
+                                else:
+                                    logger.error(f"❌ ChromaDB update failed after {max_retries} attempts")
+                                    raise  # Re-raise on final attempt
+                        
+                        improved_count += 1
+                        logger.info(f"✅ Chunk {i+1}/{total_chunks} improved successfully")
+                    else:
+                        failed_count += 1
+                        logger.warning(f"⚠️ Chunk {i+1}/{total_chunks} - LLM did not improve")
+                else:
+                    failed_count += 1
+                    logger.warning(f"❌ Chunk {i+1}/{total_chunks} - Processing failed")
+                
+                processed_count += 1
+                
+            except Exception as e:
+                failed_count += 1
+                processed_count += 1
+                logger.error(f"❌ Chunk {i+1}/{total_chunks} error: {e}")
+            finally:
+                # Restore original check
+                post_processor._is_chunk_worth_processing = original_check
+        
+        processing_time = (time.time() - start_time) * 1000
+        
+        logger.info(f"""
+✅ Bulk chunk improvement completed!
+   📊 Total: {total_chunks} chunks
+   ✅ Improved: {improved_count}
+   ❌ Failed: {failed_count}
+   ⏭️  Skipped: {skipped_count}
+   ⏱️  Time: {processing_time:.0f}ms
+        """)
+        
+        return ImproveAllChunksResponse(
+            success=True,
+            total_chunks=total_chunks,
+            processed=processed_count,
+            improved=improved_count,
+            failed=failed_count,
+            skipped=skipped_count,
+            message=f"Processed {processed_count} chunks: {improved_count} improved, {failed_count} failed, {skipped_count} skipped",
+            processing_time_ms=processing_time
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Error in bulk chunk improvement: {e}")
+        return ImproveAllChunksResponse(
+            success=False,
+            total_chunks=0,
+            processed=0,
+            improved=0,
+            failed=0,
+            skipped=0,
+            message=f"Error: {str(e)}",
+            processing_time_ms=(time.time() - start_time) * 1000
         )
 
     

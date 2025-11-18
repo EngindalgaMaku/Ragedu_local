@@ -37,7 +37,7 @@ services:
       # JWT configuration for API Gateway
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
       # CORS configuration - API Gateway needs CORS too!
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://46.62.254.131:3000,http://46.62.254.131:8000,http://api-gateway:8000}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000}
       - CORS_CREDENTIALS=true
     volumes:
       - session_data:/app/sessions
@@ -90,7 +90,7 @@ services:
       - DATABASE_PATH=/app/data/rag_assistant.db
       - APRAG_DB_PATH=/app/data/rag_assistant.db
       # CORS configuration - Add external server IP for browser access
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://46.62.254.131:3000,http://46.62.254.131:8000,http://auth-service:8006}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://auth-service:8006}
       - CORS_CREDENTIALS=true
       # Feature Flags
       - APRAG_ENABLED=${APRAG_ENABLED:-true}
@@ -145,7 +145,7 @@ services:
       # Database configuration
       - DATABASE_PATH=/app/data/rag_assistant.db
       # CORS configuration - Add external server IP for browser access
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://46.62.254.131:3000,http://46.62.254.131:8000,http://auth-service:8006}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://auth-service:8006}
       - CORS_CREDENTIALS=true
       # Rate limiting - Geliştirme için gevşetildi
       - RATE_LIMIT_RPM=300
@@ -243,11 +243,21 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY:-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}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - OLLAMA_HOST=${OLLAMA_HOST:-http://127.0.0.1:11434}
+      # FIX: Use host.docker.internal to access Ollama running on Windows host
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - OLLAMA_SKIP_VERIFY=true
     volumes:
       - ollama_cache:/root/.ollama
       - ./services/model_inference_service/main.py:/app/main.py
+    # Override startup command: Skip Ollama serve, use external Ollama on host
+    command: >
+      sh -c "echo 'Using external Ollama at ${OLLAMA_HOST}' &&
+             uvicorn main:app --host 0.0.0.0 --port ${MODEL_INFERENCE_PORT:-8002}"
+    # Memory optimization: Limit container memory since Ollama runs on host
+    deploy:
+      resources:
+        limits:
+          memory: 2G  # Model inference doesn't need much RAM when Ollama is external
     restart: unless-stopped
     networks:
       - rag-network
@@ -306,8 +316,8 @@ services:
       - API_GATEWAY_PORT=${API_GATEWAY_PORT:-8000}
       - API_GATEWAY_INTERNAL_PORT=${API_GATEWAY_PORT:-8000}
       # Frontend URLs - Environment variable'lardan alınır
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://46.62.254.131:8000}
-      - NEXT_PUBLIC_AUTH_URL=${NEXT_PUBLIC_AUTH_URL:-http://46.62.254.131:8006}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      - NEXT_PUBLIC_AUTH_URL=${NEXT_PUBLIC_AUTH_URL:-http://localhost:8006}
       # Environment
       - NODE_ENV=${NODE_ENV:-production}
       - DOCKER_ENV=${DOCKER_ENV:-true}

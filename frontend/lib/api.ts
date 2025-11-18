@@ -347,6 +347,8 @@ export async function configureAndProcess(data: {
   chunk_size: number;
   chunk_overlap: number;
   embedding_model: string;
+  use_llm_post_processing?: boolean;
+  llm_model_name?: string;
 }): Promise<{
   success: boolean;
   message: string;
@@ -361,6 +363,14 @@ export async function configureAndProcess(data: {
   formData.append("chunk_size", data.chunk_size.toString());
   formData.append("chunk_overlap", data.chunk_overlap.toString());
   formData.append("embedding_model", data.embedding_model);
+  
+  // LLM post-processing parameters
+  if (data.use_llm_post_processing !== undefined) {
+    formData.append("use_llm_post_processing", data.use_llm_post_processing.toString());
+  }
+  if (data.llm_model_name) {
+    formData.append("llm_model_name", data.llm_model_name);
+  }
 
   const res = await fetch(`${getApiUrl()}/documents/process-and-store`, {
     method: "POST",
@@ -766,6 +776,7 @@ export interface StudentChatMessage {
   suggestions?: string[];
   timestamp: string;
   session_id: string;
+  aprag_interaction_id?: number; // For emoji feedback
 }
 
 export interface StudentChatHistory {
@@ -949,6 +960,44 @@ export interface FeedbackCreate {
   comment?: string;
 }
 
+// Create an APRAG interaction (log student query and response)
+export interface APRAGInteractionCreate {
+  user_id: string;
+  session_id: string;
+  query: string;
+  response: string;
+  personalized_response?: string;
+  processing_time_ms?: number;
+  model_used?: string;
+  chain_type?: string;
+  sources?: Array<{
+    content: string;
+    score: number;
+    metadata?: any;
+  }>;
+  metadata?: Record<string, any>;
+}
+
+export async function createAPRAGInteraction(
+  interaction: APRAGInteractionCreate
+): Promise<{ interaction_id: number; message: string }> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(`${getApiUrl()}/api/aprag/interactions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(interaction),
+  });
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
 // Submit feedback for an interaction
 export async function submitFeedback(
   feedback: FeedbackCreate
@@ -968,6 +1017,193 @@ export async function submitFeedback(
   }
 
   return res.json();
+}
+
+// ============================================================================
+// Emoji Feedback (Quick Micro-Feedback)
+// ============================================================================
+
+export interface EmojiFeedbackCreate {
+  interaction_id: number;
+  user_id: string;
+  session_id: string;
+  emoji: "😊" | "👍" | "😐" | "❌";
+  comment?: string;
+}
+
+export interface EmojiFeedbackResponse {
+  message: string;
+  emoji: string;
+  score: number;
+  description: string;
+  interaction_id: number;
+  profile_updated: boolean;
+}
+
+export interface EmojiOption {
+  emoji: string;
+  name: string;
+  description: string;
+  score: number;
+}
+
+// Get available emoji options
+export async function getAvailableEmojis(): Promise<{ emojis: EmojiOption[] }> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(`${getApiUrl()}/api/aprag/emoji-feedback/emojis`, {
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Submit emoji feedback
+export async function submitEmojiFeedback(
+  feedback: EmojiFeedbackCreate
+): Promise<EmojiFeedbackResponse> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(`${getApiUrl()}/api/aprag/emoji-feedback`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(feedback),
+  });
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Get emoji feedback stats
+export async function getEmojiStats(
+  userId: string,
+  sessionId: string
+): Promise<{
+  user_id: string;
+  session_id: string;
+  total_feedback_count: number;
+  emoji_distribution: Record<string, number>;
+  avg_score: number;
+  most_common_emoji: string | null;
+  recent_trend: "positive" | "negative" | "neutral";
+}> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(
+    `${getApiUrl()}/api/aprag/emoji-feedback/stats/${userId}/${sessionId}`,
+    {
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }
+  );
+
+  if (!res.ok) {
+    if (res.status === 404) {
+      return {
+        user_id: userId,
+        session_id: sessionId,
+        total_feedback_count: 0,
+        emoji_distribution: {},
+        avg_score: 0.5,
+        most_common_emoji: null,
+        recent_trend: "neutral",
+      };
+    }
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// ============================================================================
+// APRAG Feature Flags and Settings
+// ============================================================================
+
+export interface APRAGSettings {
+  enabled: boolean;
+  global_enabled: boolean;
+  session_enabled: boolean | null;
+  features: {
+    feedback_collection: boolean;
+    personalization: boolean;
+    recommendations: boolean;
+    analytics: boolean;
+    emoji_feedback?: boolean;
+    cacs?: boolean;
+    zpd?: boolean;
+    bloom?: boolean;
+    cognitive_load?: boolean;
+  };
+}
+
+// Get APRAG status and feature flags
+export async function getAPRAGSettings(
+  sessionId?: string
+): Promise<APRAGSettings> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const params = sessionId ? `?session_id=${sessionId}` : "";
+  
+  try {
+    const res = await fetch(`${getApiUrl()}/api/aprag/settings/status${params}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+
+    if (!res.ok) {
+      // If APRAG service is down or not configured, return disabled
+      return {
+        enabled: false,
+        global_enabled: false,
+        session_enabled: null,
+        features: {
+          feedback_collection: false,
+          personalization: false,
+          recommendations: false,
+          analytics: false,
+        },
+      };
+    }
+
+    return res.json();
+  } catch (error) {
+    console.error("Failed to get APRAG settings:", error);
+    // Return disabled if service is unreachable
+    return {
+      enabled: false,
+      global_enabled: false,
+      session_enabled: null,
+      features: {
+        feedback_collection: false,
+        personalization: false,
+        recommendations: false,
+        analytics: false,
+      },
+    };
+  }
+}
+
+// Check if APRAG is enabled (quick check)
+export async function isAPRAGEnabled(sessionId?: string): Promise<boolean> {
+  try {
+    const settings = await getAPRAGSettings(sessionId);
+    return settings.enabled;
+  } catch {
+    return false;
+  }
 }
 
 // APRAG Recommendation Types
@@ -1407,6 +1643,86 @@ export async function getStudentProgress(
         next_recommended_topic: null,
       };
     }
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// ===================================================================
+// CHUNK IMPROVEMENT WITH LLM
+// ===================================================================
+
+export async function improveSingleChunk(
+  chunkText: string,
+  language: string = "tr",
+  modelName: string = "llama-3.1-8b-instant",
+  sessionId?: string,          // For ChromaDB update
+  chunkId?: string,            // For ChromaDB update (if known)
+  documentName?: string,       // Alternative to chunkId
+  chunkIndex?: number          // Alternative to chunkId
+): Promise<{
+  success: boolean;
+  original_text: string;
+  improved_text: string | null;
+  message: string | null;
+  processing_time_ms: number | null;
+}> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(`${getApiUrl()}/chunks/improve-single`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      chunk_text: chunkText,
+      language,
+      model_name: modelName,
+      session_id: sessionId,
+      chunk_id: chunkId,
+      document_name: documentName,
+      chunk_index: chunkIndex,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+export async function improveAllChunks(
+  sessionId: string,
+  language: string = "tr",
+  modelName: string = "llama-3.1-8b-instant",
+  skipAlreadyImproved: boolean = true
+): Promise<{
+  success: boolean;
+  total_chunks: number;
+  processed: number;
+  improved: number;
+  failed: number;
+  skipped: number;
+  message: string;
+  processing_time_ms: number;
+}> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(`${getApiUrl()}/sessions/${sessionId}/chunks/improve-all`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      language,
+      model_name: modelName,
+      skip_already_improved: skipAlreadyImproved,
+    }),
+  });
+
+  if (!res.ok) {
     throw new Error(await res.text());
   }
 

@@ -180,7 +180,7 @@ class RAGConfig:
             'max_workers': int(os.getenv('MAX_WORKERS', '4')),
             
             # Fallback Strategy Configuration
-            'fallback_strategy': os.getenv('FALLBACK_STRATEGY', 'ast_markdown'),  # ast_markdown, markdown, adaptive
+            'fallback_strategy': os.getenv('FALLBACK_STRATEGY', 'lightweight'),  # lightweight, ast_markdown, markdown, adaptive
             'enable_fallback_logging': os.getenv('ENABLE_FALLBACK_LOGGING', 'true').lower() == 'true',
             
             # Turkish Language Specific Optimizations

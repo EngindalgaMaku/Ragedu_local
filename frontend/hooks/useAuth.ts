@@ -69,8 +69,8 @@ export function useLogin() {
           if (userRole === AUTH_ROLES.ADMIN.toLowerCase()) {
             router.push("/admin");
           } else if (userRole === AUTH_ROLES.STUDENT.toLowerCase()) {
-            // Öğrenci için ana sayfaya (chatbot sayfası) yönlendir
-            router.push("/");
+            // Öğrenci için student dashboard'a yönlendir
+            router.push("/student");
           } else {
             // Öğretmen ve diğer roller için redirectTo kullan
             router.push(redirectTo);

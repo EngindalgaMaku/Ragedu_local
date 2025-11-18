@@ -20,6 +20,12 @@ try:
     from database.database import DatabaseManager
     from main import db_manager
     from api.profiles import get_profile
+    from config.feature_flags import FeatureFlags
+    from business_logic.pedagogical import (
+        get_zpd_calculator,
+        get_bloom_detector,
+        get_cognitive_load_manager
+    )
 except ImportError:
     # Fallback import
     import sys
@@ -27,6 +33,12 @@ except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
     from database.database import DatabaseManager
     from api.profiles import get_profile
+    from config.feature_flags import FeatureFlags
+    from business_logic.pedagogical import (
+        get_zpd_calculator,
+        get_bloom_detector,
+        get_cognitive_load_manager
+    )
     db_manager = None
 
 # Model Inference Service URL - Google Cloud Run compatible
@@ -59,6 +71,11 @@ class PersonalizeResponse(BaseModel):
     personalization_factors: Dict[str, Any]
     difficulty_adjustment: Optional[str]
     explanation_level: Optional[str]
+    # Faz 3: Pedagogical additions
+    zpd_info: Optional[Dict[str, Any]] = None
+    bloom_info: Optional[Dict[str, Any]] = None
+    cognitive_load: Optional[Dict[str, Any]] = None
+    pedagogical_instructions: Optional[str] = None
 
 
 def get_db() -> DatabaseManager:
@@ -188,6 +205,11 @@ async def personalize_response(
     
     This endpoint takes an original RAG response and adapts it
     based on the student's learning profile, preferences, and history.
+    
+    **Faz 3: Now includes pedagogical monitoring:**
+    - ZPD Calculator: Determines optimal difficulty level
+    - Bloom Detector: Identifies cognitive level of question
+    - Cognitive Load: Optimizes response complexity
     """
     try:
         logger.info(f"Personalizing response for user {request.user_id}, session {request.session_id}")
@@ -207,8 +229,86 @@ async def personalize_response(
                 "preferred_difficulty_level": None,
             }
         
-        # Analyze profile to get personalization factors
+        # Analyze profile to get personalization factors (legacy v1)
         factors = _analyze_student_profile(profile_dict)
+        
+        # === FAZ 3: PEDAGOGICAL MONITORING ===
+        zpd_info = None
+        bloom_info = None
+        cognitive_load_info = None
+        pedagogical_instructions = ""
+        
+        # 1. ZPD Calculator (if enabled)
+        if FeatureFlags.is_zpd_enabled():
+            try:
+                zpd_calc = get_zpd_calculator()
+                if zpd_calc:
+                    # Get recent interactions for ZPD calculation
+                    recent_interactions = db.execute_query(
+                        """
+                        SELECT * FROM student_interactions
+                        WHERE user_id = ? AND session_id = ?
+                        ORDER BY timestamp DESC
+                        LIMIT 20
+                        """,
+                        (request.user_id, request.session_id)
+                    )
+                    
+                    zpd_info = zpd_calc.calculate_zpd_level(
+                        recent_interactions=recent_interactions,
+                        student_profile=profile_dict
+                    )
+                    
+                    # Update factors with ZPD recommendations
+                    factors['difficulty_level'] = zpd_info['recommended_level']
+                    
+                    logger.info(f"ZPD: {zpd_info['current_level']} → {zpd_info['recommended_level']} "
+                              f"(success: {zpd_info['success_rate']:.2f})")
+            except Exception as e:
+                logger.warning(f"ZPD calculation failed: {e}")
+        
+        # 2. Bloom Taxonomy Detection (if enabled)
+        if FeatureFlags.is_bloom_enabled():
+            try:
+                bloom_det = get_bloom_detector()
+                if bloom_det:
+                    bloom_info = bloom_det.detect_bloom_level(request.query)
+                    
+                    # Generate Bloom instructions for LLM
+                    bloom_instructions = bloom_det.generate_bloom_instructions(
+                        detected_level=bloom_info['level'],
+                        student_zpd_level=factors['difficulty_level']
+                    )
+                    pedagogical_instructions += bloom_instructions
+                    
+                    logger.info(f"Bloom: Level {bloom_info['level_index']} ({bloom_info['level']}) "
+                              f"- confidence: {bloom_info['confidence']:.2f}")
+            except Exception as e:
+                logger.warning(f"Bloom detection failed: {e}")
+        
+        # 3. Cognitive Load Management (if enabled)
+        if FeatureFlags.is_cognitive_load_enabled():
+            try:
+                cog_mgr = get_cognitive_load_manager()
+                if cog_mgr:
+                    cognitive_load_info = cog_mgr.calculate_cognitive_load(
+                        response=request.original_response,
+                        query=request.query
+                    )
+                    
+                    # Generate simplification instructions if needed
+                    if cognitive_load_info['needs_simplification']:
+                        simplification_instructions = cog_mgr.generate_simplification_instructions(
+                            cognitive_load_info
+                        )
+                        pedagogical_instructions += simplification_instructions
+                    
+                    logger.info(f"Cognitive Load: {cognitive_load_info['total_load']:.2f} "
+                              f"(simplify: {cognitive_load_info['needs_simplification']})")
+            except Exception as e:
+                logger.warning(f"Cognitive load calculation failed: {e}")
+        
+        # === END FAZ 3 ===
         
         # If no significant personalization needed, return original
         if (
@@ -216,20 +316,28 @@ async def personalize_response(
             not profile_dict.get("preferred_explanation_style") and
             not profile_dict.get("preferred_difficulty_level")
         ):
-            logger.info("Insufficient profile data, returning original response")
+            logger.info("Insufficient profile data, returning original response (with pedagogical info if available)")
             return PersonalizeResponse(
                 personalized_response=request.original_response,
                 personalization_factors=factors,
                 difficulty_adjustment=None,
-                explanation_level=None
+                explanation_level=None,
+                zpd_info=zpd_info,
+                bloom_info=bloom_info,
+                cognitive_load=cognitive_load_info,
+                pedagogical_instructions=pedagogical_instructions if pedagogical_instructions else None
             )
         
-        # Generate personalization prompt
+        # Generate personalization prompt (v1 + pedagogical enhancements)
         personalization_prompt = _generate_personalization_prompt(
             request.original_response,
             request.query,
             factors
         )
+        
+        # Add pedagogical instructions if available
+        if pedagogical_instructions:
+            personalization_prompt += pedagogical_instructions
         
         # Call model inference service to personalize
         try:
@@ -262,7 +370,12 @@ async def personalize_response(
                     personalized_response=personalized_text,
                     personalization_factors=factors,
                     difficulty_adjustment=factors.get("difficulty_level"),
-                    explanation_level=factors.get("explanation_style")
+                    explanation_level=factors.get("explanation_style"),
+                    # Faz 3: Pedagogical info
+                    zpd_info=zpd_info,
+                    bloom_info=bloom_info,
+                    cognitive_load=cognitive_load_info,
+                    pedagogical_instructions=pedagogical_instructions if pedagogical_instructions else None
                 )
             else:
                 logger.warning(f"Model inference failed: {model_response.status_code}")
@@ -271,7 +384,11 @@ async def personalize_response(
                     personalized_response=request.original_response,
                     personalization_factors=factors,
                     difficulty_adjustment=None,
-                    explanation_level=None
+                    explanation_level=None,
+                    zpd_info=zpd_info,
+                    bloom_info=bloom_info,
+                    cognitive_load=cognitive_load_info,
+                    pedagogical_instructions=pedagogical_instructions if pedagogical_instructions else None
                 )
                 
         except requests.exceptions.RequestException as e:
@@ -281,16 +398,26 @@ async def personalize_response(
                 personalized_response=request.original_response,
                 personalization_factors=factors,
                 difficulty_adjustment=None,
-                explanation_level=None
+                explanation_level=None,
+                zpd_info=zpd_info,
+                bloom_info=bloom_info,
+                cognitive_load=cognitive_load_info,
+                pedagogical_instructions=pedagogical_instructions if pedagogical_instructions else None
             )
         
     except Exception as e:
         logger.error(f"Personalization failed: {e}")
+        import traceback
+        traceback.print_exc()
         # Return original response on error
         return PersonalizeResponse(
             personalized_response=request.original_response,
             personalization_factors={},
             difficulty_adjustment=None,
-            explanation_level=None
+            explanation_level=None,
+            zpd_info=None,
+            bloom_info=None,
+            cognitive_load=None,
+            pedagogical_instructions=None
         )
 

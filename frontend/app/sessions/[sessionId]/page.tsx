@@ -11,6 +11,8 @@ import {
   getSessionInteractions,
   APRAGInteraction,
   getApiUrl,
+  improveSingleChunk,
+  improveAllChunks,
 } from "@/lib/api";
 import TopicManagementPanel from "@/components/TopicManagementPanel";
 import { useParams, useRouter } from "next/navigation";
@@ -41,6 +43,12 @@ export default function SessionPage() {
   const router = useRouter();
   const sessionId = params.sessionId as string;
 
+  // Handler for sidebar navigation
+  const handleTabChange = (tab: 'dashboard' | 'sessions' | 'upload' | 'query') => {
+    // Navigate to main page, which will handle the tab change
+    router.push('/');
+  };
+
   // State management
   const [session, setSession] = useState<SessionMeta | null>(null);
   const [chunks, setChunks] = useState<Chunk[]>([]);
@@ -66,11 +74,27 @@ export default function SessionPage() {
     }>;
   }>({ ollama: [], huggingface: [] });
   const [embeddingModelsLoading, setEmbeddingModelsLoading] = useState(false);
+
+  // Update selectedEmbeddingModel when session's embedding model changes
+  useEffect(() => {
+    if (session?.rag_settings?.embedding_model) {
+      setSelectedEmbeddingModel(session.rag_settings.embedding_model);
+    }
+  }, [session?.rag_settings?.embedding_model]);
   const [interactions, setInteractions] = useState<APRAGInteraction[]>([]);
   const [interactionsLoading, setInteractionsLoading] = useState(false);
   const [showInteractions, setShowInteractions] = useState(false);
   const [apragEnabled, setApragEnabled] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'chunks' | 'topics' | 'interactions'>('chunks');
+  const [improvingChunkIndex, setImprovingChunkIndex] = useState<number | null>(null);
+  const [llmProvider, setLlmProvider] = useState<'ollama' | 'grok'>('grok'); // Default: Grok (daha hızlı)
+  const [improvingAll, setImprovingAll] = useState(false); // Bulk improvement in progress
+  const [bulkProgress, setBulkProgress] = useState<{
+    processed: number;
+    total: number;
+    improved: number;
+    failed: number;
+  } | null>(null);
   const CHUNKS_PER_PAGE = 10;
 
   // Fetch session details
@@ -99,6 +123,91 @@ export default function SessionPage() {
       setError(e.message || "Parçalar yüklenemedi");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Improve single chunk with LLM
+  const handleImproveChunk = async (chunkIndex: number) => {
+    try {
+      setImprovingChunkIndex(chunkIndex);
+      setError(null);
+      
+      const chunk = chunks[chunkIndex];
+      
+      // Model seçimine göre model adı belirle
+      const modelName = llmProvider === 'ollama' 
+        ? 'llama3:8b'  // Ollama formatı
+        : 'llama-3.1-8b-instant';  // Grok formatı
+      
+      const providerName = llmProvider === 'ollama' ? 'Ollama' : 'Grok';
+      
+      // ✅ NEW: Pass session_id, document_name, and chunk_index for ChromaDB update
+      const result = await improveSingleChunk(
+        chunk.chunk_text, 
+        "tr", 
+        modelName,
+        sessionId,                    // For ChromaDB update
+        undefined,                    // chunk_id (we don't have it)
+        chunk.document_name,          // document_name
+        chunk.chunk_index            // chunk_index
+      );
+      
+      if (result.success && result.improved_text) {
+        // Update chunk in state AND refresh from DB to get updated metadata
+        await fetchChunks();  // Refresh to get llm_improved flag
+        
+        setSuccess(`✅ Parça #${chunk.chunk_index} ${providerName} ile iyileştirildi ve kaydedildi! (${result.processing_time_ms?.toFixed(0)}ms)`);
+      } else {
+        setError(result.message || "LLM iyileştirme başarısız oldu");
+      }
+    } catch (e: any) {
+      setError(e.message || "Parça iyileştirme başarısız");
+    } finally {
+      setImprovingChunkIndex(null);
+    }
+  };
+
+  // Improve all chunks in background
+  const handleImproveAllChunks = async () => {
+    try {
+      setImprovingAll(true);
+      setError(null);
+      setBulkProgress({ processed: 0, total: chunks.length, improved: 0, failed: 0 });
+      
+      const modelName = llmProvider === 'ollama' 
+        ? 'llama3:8b'
+        : 'llama-3.1-8b-instant';
+      
+      const providerName = llmProvider === 'ollama' ? 'Ollama' : 'Grok';
+      
+      setSuccess(`🚀 ${chunks.length} parça arka planda ${providerName} ile iyileştiriliyor...`);
+      
+      const result = await improveAllChunks(sessionId, "tr", modelName, true);
+      
+      if (result.success) {
+        // Refresh chunks to get updated versions
+        await fetchChunks();
+        
+        setBulkProgress({
+          processed: result.processed,
+          total: result.total_chunks,
+          improved: result.improved,
+          failed: result.failed
+        });
+        
+        setSuccess(
+          `✅ Toplu iyileştirme tamamlandı! ${result.improved}/${result.total_chunks} parça iyileştirildi ` +
+          `(${result.failed} başarısız, ${result.skipped} atlandı) - ${(result.processing_time_ms / 1000).toFixed(1)}s`
+        );
+      } else {
+        setError(result.message || "Toplu iyileştirme başarısız");
+      }
+    } catch (e: any) {
+      setError(e.message || "Toplu iyileştirme başarısız");
+    } finally {
+      setImprovingAll(false);
+      // Clear progress after 3 seconds
+      setTimeout(() => setBulkProgress(null), 3000);
     }
   };
 
@@ -215,7 +324,7 @@ export default function SessionPage() {
   }
 
   return (
-    <TeacherLayout activeTab="sessions">
+    <TeacherLayout activeTab="sessions" onTabChange={handleTabChange}>
       <div className="space-y-6">
         {/* Minimal Header */}
         <div className="border-b border-border pb-4">
@@ -361,22 +470,109 @@ export default function SessionPage() {
           {/* Chunks Tab Content */}
           {activeTab === 'chunks' && (
             <>
-              <div className="flex items-center justify-between p-5 border-b border-border">
-                <div>
-                  <h2 className="text-base font-semibold text-foreground">
-                    Döküman Parçaları
-                  </h2>
-                  <p className="text-sm text-muted-foreground mt-0.5">
-                    {chunks.length} parça
-                  </p>
+              <div className="p-5 border-b border-border space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-base font-semibold text-foreground">
+                      Döküman Parçaları
+                    </h2>
+                    <p className="text-sm text-muted-foreground mt-0.5">
+                      {chunks.length} parça
+                      {chunks.filter(c => c.chunk_metadata?.llm_improved).length > 0 && (
+                        <span className="ml-2 text-violet-600 font-medium">
+                          (✨ {chunks.filter(c => c.chunk_metadata?.llm_improved).length} iyileştirildi)
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                  <button
+                    onClick={fetchChunks}
+                    disabled={loading}
+                    className="py-2 px-3 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {loading ? "Yenileniyor..." : "Yenile"}
+                  </button>
                 </div>
-                <button
-                  onClick={fetchChunks}
-                  disabled={loading}
-                  className="py-2 px-3 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {loading ? "Yenileniyor..." : "Yenile"}
-                </button>
+                
+                {/* LLM Provider Selection */}
+                <div className="flex items-center gap-3 p-3 bg-gradient-to-r from-violet-500/10 to-purple-500/10 rounded-lg border border-violet-500/20">
+                  <span className="text-sm font-medium text-foreground">🤖 LLM Seçimi:</span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setLlmProvider('grok')}
+                      className={`px-3 py-1.5 text-xs rounded-md transition-all ${
+                        llmProvider === 'grok'
+                          ? 'bg-violet-600 text-white shadow-md'
+                          : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                      }`}
+                    >
+                      ⚡ Grok API (Hızlı)
+                    </button>
+                    <button
+                      onClick={() => setLlmProvider('ollama')}
+                      className={`px-3 py-1.5 text-xs rounded-md transition-all ${
+                        llmProvider === 'ollama'
+                          ? 'bg-violet-600 text-white shadow-md'
+                          : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                      }`}
+                    >
+                      🏠 Ollama (Local)
+                    </button>
+                  </div>
+                  <span className="text-xs text-muted-foreground ml-auto">
+                    {llmProvider === 'grok' ? 'Grok API kullanılacak' : 'Host Ollama kullanılacak'}
+                  </span>
+                </div>
+                
+                {/* Bulk Improvement Button & Progress */}
+                {chunks.length > 0 && (
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleImproveAllChunks}
+                      disabled={improvingAll || improvingChunkIndex !== null}
+                      className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-lg hover:from-violet-700 hover:to-purple-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-md text-sm font-medium"
+                      title={`Tüm ${chunks.length} parçayı ${llmProvider === 'ollama' ? 'Ollama' : 'Grok'} ile iyileştir`}
+                    >
+                      {improvingAll ? (
+                        <>
+                          <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                          <span>İyileştiriliyor...</span>
+                        </>
+                      ) : (
+                        <>
+                          🚀
+                          <span>Tümünü İyileştir ({chunks.length} parça)</span>
+                        </>
+                      )}
+                    </button>
+                    
+                    {/* Progress Display */}
+                    {bulkProgress && (
+                      <div className="flex-1 bg-muted/50 rounded-lg px-4 py-2 border border-border">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-medium text-foreground">
+                            İşlenen: {bulkProgress.processed}/{bulkProgress.total}
+                          </span>
+                          <span className="text-green-600 font-medium">
+                            ✅ {bulkProgress.improved} başarılı
+                          </span>
+                          {bulkProgress.failed > 0 && (
+                            <span className="text-red-600 font-medium">
+                              ❌ {bulkProgress.failed} başarısız
+                            </span>
+                          )}
+                        </div>
+                        {/* Progress Bar */}
+                        <div className="mt-2 w-full bg-muted rounded-full h-2">
+                          <div
+                            className="bg-gradient-to-r from-violet-600 to-purple-600 h-2 rounded-full transition-all duration-300"
+                            style={{ width: `${(bulkProgress.processed / bulkProgress.total) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {loading ? (
@@ -402,13 +598,28 @@ export default function SessionPage() {
                         (chunkPage - 1) * CHUNKS_PER_PAGE,
                         chunkPage * CHUNKS_PER_PAGE
                       )
-                      .map((chunk) => (
+                      .map((chunk, idx) => {
+                        const actualIndex = (chunkPage - 1) * CHUNKS_PER_PAGE + idx;
+                        const isImproving = improvingChunkIndex === actualIndex;
+                        
+                        return (
                         <div
                           key={`${chunk.document_name}-${chunk.chunk_index}`}
-                          className="bg-muted/30 rounded-lg p-3 space-y-2"
+                          className={`rounded-lg p-3 space-y-2 ${
+                            chunk.chunk_metadata?.llm_improved 
+                              ? 'bg-gradient-to-br from-violet-500/10 to-purple-500/10 border border-violet-500/30' 
+                              : 'bg-muted/30'
+                          }`}
                         >
                           <div className="flex justify-between items-center">
-                            <span className="text-sm font-medium">#{chunk.chunk_index}</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium">#{chunk.chunk_index}</span>
+                              {chunk.chunk_metadata?.llm_improved && (
+                                <span className="text-xs bg-violet-600 text-white px-2 py-0.5 rounded-full font-medium">
+                                  ✨ İyileştirildi
+                                </span>
+                              )}
+                            </div>
                             <span className="text-xs text-muted-foreground">{chunk.chunk_text.length} karakter</span>
                           </div>
                           <div className="text-sm text-foreground font-medium truncate">
@@ -424,8 +635,35 @@ export default function SessionPage() {
                               </p>
                             </div>
                           </details>
+                          <button
+                            onClick={() => handleImproveChunk(actualIndex)}
+                            disabled={isImproving || improvingChunkIndex !== null || chunk.chunk_metadata?.llm_improved}
+                            className={`w-full text-xs px-3 py-2 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 ${
+                              chunk.chunk_metadata?.llm_improved
+                                ? 'bg-green-600 text-white'
+                                : 'bg-violet-600 hover:bg-violet-700 text-white'
+                            }`}
+                            title={chunk.chunk_metadata?.llm_improved ? 'Bu chunk zaten iyileştirildi' : 'LLM ile chunk kalitesini artır'}
+                          >
+                            {isImproving ? (
+                              <>
+                                <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
+                                <span>İyileştiriliyor...</span>
+                              </>
+                            ) : chunk.chunk_metadata?.llm_improved ? (
+                              <>
+                                ✅
+                                <span>İyileştirildi</span>
+                              </>
+                            ) : (
+                              <>
+                                🤖
+                                <span>LLM ile İyileştir</span>
+                              </>
+                            )}
+                          </button>
                         </div>
-                      ))}
+                      )})}
                   </div>
                   
                   {/* Table - Desktop View */}
@@ -445,6 +683,9 @@ export default function SessionPage() {
                           <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
                             İçerik
                           </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                            İşlemler
+                          </th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
@@ -453,13 +694,28 @@ export default function SessionPage() {
                             (chunkPage - 1) * CHUNKS_PER_PAGE,
                             chunkPage * CHUNKS_PER_PAGE
                           )
-                          .map((chunk) => (
+                          .map((chunk, idx) => {
+                            const actualIndex = (chunkPage - 1) * CHUNKS_PER_PAGE + idx;
+                            const isImproving = improvingChunkIndex === actualIndex;
+                            
+                            return (
                             <tr
                               key={`${chunk.document_name}-${chunk.chunk_index}`}
-                              className="hover:bg-muted/30 transition-colors"
+                              className={`hover:bg-muted/30 transition-colors ${
+                                chunk.chunk_metadata?.llm_improved 
+                                  ? 'bg-violet-500/5' 
+                                  : ''
+                              }`}
                             >
                               <td className="px-4 py-3 text-sm text-foreground font-medium">
-                                {chunk.chunk_index}
+                                <div className="flex items-center gap-2">
+                                  {chunk.chunk_index}
+                                  {chunk.chunk_metadata?.llm_improved && (
+                                    <span className="text-[10px] bg-violet-600 text-white px-1.5 py-0.5 rounded-full font-medium">
+                                      ✨
+                                    </span>
+                                  )}
+                                </div>
                               </td>
                               <td className="px-4 py-3 text-sm text-foreground">
                                 {chunk.document_name}
@@ -479,8 +735,37 @@ export default function SessionPage() {
                                   </div>
                                 </details>
                               </td>
+                              <td className="px-4 py-3">
+                                <button
+                                  onClick={() => handleImproveChunk(actualIndex)}
+                                  disabled={isImproving || improvingChunkIndex !== null}
+                                  className={`text-xs px-3 py-1.5 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 ${
+                                    chunk.chunk_metadata?.llm_improved
+                                      ? 'bg-green-600 hover:bg-green-700 text-white'
+                                      : 'bg-violet-600 hover:bg-violet-700 text-white'
+                                  }`}
+                                  title={chunk.chunk_metadata?.llm_improved ? 'Bu chunk\'ı yeniden iyileştir' : 'LLM ile chunk kalitesini artır'}
+                                >
+                                  {isImproving ? (
+                                    <>
+                                      <div className="animate-spin rounded-full h-3 w-3 border-2 border-white border-t-transparent"></div>
+                                      <span>İyileştiriliyor...</span>
+                                    </>
+                                  ) : chunk.chunk_metadata?.llm_improved ? (
+                                    <>
+                                      🔄
+                                      <span>Yeniden İyileştir</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      🤖
+                                      <span>İyileştir</span>
+                                    </>
+                                  )}
+                                </button>
+                              </td>
                             </tr>
-                          ))}
+                          )})}
                       </tbody>
                     </table>
                   </div>
