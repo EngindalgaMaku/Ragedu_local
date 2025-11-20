@@ -426,10 +426,10 @@ export default function StudentDashboard({ userId }: StudentDashboardProps) {
             Öğrenme yolculuğuna başlamak için bir soru sor!
           </p>
           <a
-            href={`/sessions/${selectedSession}`}
+            href="/student/chat"
             className="inline-flex items-center gap-2 bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-6 rounded-lg transition-colors"
           >
-            Oturuma Git
+            Soru Sor
             <ArrowRight className="w-4 h-4" />
           </a>
         </div>

@@ -1,0 +1,11 @@
+fastapi==0.110.0
+uvicorn==0.27.1
+ragas==0.1.5
+langchain==0.1.12
+langchain-groq==0.0.1
+langchain-openai==0.0.8
+python-dotenv==1.0.1
+pydantic==2.6.3
+numpy<2.0.0
+datasets
+

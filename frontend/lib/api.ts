@@ -51,6 +51,9 @@ export type SessionMeta = {
     max_context_chars?: number;
     use_direct_llm?: boolean;
     embedding_model?: string;
+    chunk_strategy?: string;
+    chunk_size?: number;
+    chunk_overlap?: number;
   } | null;
 };
 
@@ -180,6 +183,7 @@ export async function ragQuery(data: {
   sources: RAGSource[];
   processing_time_ms?: number;
   suggestions?: string[];
+  correction?: CorrectionDetails;
 }> {
   const res = await fetch(`${getApiUrl()}/rag/query`, {
     method: "POST",
@@ -766,6 +770,12 @@ export async function convertMarker(file: File): Promise<any> {
   }
 }
 
+export interface CorrectionDetails {
+  original_answer: string;
+  issues: string[];
+  was_corrected: boolean;
+}
+
 // Student-specific chat history functions
 export interface StudentChatMessage {
   id?: string;
@@ -777,6 +787,7 @@ export interface StudentChatMessage {
   timestamp: string;
   session_id: string;
   aprag_interaction_id?: number; // For emoji feedback
+  correction?: CorrectionDetails; // NEW: For self-correction details
 }
 
 export interface StudentChatHistory {
@@ -789,8 +800,8 @@ export interface StudentChatHistory {
 export async function getStudentChatHistory(
   sessionId: string
 ): Promise<StudentChatMessage[]> {
-  const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/students/chat-history/${sessionId}`, {
+  const token = tokenManager.getAccessToken();
+  const res = await fetch(`${getApiUrl()}/api/students/chat-history/${sessionId}`, {
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -812,17 +823,14 @@ export async function getStudentChatHistory(
 export async function saveStudentChatMessage(
   message: Omit<StudentChatMessage, "id" | "timestamp">
 ): Promise<StudentChatMessage> {
-  const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/students/chat-history`, {
+  const token = tokenManager.getAccessToken();
+  const res = await fetch(`${getApiUrl()}/api/students/chat-message`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({
-      ...message,
-      timestamp: new Date().toISOString(),
-    }),
+    body: JSON.stringify(message),
   });
 
   if (!res.ok) throw new Error(await res.text());
@@ -833,8 +841,8 @@ export async function saveStudentChatMessage(
 export async function clearStudentChatHistory(
   sessionId: string
 ): Promise<{ success: boolean; deleted: number }> {
-  const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/students/chat-history/${sessionId}`, {
+  const token = tokenManager.getAccessToken();
+  const res = await fetch(`${getApiUrl()}/api/students/chat-history/${sessionId}`, {
     method: "DELETE",
     headers: {
       "Content-Type": "application/json",
@@ -1121,6 +1129,105 @@ export async function getEmojiStats(
         recent_trend: "neutral",
       };
     }
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// ============================================================================
+// APRAG Adaptive Query (Full Pipeline)
+// ============================================================================
+
+export interface AdaptiveQueryRequest {
+  user_id: string;
+  session_id: string;
+  query: string;
+  rag_documents: Array<{
+    doc_id: string;
+    content: string;
+    score: number;
+    metadata?: Record<string, any>;
+  }>;
+  rag_response: string;
+}
+
+export interface PedagogicalContext {
+  zpd_level: string;
+  zpd_recommended: string;
+  zpd_success_rate: number;
+  bloom_level: string;
+  bloom_level_index: number;
+  cognitive_load: number;
+  needs_simplification: boolean;
+}
+
+export interface DocumentScore {
+  doc_id: string;
+  final_score: number;
+  base_score: number;
+  personal_score: number;
+  global_score: number;
+  context_score: number;
+  rank: number;
+}
+
+export interface AdaptiveQueryResponse {
+  personalized_response: string;
+  original_response: string;
+  interaction_id: number;
+  top_documents: DocumentScore[];
+  cacs_applied: boolean;
+  pedagogical_context: PedagogicalContext;
+  feedback_emoji_options: string[];
+  processing_time_ms?: number;
+  components_active: {
+    cacs: boolean;
+    zpd: boolean;
+    bloom: boolean;
+    cognitive_load: boolean;
+    emoji_feedback: boolean;
+  };
+}
+
+// Call APRAG Adaptive Query (Full Eğitsel-KBRAG Pipeline)
+export async function apragAdaptiveQuery(
+  request: AdaptiveQueryRequest
+): Promise<AdaptiveQueryResponse> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(`${getApiUrl()}/api/aprag/adaptive-query`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(error || "APRAG adaptive query failed");
+  }
+
+  return res.json();
+}
+
+// Get APRAG Adaptive Query Status
+export async function getAPRAGAdaptiveStatus(): Promise<{
+  pipeline: string;
+  status: string;
+  components: Record<string, boolean>;
+  description: string;
+}> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(`${getApiUrl()}/api/aprag/adaptive-query/status`, {
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
+  if (!res.ok) {
     throw new Error(await res.text());
   }
 

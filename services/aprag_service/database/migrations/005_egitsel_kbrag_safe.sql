@@ -216,3 +216,10 @@ SELECT 'Migration 005 complete - Eğitsel-KBRAG tables ready' AS status;
 
 
 
+
+
+
+
+
+
+

@@ -493,3 +493,10 @@ yapısı ve jeolojik özellikleri gibi unsurları kapsar...
 **Versiyon:** 1.0  
 **Yazar:** RAG Eğitim Platformu Geliştirme Ekibi
 
+
+
+
+
+
+
+

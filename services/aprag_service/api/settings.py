@@ -14,37 +14,13 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../..'))
 
+# Import from local config (APRAG service's own config)
 try:
-    from config.feature_flags import FeatureFlags, FeatureFlagScope
+    from config.feature_flags import FeatureFlags
 except ImportError:
-    # Fallback: Define minimal versions if parent config not available
-    from enum import Enum
-    
-    class FeatureFlagScope(Enum):
-        GLOBAL = "global"
-        SESSION = "session"
-    
-    class FeatureFlags:
-        @staticmethod
-        def is_aprag_enabled(session_id=None):
-            """Fallback implementation when feature flags config is not available"""
-            return os.getenv("APRAG_ENABLED", "true").lower() == "true"
-        
-        @staticmethod
-        def is_feedback_collection_enabled(session_id=None):
-            return os.getenv("APRAG_FEEDBACK_COLLECTION", "true").lower() == "true"
-        
-        @staticmethod
-        def is_personalization_enabled(session_id=None):
-            return os.getenv("APRAG_PERSONALIZATION", "true").lower() == "true"
-        
-        @staticmethod
-        def is_recommendations_enabled(session_id=None):
-            return os.getenv("APRAG_RECOMMENDATIONS", "true").lower() == "true"
-        
-        @staticmethod
-        def is_analytics_enabled(session_id=None):
-            return os.getenv("APRAG_ANALYTICS", "true").lower() == "true"
+    # Fallback to parent config if local not available
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../..'))
+    from config.feature_flags import FeatureFlags
 
 logger = logging.getLogger(__name__)
 
@@ -78,46 +54,25 @@ async def get_status(session_id: Optional[str] = None):
     try:
         logger.info(f"[APRAG SETTINGS] get_status called with session_id: {session_id}")
         
-        # Use fallback implementation that doesn't support session-level flags
-        enabled = FeatureFlags.is_aprag_enabled()
-        logger.info(f"[APRAG SETTINGS] is_aprag_enabled(): {enabled}")
-        
-        global_enabled = FeatureFlags.is_aprag_enabled()
+        # Get global status
+        global_enabled = FeatureFlags.is_aprag_enabled(session_id=None)
         logger.info(f"[APRAG SETTINGS] global_enabled: {global_enabled}")
         
-        # Session-level flags not supported in fallback mode
-        session_enabled = None
-        logger.info(f"[APRAG SETTINGS] session_enabled: {session_enabled} (not supported in fallback mode)")
+        # Get session-specific status if session_id provided
+        enabled = FeatureFlags.is_aprag_enabled(session_id=session_id)
+        logger.info(f"[APRAG SETTINGS] is_aprag_enabled(session_id={session_id}): {enabled}")
         
-        # Check if the methods exist and support session parameters
-        try:
-            if hasattr(FeatureFlags, 'is_feedback_collection_enabled'):
-                feedback_enabled = FeatureFlags.is_feedback_collection_enabled()
-            else:
-                feedback_enabled = True  # Default fallback
-                
-            if hasattr(FeatureFlags, 'is_personalization_enabled'):
-                personalization_enabled = FeatureFlags.is_personalization_enabled()
-            else:
-                personalization_enabled = True
-                
-            if hasattr(FeatureFlags, 'is_recommendations_enabled'):
-                recommendations_enabled = FeatureFlags.is_recommendations_enabled()
-            else:
-                recommendations_enabled = True
-                
-            if hasattr(FeatureFlags, 'is_analytics_enabled'):
-                analytics_enabled = FeatureFlags.is_analytics_enabled()
-            else:
-                analytics_enabled = True
-        except:
-            # If methods don't exist or fail, use defaults
-            feedback_enabled = True
-            personalization_enabled = True
-            recommendations_enabled = True
-            analytics_enabled = True
+        # Session-level flag (if session_id provided)
+        session_enabled = enabled if session_id else None
+        logger.info(f"[APRAG SETTINGS] session_enabled: {session_enabled}")
         
-        logger.info(f"[APRAG SETTINGS] Feature flags loaded successfully")
+        # Get feature flags from environment variables
+        feedback_enabled = os.getenv("APRAG_FEEDBACK_COLLECTION", "true").lower() == "true" if global_enabled else False
+        personalization_enabled = os.getenv("APRAG_PERSONALIZATION", "true").lower() == "true" if global_enabled else False
+        recommendations_enabled = os.getenv("APRAG_RECOMMENDATIONS", "true").lower() == "true" if global_enabled else False
+        analytics_enabled = os.getenv("APRAG_ANALYTICS", "true").lower() == "true" if global_enabled else False
+        
+        logger.info(f"[APRAG SETTINGS] Feature flags: feedback={feedback_enabled}, personalization={personalization_enabled}, recommendations={recommendations_enabled}, analytics={analytics_enabled}")
         
         return {
             "enabled": enabled,
@@ -146,21 +101,39 @@ async def toggle_feature(request: ToggleRequest):
     Args:
         request: Toggle request with enabled status, scope, and flag_key
     """
-    # The fallback FeatureFlags implementation doesn't support set_flag method
-    # and doesn't have class constants, so we'll return a success response
-    # without actually changing the flags (fallback mode uses env vars)
-    
     logger.info(f"[APRAG SETTINGS] toggle_feature called: enabled={request.enabled}, scope={request.scope}, flag_key={request.flag_key}")
     
-    # In fallback mode, we can't actually toggle flags since they're read from env vars
-    # But we can simulate the response for frontend compatibility
-    
-    return {
-        "message": "Feature flag toggle request received (fallback mode)",
-        "enabled": request.enabled,
-        "scope": request.scope,
-        "session_id": request.session_id,
-        "flag_key": request.flag_key or "aprag_enabled",
-        "note": "Feature flags are controlled by environment variables in fallback mode"
-    }
+    try:
+        # Determine the flag key - map frontend keys to environment variable names
+        flag_key = request.flag_key or "aprag_enabled"
+        
+        # Map flag keys to environment variables
+        env_var_map = {
+            "aprag_enabled": "APRAG_ENABLED",
+            "aprag_feedback_collection": "APRAG_FEEDBACK_COLLECTION",
+            "aprag_personalization": "APRAG_PERSONALIZATION",
+            "aprag_recommendations": "APRAG_RECOMMENDATIONS",
+            "aprag_analytics": "APRAG_ANALYTICS"
+        }
+        
+        env_var = env_var_map.get(flag_key, flag_key.upper())
+        
+        # Set environment variable for runtime changes
+        os.environ[env_var] = "true" if request.enabled else "false"
+        
+        logger.info(f"[APRAG SETTINGS] Successfully toggled {env_var} to {request.enabled} (scope: {request.scope})")
+        
+        return {
+            "message": "Feature flag updated successfully",
+            "enabled": request.enabled,
+            "scope": request.scope,
+            "session_id": request.session_id,
+            "flag_key": flag_key,
+            "env_var": env_var
+        }
+    except Exception as e:
+        logger.error(f"[APRAG SETTINGS] Error toggling feature: {e}")
+        import traceback
+        logger.error(f"[APRAG SETTINGS] Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to toggle feature: {str(e)}")
 

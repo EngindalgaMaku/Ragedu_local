@@ -223,3 +223,10 @@ import { QuickEmojiFeedback } from "@/components/EmojiFeedback";
 
 APRAG frontend entegrasyonu **%95 tamamlandı**. Temel özellikler tam çalışır durumda, opsiyonel geliştirmeler için altyapı hazır!
 
+
+
+
+
+
+
+

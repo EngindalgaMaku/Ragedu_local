@@ -421,3 +421,131 @@ async def personalize_response(
             pedagogical_instructions=None
         )
 
+
+@router.post("/personalize", response_model=PersonalizeResponse)
+async def personalize_response_endpoint(
+    request: PersonalizeRequest,
+    db: DatabaseManager = Depends(get_db)
+):
+    """
+    Generate personalized response for student
+    
+    This endpoint analyzes student profile and adapts the response:
+    - Adjusts difficulty based on ZPD level
+    - Modifies explanation style based on Bloom taxonomy
+    - Manages cognitive load
+    - Applies APRAG personalization factors
+    
+    **Required for Gateway Integration**
+    """
+    
+    # Check if APRAG is enabled
+    if not FeatureFlags.is_aprag_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="APRAG personalization is not enabled"
+        )
+    
+    try:
+        logger.info(f"Personalization request for user {request.user_id}, session {request.session_id}")
+        
+        # Get student profile
+        try:
+            profile_result = await get_profile(request.user_id, request.session_id, db)
+            profile_dict = profile_result.dict() if hasattr(profile_result, 'dict') else profile_result
+        except Exception as e:
+            logger.warning(f"Could not get profile: {e}")
+            profile_dict = {}
+        
+        # Get recent interactions for context
+        recent_interactions = db.execute_query(
+            """
+            SELECT * FROM student_interactions
+            WHERE user_id = ? AND session_id = ?
+            ORDER BY timestamp DESC
+            LIMIT 20
+            """,
+            (request.user_id, request.session_id)
+        )
+        
+        # Analyze student profile
+        factors = _analyze_student_profile(profile_dict)
+        
+        # Get pedagogical analysis if enabled
+        zpd_info = None
+        bloom_info = None
+        cognitive_load_info = None
+        pedagogical_instructions = None
+        
+        if FeatureFlags.is_egitsel_kbrag_enabled():
+            # ZPD Calculator
+            if FeatureFlags.is_zpd_enabled():
+                try:
+                    zpd_calc = get_zpd_calculator()
+                    zpd_result = zpd_calc.calculate_zpd_level(recent_interactions or [], profile_dict)
+                    zpd_info = zpd_result
+                    factors["zpd_level"] = zpd_result.get("current_level", "intermediate")
+                except Exception as e:
+                    logger.warning(f"ZPD calculation failed: {e}")
+            
+            # Bloom Taxonomy
+            if FeatureFlags.is_bloom_enabled():
+                try:
+                    bloom_detector = get_bloom_detector()
+                    bloom_result = bloom_detector.detect_bloom_level(request.query)
+                    bloom_info = bloom_result
+                    factors["bloom_level"] = bloom_result.get("level", "understand")
+                except Exception as e:
+                    logger.warning(f"Bloom detection failed: {e}")
+            
+            # Cognitive Load
+            if FeatureFlags.is_cognitive_load_enabled():
+                try:
+                    cognitive_manager = get_cognitive_load_manager()
+                    load_result = cognitive_manager.analyze_cognitive_load(
+                        request.original_response,
+                        profile_dict
+                    )
+                    cognitive_load_info = load_result
+                    factors["cognitive_load"] = load_result.get("load_level", 0.5)
+                except Exception as e:
+                    logger.warning(f"Cognitive load analysis failed: {e}")
+            
+            # Generate pedagogical instructions
+            pedagogical_instructions = _generate_pedagogical_instructions(
+                zpd_info,
+                bloom_info,
+                cognitive_load_info
+            )
+        
+        # For now, return original response with metadata
+        # In future, we can use LLM to actually rewrite the response
+        logger.info(f"Personalization complete for user {request.user_id}")
+        
+        return PersonalizeResponse(
+            personalized_response=request.original_response,  # TODO: Actual personalization with LLM
+            personalization_factors=factors,
+            difficulty_adjustment=zpd_info.get("recommended_level") if zpd_info else None,
+            explanation_level=bloom_info.get("level") if bloom_info else None,
+            zpd_info=zpd_info,
+            bloom_info=bloom_info,
+            cognitive_load=cognitive_load_info,
+            pedagogical_instructions=pedagogical_instructions
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Personalization endpoint failed: {e}", exc_info=True)
+        # Return original response on error (graceful degradation)
+        return PersonalizeResponse(
+            personalized_response=request.original_response,
+            personalization_factors={},
+            difficulty_adjustment=None,
+            explanation_level=None,
+            zpd_info=None,
+            bloom_info=None,
+            cognitive_load=None,
+            pedagogical_instructions=None
+        )
+

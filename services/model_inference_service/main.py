@@ -1196,33 +1196,20 @@ async def generate_answer_from_docs(request: GenerateAnswerRequest):
             context_str = context_str[:request.max_context_chars] + "..."
 
         system_prompt = (
-            "Sen yalnızca sağlanan BAĞLAM metnini kullanarak soruları TÜRKÇE yanıtlayan bir yapay zeka asistanısın.\n\n"
-            "ÇALIŞMA YÖNTEMİN (çıktıda gösterme):\n"
-            "Cevap vermeden önce zihninde:\n"
-            "• Bağlamdaki tüm sayısal verileri tespit et ve doğrula\n"
-            "• Çelişkili bilgi varsa en güvenilir olanı belirle\n"
-            "• Bilgilerin tutarlılığını kontrol et\n\n"
-            "ÇIKTI KURALLARI:\n"
-            "1. SADECE NİHAİ TÜRKÇE CEVABI YAZ\n"
-            "2. Sorunun cevabı bağlamda yoksa: 'Bilgi sağlanan bağlamda bulunamadı.'\n"
-            "3. Sayısal verileri bağlamdaki gibi AYNEN kullan\n"
-            "4. Kendi genel bilgini kullanma\n"
-            "5. Analiz sürecini, aşamaları, düşünceleri çıktıda gösterme\n\n"
-            "Örnek: Bağlamda 'azot %78' yazıyorsa kesinlikle %78 yaz."
+            "Sen öğrencilere yardımcı olan bir eğitim asistanısın.\n\n"
+            "KURALLAR:\n"
+            "• Verilen ders materyalindeki bilgileri kullanarak soruyu TÜRKÇE cevapla\n"
+            "• Ders materyalinde bilgi varsa: Madde madde, net ve anlaşılır şekilde açıkla\n"
+            "• Ders materyalinde bilgi yoksa: 'Bu konu, verilen ders materyallerinde bulunmuyor' de\n"
+            "• Kısa ve öğretici ol, gereksiz açıklama yapma\n"
         )
         
-        full_prompt = f"""System: {system_prompt}
-
-User: Bağlam Metni:
+        full_prompt = f"""DERS MATERYALİ:
 {context_str}
 
-Lütfen şu adımları izle:
-1. ÖNCE: Bağlam metnindeki sayısal verileri ve önemli bilgileri analiz et ve doğrula.
-2. SONRA: Doğrulanmış bilgileri kullanarak soruyu cevapla.
+SORU: {request.query}
 
-Soru: {request.query}
-
-Cevap (doğrulanmış bilgileri kullanarak):"""
+CEVAP:"""
 
         generation_request = GenerationRequest(
             prompt=full_prompt,
@@ -1234,11 +1221,11 @@ Cevap (doğrulanmış bilgileri kullanarak):"""
         # Ham cevabı al
         raw_response = await generate_response(generation_request)
         
-        # Çıktıyı temizle - iç analizleri kaldır, sadece son kullanıcıya yönelik cevabı döndür
-        cleaned_answer = clean_llm_output(raw_response.response, request.query)
+        # CLEANER DEVRE DIŞI - Ham cevabı olduğu gibi döndür
+        # Çünkü cleaner yanlış satırları seçiyor ve cevabı bozuyor
+        # cleaned_answer = clean_llm_output(raw_response.response, request.query)
         
-        # Temizlenmiş cevapla yeni response döndür
-        return GenerationResponse(response=cleaned_answer, model_used=raw_response.model_used)
+        return GenerationResponse(response=raw_response.response, model_used=raw_response.model_used)
 
     except Exception as e:
         print(f"❌ Error in generate_answer_from_docs: {e}")

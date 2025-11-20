@@ -12,6 +12,7 @@ import logging
 import random
 import time
 import os
+import re
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
@@ -20,6 +21,110 @@ from pydantic import BaseModel, Field
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+# ===== LIGHTWEIGHT EVALUATION METRICS =====
+
+def calculate_answer_metrics(answer: str, query: str, contexts: List[str]) -> Dict[str, Any]:
+    """
+    Hafif ve hızlı değerlendirme metrikleri.
+    RAGAS yerine basit ama etkili ölçümler.
+    """
+    if not answer or not answer.strip():
+        return {
+            "word_count": 0,
+            "sentence_count": 0,
+            "has_citation": False,
+            "context_relevance": 0.0,
+            "completeness_score": 0.0,
+            "overall_quality": 0.0
+        }
+    
+    # 1. Temel İstatistikler
+    words = answer.split()
+    sentences = re.split(r'[.!?]+', answer)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    word_count = len(words)
+    sentence_count = len(sentences)
+    
+    # 2. Kaynak Gösterimi (Citation)
+    has_citation = bool(re.search(r'\[.*?\]|\(.*?\)|Kaynak:|Referans:', answer))
+    
+    # 3. Bağlam Alakası (Context Relevance)
+    # Soruda geçen anahtar kelimelerin cevap ve bağlamda bulunma oranı
+    query_words = set(re.findall(r'\w+', query.lower()))
+    query_words = {w for w in query_words if len(w) > 3}  # Kısa kelimeleri filtrele
+    
+    answer_words = set(re.findall(r'\w+', answer.lower()))
+    
+    if query_words:
+        keyword_coverage = len(query_words & answer_words) / len(query_words)
+    else:
+        keyword_coverage = 0.5
+    
+    # Bağlam metinlerinde sorgu kelimelerinin geçme oranı
+    context_text = " ".join(contexts).lower() if contexts else ""
+    context_words = set(re.findall(r'\w+', context_text))
+    
+    if query_words and context_words:
+        context_relevance = len(query_words & context_words) / len(query_words)
+    else:
+        context_relevance = 0.0
+    
+    # 4. Tamlık Skoru (Completeness)
+    # Cevap yeterince detaylı mı?
+    ideal_word_range = (50, 300)  # İdeal cevap uzunluğu
+    if word_count < ideal_word_range[0]:
+        completeness = word_count / ideal_word_range[0]
+    elif word_count > ideal_word_range[1]:
+        completeness = max(0.7, 1.0 - (word_count - ideal_word_range[1]) / 500)
+    else:
+        completeness = 1.0
+    
+    # 5. Genel Kalite Skoru
+    overall_quality = (
+        keyword_coverage * 0.3 +
+        context_relevance * 0.3 +
+        completeness * 0.2 +
+        (1.0 if has_citation else 0.5) * 0.2
+    )
+    
+    return {
+        "word_count": word_count,
+        "sentence_count": sentence_count,
+        "has_citation": has_citation,
+        "keyword_coverage": round(keyword_coverage, 3),
+        "context_relevance": round(context_relevance, 3),
+        "completeness_score": round(completeness, 3),
+        "overall_quality": round(overall_quality, 3)
+    }
+
+
+def compare_answers(answer1: str, answer2: str) -> Dict[str, Any]:
+    """
+    İki cevabı karşılaştırır.
+    Makale için: "Simple RAG vs Advanced RAG" gibi karşılaştırmalar.
+    """
+    if not answer1 or not answer2:
+        return {"comparison": "invalid", "difference": 0}
+    
+    words1 = set(re.findall(r'\w+', answer1.lower()))
+    words2 = set(re.findall(r'\w+', answer2.lower()))
+    
+    # Jaccard benzerliği
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+    similarity = intersection / union if union > 0 else 0
+    
+    # Uzunluk farkı
+    length_diff = abs(len(answer1) - len(answer2))
+    
+    return {
+        "similarity": round(similarity, 3),
+        "length_difference": length_diff,
+        "unique_to_answer2": len(words2 - words1)  # Advanced RAG'in eklediği yeni kelimeler
+    }
 
 router = APIRouter(prefix="/admin/rag-tests", tags=["Admin RAG Tests"])
 
@@ -71,6 +176,26 @@ def _require_admin(request: Request) -> Dict[str, Any]:
     
     logger.info(f"🔐 RAG Test Auth Check - Admin access granted for user: {user.get('username')}")
     return user
+
+
+def _extract_context_text(doc: Dict[str, Any], max_chars: int = 1200) -> Optional[str]:
+    """
+    Extracts human-readable text from a retrieved document structure.
+    """
+    candidates = [
+        doc.get('text'),
+        doc.get('content'),
+        doc.get('chunk_text'),
+        doc.get('page_content'),
+        doc.get('metadata', {}).get('text') if isinstance(doc.get('metadata'), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            text = candidate.strip()
+            if len(text) > max_chars:
+                return text[:max_chars] + "..."
+            return text
+    return None
 
 
 # ===== ENDPOINTS =====
@@ -348,7 +473,21 @@ async def execute_manual_test(
              advanced_rag_answer = f"DYSK katmanında bir hata oluştuğu için yanıt üretilemedi: {crag_evaluation.get('error', 'Bilinmeyen hata')}"
 
 
-        # --- 7. Finalize and Return ---
+        # --- 7. Calculate Lightweight Evaluation Metrics ---
+        evaluation_metrics = {
+            "direct_llm": calculate_answer_metrics(direct_llm_answer, test_request.query, []),
+            "simple_rag": calculate_answer_metrics(simple_rag_answer, test_request.query, [d.get('text', d.get('content', '')) for d in retrieved_docs[:5]]),
+            "advanced_rag": calculate_answer_metrics(advanced_rag_answer, test_request.query, [d.get('text', d.get('content', '')) for d in final_docs])
+        }
+        
+        # Karşılaştırmalı analiz
+        comparative_analysis = {
+            "direct_vs_simple": compare_answers(direct_llm_answer, simple_rag_answer),
+            "simple_vs_advanced": compare_answers(simple_rag_answer, advanced_rag_answer),
+            "direct_vs_advanced": compare_answers(direct_llm_answer, advanced_rag_answer)
+        }
+
+        # --- 8. Finalize and Return ---
         execution_time = (time.time() - start_time) * 1000
         expected_result = 'accept' if test_request.expected_relevant else 'reject'
         # For this comparative test, 'passed' is based on whether the DYSK layer made the correct final decision.
@@ -377,6 +516,8 @@ async def execute_manual_test(
                 "simple_rag": simple_rag_answer,
                 "advanced_rag": advanced_rag_answer,
             },
+            "evaluation_metrics": evaluation_metrics,
+            "comparative_analysis": comparative_analysis,
             "execution_time_ms": round(execution_time, 2),
             "llm_model": test_request.llm_model or 'default',
             "embedding_model": session_embedding_model,

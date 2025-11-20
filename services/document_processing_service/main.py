@@ -28,9 +28,47 @@ except ImportError as e:
 # Import langdetect for language detection
 from langdetect import detect, LangDetectException
 
+# Import BM25 for hybrid search
+try:
+    from rank_bm25 import BM25Okapi
+    BM25_AVAILABLE = True
+    logging.getLogger(__name__).info("✅ BM25 for hybrid search available")
+except ImportError:
+    BM25_AVAILABLE = False
+    BM25Okapi = None
+    logging.getLogger(__name__).warning("⚠️ BM25 not available - install rank-bm25")
+
 # Logging configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Turkish stopwords for better keyword search
+TURKISH_STOPWORDS = {
+    'acaba', 'ama', 'aslında', 'az', 'bazı', 'belki', 'biri', 'birkaç', 'birşey', 'biz', 'bu', 'çok', 'çünkü',
+    'da', 'daha', 'de', 'defa', 'diye', 'eğer', 'en', 'gibi', 'hem', 'hep', 'hepsi', 'her', 'hiç', 'için',
+    'ile', 'ise', 'kez', 'ki', 'kim', 'mı', 'mi', 'mu', 'mü', 'nasıl', 'ne', 'neden', 'nerde', 'nerede',
+    'nereye', 'niçin', 'niye', 'o', 'sanki', 'şey', 'siz', 'şu', 'tüm', 've', 'veya', 'ya', 'yani'
+}
+
+def tokenize_turkish(text: str, remove_stopwords: bool = True) -> List[str]:
+    """
+    Tokenize Turkish text for BM25 search
+    - Lowercase conversion
+    - Remove punctuation
+    - Optional stopword removal
+    - Keep numbers and special characters (for product codes, dates, etc.)
+    """
+    # Lowercase
+    text = text.lower()
+    
+    # Split by whitespace and basic punctuation (but keep numbers intact)
+    tokens = re.findall(r'\b[\w\d]+\b', text)
+    
+    # Remove stopwords if requested
+    if remove_stopwords:
+        tokens = [t for t in tokens if t not in TURKISH_STOPWORDS and len(t) > 1]
+    
+    return tokens
 
 app = FastAPI(
     title="Document Processing Service",
@@ -78,11 +116,14 @@ class RAGQueryRequest(BaseModel):
     embedding_model: Optional[str] = None
     max_tokens: Optional[int] = 2048  # Answer length: 1024 (short), 2048 (normal), 4096 (detailed)
     conversation_history: Optional[List[Dict[str, str]]] = None  # [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+    use_hybrid_search: Optional[bool] = True  # Enable hybrid search (semantic + BM25)
+    bm25_weight: Optional[float] = 0.3  # Weight for BM25 score (0.3 = 30% keyword, 70% semantic)
 
 class RAGQueryResponse(BaseModel):
     answer: str
     sources: List[Dict[str, Any]] = []
     chain_type: Optional[str] = None
+    correction: Optional[Dict[str, Any]] = None  # NEW: For self-correction details
 
 # Environment variables - Google Cloud Run compatible
 # For Docker: use service names (e.g., http://model-inference-service:8003)
@@ -256,9 +297,9 @@ class CRAGEvaluator:
     def __init__(self, model_inference_url: str):
         self.model_inference_url = model_inference_url
         self.rerank_url = f"{self.model_inference_url}/rerank"
-        self.correct_threshold = 0.5    # Calibrated for ms-marco-MiniLM-L-6-v2
-        self.incorrect_threshold = 0.01 # Very low confidence threshold for rejecting all docs
-        self.filter_threshold = 0.1     # Individual document filter threshold
+        self.correct_threshold = 3.0    # Stricter: Only truly relevant docs (ms-marco scores 0-10)
+        self.incorrect_threshold = 1.0  # Filter out low-relevance docs
+        self.filter_threshold = 2.0     # Individual document filter threshold (raised from 0.1)
         logger.info(f"CRAGEvaluator initialized with rerank URL: {self.rerank_url}")
 
     def evaluate_retrieved_docs(self, query: str, retrieved_docs: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -644,16 +685,16 @@ async def rag_query(request: RAGQueryRequest):
         try:
             # Search in ChromaDB (use pure UUID as collection name - no "session_" prefix)
             session_id = request.session_id
-            logger.info(f"🔍 DIAGNOSTIC: RAG Query - Initial session_id: '{session_id}' (length: {len(session_id)})")
+            logger.debug(f"🔍 DIAGNOSTIC: RAG Query - Initial session_id: '{session_id}' (length: {len(session_id)})")
             
             if len(session_id) == 32 and session_id.replace('-', '').isalnum():
                 # Convert 32-char hex string to proper UUID format
                 collection_name = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
-                logger.info(f"🔍 DIAGNOSTIC: RAG Query - Transformed session_id '{session_id}' -> collection_name '{collection_name}'")
+                logger.debug(f"🔍 DIAGNOSTIC: RAG Query - Transformed session_id '{session_id}' -> collection_name '{collection_name}'")
                 logger.info(f"Using pure UUID as collection name for query: {collection_name}")
             elif len(session_id) == 36:  # Already formatted UUID
                 collection_name = session_id
-                logger.info(f"🔍 DIAGNOSTIC: RAG Query - Session ID already in UUID format: '{collection_name}'")
+                logger.debug(f"🔍 DIAGNOSTIC: RAG Query - Session ID already in UUID format: '{collection_name}'")
                 logger.info(f"Using existing UUID as collection name for query: {collection_name}")
             else:
                 # Fallback - use session_id as-is
@@ -680,10 +721,10 @@ async def rag_query(request: RAGQueryRequest):
                     all_collection_names = []
                     
                     try:
-                        logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Listing all collections...")
+                        logger.debug(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Listing all collections...")
                         all_collections = client.list_collections()
                         all_collection_names = [c.name for c in all_collections]
-                        logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Available collections ({len(all_collection_names)}): {all_collection_names}")
+                        logger.debug(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Available collections ({len(all_collection_names)}): {all_collection_names}")
                     except Exception as list_error:
                         logger.error(f"🔍 RAG QUERY TIMESTAMPED SEARCH FAILED: Could not list collections: {list_error}")
                     
@@ -703,14 +744,14 @@ async def rag_query(request: RAGQueryRequest):
                         uuid_format = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
                         search_patterns.append(uuid_format)
                     
-                    logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Search patterns: {search_patterns}")
+                    logger.debug(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Search patterns: {search_patterns}")
                     
                     # Now search for both exact matches AND timestamped versions
                     for pattern in search_patterns:
                         # First try exact match (non-timestamped)
                         if pattern in all_collection_names and pattern not in alternative_names:
                             alternative_names.append(pattern)
-                            logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Found exact match: {pattern}")
+                            logger.debug(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Found exact match: {pattern}")
                         
                         # Then try timestamped versions (pattern_TIMESTAMP)
                         for coll_name in all_collection_names:
@@ -719,10 +760,10 @@ async def rag_query(request: RAGQueryRequest):
                                 suffix = coll_name[len(pattern)+1:]
                                 if suffix.isdigit() and coll_name not in alternative_names:
                                     alternative_names.append(coll_name)
-                                    logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Found timestamped version: {coll_name} (pattern: {pattern})")
+                                    logger.debug(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Found timestamped version: {coll_name} (pattern: {pattern})")
                     
-                    logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Total alternatives found: {len(alternative_names)}")
-                    logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Alternatives list: {alternative_names}")
+                    logger.debug(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Total alternatives found: {len(alternative_names)}")
+                    logger.debug(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Alternatives list: {alternative_names}")
                     
                     # Try each alternative (prefer timestamped versions - they're more recent)
                     # Sort by timestamp (newest first) if multiple timestamped versions exist
@@ -743,7 +784,7 @@ async def rag_query(request: RAGQueryRequest):
                     # Try timestamped first (newest), then non-timestamped
                     sorted_alternatives = [name for name, _ in timestamped_alternatives] + non_timestamped_alternatives
                     
-                    logger.info(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Trying alternatives in order: {sorted_alternatives}")
+                    logger.debug(f"🔍 RAG QUERY TIMESTAMPED SEARCH: Trying alternatives in order: {sorted_alternatives}")
                     
                     # Try each alternative
                     collection = None
@@ -798,9 +839,12 @@ async def rag_query(request: RAGQueryRequest):
                     raise Exception(f"Failed to generate query embeddings with any model. Tried: {', '.join(embedding_models_to_try)}")
                 
                 # Query the collection using embeddings (not query_texts)
+                # Get more results for hybrid search reranking
+                n_results_fetch = request.top_k * 3 if request.use_hybrid_search and BM25_AVAILABLE else request.top_k
+                
                 search_results = collection.query(
                     query_embeddings=query_embeddings,
-                    n_results=request.top_k
+                    n_results=n_results_fetch
                 )
                 
                 # Extract documents from ChromaDB response
@@ -809,7 +853,114 @@ async def rag_query(request: RAGQueryRequest):
                 distances = search_results.get('distances', [[]])[0]
                 
                 total_found = len(documents)
-                logger.info(f"🔍 Query results: {total_found} documents found in collection '{collection_name}'")
+                logger.info(f"🔍 Semantic search: {total_found} documents found in collection '{collection_name}'")
+                
+                # 🔥 HYBRID SEARCH: Combine Semantic + BM25 Keyword Search
+                if request.use_hybrid_search and BM25_AVAILABLE and len(documents) > 0:
+                    try:
+                        logger.info("🔥 Applying HYBRID SEARCH: Semantic + BM25")
+                        
+                        # Tokenize query for BM25
+                        query_tokens = tokenize_turkish(request.query, remove_stopwords=True)
+                        logger.info(f"🔍 Query tokens (stopwords removed): {query_tokens}")
+                        
+                        # Tokenize all documents for BM25
+                        tokenized_docs = [tokenize_turkish(doc, remove_stopwords=True) for doc in documents]
+                        
+                        # Calculate BM25 scores
+                        bm25 = BM25Okapi(tokenized_docs)
+                        bm25_scores = bm25.get_scores(query_tokens)
+                        
+                        # Normalize BM25 scores to 0-1 range
+                        max_bm25 = max(bm25_scores) if max(bm25_scores) > 0 else 1.0
+                        normalized_bm25_scores = [score / max_bm25 for score in bm25_scores]
+                        
+                        # Calculate semantic similarity scores from distances
+                        semantic_scores = []
+                        for distance in distances:
+                            if distance == float('inf'):
+                                semantic_scores.append(0.0)
+                            else:
+                                semantic_scores.append(max(0.0, 1.0 - distance))
+                        
+                        # 2025 UPDATE: Reciprocal Rank Fusion (RRF) Logic implemented below
+                        # Previous weighted average logic removed for clarity
+
+                        
+                        # Sort by hybrid score (descending) and take top_k
+                        # 2025 UPDATE: Switched to Reciprocal Rank Fusion (RRF)
+                        # RRF is more robust than weighted average for combining scores with different distributions
+                        # Formula: score = 1 / (k + rank)
+                        
+                        # 1. Get Ranks for Semantic Scores
+                        # semantic_scores is already aligned with documents list
+                        # Create (index, score) pairs
+                        semantic_pairs = [(i, s) for i, s in enumerate(semantic_scores)]
+                        # Sort by score descending (higher is better)
+                        semantic_pairs.sort(key=lambda x: x[1], reverse=True)
+                        # Create rank map: index -> rank (0-based)
+                        semantic_ranks = {index: rank for rank, (index, _) in enumerate(semantic_pairs)}
+                        
+                        # 2. Get Ranks for BM25 Scores
+                        # bm25_scores is aligned with documents list
+                        bm25_pairs = [(i, s) for i, s in enumerate(bm25_scores)]
+                        bm25_pairs.sort(key=lambda x: x[1], reverse=True)
+                        bm25_ranks = {index: rank for rank, (index, _) in enumerate(bm25_pairs)}
+                        
+                        # 3. Calculate RRF Scores
+                        rrf_k = 60  # Standard constant for RRF
+                        hybrid_scores = []
+                        
+                        for i in range(len(documents)):
+                            sem_rank = semantic_ranks.get(i, len(documents))
+                            kw_rank = bm25_ranks.get(i, len(documents))
+                            
+                            # RRF Score calculation
+                            # Weighted RRF: We can still honor the weights by multiplying the RRF components
+                            # semantic_weight affects the semantic component
+                            # bm25_weight affects the keyword component
+                            
+                            rrf_sem = (1.0 / (rrf_k + sem_rank))
+                            rrf_bm25 = (1.0 / (rrf_k + kw_rank))
+                            
+                            # Apply weights (normalized)
+                            # Default request.bm25_weight is usually 0.3
+                            w_sem = 1.0 - request.bm25_weight
+                            w_bm25 = request.bm25_weight
+                            
+                            final_score = (w_sem * rrf_sem) + (w_bm25 * rrf_bm25)
+                            
+                            hybrid_scores.append({
+                                'index': i,
+                                'hybrid_score': final_score,
+                                'semantic_score': semantic_scores[i],
+                                'bm25_score': bm25_scores[i] if i < len(bm25_scores) else 0.0,
+                                'semantic_rank': sem_rank,
+                                'bm25_rank': kw_rank
+                            })
+                        
+                        # Sort by hybrid score (descending) and take top_k
+                        hybrid_scores.sort(key=lambda x: x['hybrid_score'], reverse=True)
+                        top_k_indices = [item['index'] for item in hybrid_scores[:request.top_k]]
+                        
+                        # Reorder documents, metadatas, distances based on hybrid ranking
+                        documents = [documents[i] for i in top_k_indices]
+                        metadatas = [metadatas[i] for i in top_k_indices]
+                        distances = [distances[i] for i in top_k_indices]
+                        
+                        # Update scores in hybrid_scores for logging
+                        hybrid_scores = hybrid_scores[:request.top_k]
+                        
+                        logger.info(f"✅ HYBRID SEARCH: Reranked to top {request.top_k} documents")
+                        logger.info(f"📊 Top 3 hybrid scores: {[(s['hybrid_score'], s['semantic_score'], s['bm25_score']) for s in hybrid_scores[:3]]}")
+                        
+                    except Exception as hybrid_error:
+                        logger.warning(f"⚠️ Hybrid search failed, falling back to semantic only: {hybrid_error}")
+                        # Continue with semantic-only results
+                else:
+                    if not BM25_AVAILABLE:
+                        logger.info("ℹ️ BM25 not available - using semantic search only")
+                    hybrid_scores = None
                 
                 # Format context for generation
                 context_docs = []
@@ -897,6 +1048,17 @@ async def rag_query(request: RAGQueryRequest):
                         "Örnek: Bağlamda 'azot %78' yazıyorsa kesinlikle %78 yaz, başka değer yazma."
                     )
                     
+                    # ---------------------------------------------------------
+                    # 2025 PHASE 2: SELF-CORRECTION & VERIFICATION LOOP
+                    # ---------------------------------------------------------
+                    # Step 1: Generate initial answer
+                    # Step 2: Verify consistency with context
+                    # Step 3: If inconsistent, generate corrected answer
+                    
+                    correction_details = None
+                    
+                    # --- PHASE 1: INITIAL GENERATION ---
+                    
                     # Build conversation context if available
                     context_parts = [f"System: {system_prompt}\n"]
                     if request.conversation_history:
@@ -934,12 +1096,113 @@ async def rag_query(request: RAGQueryRequest):
                         
                         if gen_response.status_code == 200:
                             gen_result = gen_response.json()
-                            answer = gen_result.get("response", "").strip()
+                            initial_answer = gen_result.get("response", "").strip()
+                            final_answer = initial_answer
                             
+                            # --- PHASE 2: SELF-VERIFICATION ---
+                            # Only verify if we have a substantial answer and context
+                            if len(initial_answer) > 50 and len(context_text) > 100:
+                                logger.info("🔍 PHASE 2: Starting Self-Verification...")
+                                
+                                verification_prompt = (
+                                    "Sen titiz bir doğrulama uzmanısın. Görevin, verilen CEVAP ile BAĞLAM arasındaki tutarlılığı VE mantıksal doğruluğu kontrol etmektir.\n\n"
+                                    f"BAĞLAM:\n{context_text[:2000]}...\n\n" # Truncate for verification to save tokens
+                                    f"SORU: {request.query}\n"
+                                    f"ÜRETİLEN CEVAP: {initial_answer}\n\n"
+                                    "GÖREV:\n"
+                                    "1. Cevaptaki bilgiler bağlamla örtüşüyor mu? (ÖNCELİKLİ)\n"
+                                    "2. Sayısal veriler (tarih, yüzde, miktar) bağlamdakiyle birebir aynı mı?\n"
+                                    "3. [KENDİ BİLGİNLE KONTROL]: Cevap mantıklı ve genel doğrularla tutarlı mı? Bağlam yanlış anlaşılmış olabilir mi?\n"
+                                    "   - Eğer bağlam yetersizse veya yanlış anlaşılmışsa ve cevap mantıksızsa, kendi genel bilginle durumu analiz et.\n"
+                                    "   - ANCAK: Bağlamda net bir veri varsa (örn: 'Ali'nin yaşı 5'), genel bilgine uymasa bile bağlamı kabul et.\n\n"
+                                    "KRİTİK: Eğer is_consistent=false ise, MUTLAKA corrected_answer üret!\n\n"
+                                    "ÇIKTI FORMATI (JSON):\n"
+                                    "{\n"
+                                    '  "is_consistent": true/false,\n'
+                                    '  "issues": ["Hata 1: Bağlamda X var ama cevap Y demiş", "Mantık Hatası: Bu sonuç bu veriden çıkmaz"],\n'
+                                    '  "corrected_answer": "EĞER is_consistent=false: MUTLAKA düzeltilmiş cevap yaz. Bağlamı temel al, mantık hatalarını kendi bilginle düzelt. Eğer bağlamda cevap yoksa: \'Bu bilgi ders dökümanlarında bulunamamıştır.\' yaz. | EĞER is_consistent=true: boş string (\"\") yaz"\n'
+                                    "}\n\n"
+                                    "ÖNEMLI: corrected_answer asla null veya eksik olmasın. Eğer tutarsızlık varsa MUTLAKA düzeltilmiş cevap ver.\n"
+                                    "Sadece JSON çıktısı ver, başka hiçbir şey yazma."
+                                )
+                                
+                                verify_request = {
+                                    "prompt": verification_prompt,
+                                    "model": request.model or "llama-3.1-8b-instant",
+                                    "temperature": 0.1, # Very low temp for strict logic
+                                    "max_tokens": 1024,
+                                    "json_mode": True # Force JSON output if supported by model
+                                }
+                                
+                                try:
+                                    verify_response = requests.post(
+                                        f"{MODEL_INFERENCER_URL}/models/generate",
+                                        json=verify_request,
+                                        timeout=60
+                                    )
+                                    
+                                    if verify_response.status_code == 200:
+                                        verify_result = verify_response.json()
+                                        verify_text = verify_result.get("response", "").strip()
+                                        
+                                        # Parse JSON response
+                                        import json
+                                        try:
+                                            # Find JSON part if wrapped in markdown
+                                            json_start = verify_text.find('{')
+                                            json_end = verify_text.rfind('}') + 1
+                                            if json_start >= 0 and json_end > json_start:
+                                                verify_json = json.loads(verify_text[json_start:json_end])
+                                                
+                                                if not verify_json.get("is_consistent", True):
+                                                    logger.warning(f"⚠️ SELF-CORRECTION: Inconsistency found: {verify_json.get('issues')}")
+                                                    
+                                                    corrected_answer = verify_json.get("corrected_answer", "").strip()
+                                                    
+                                                    # Accept any non-empty corrected answer (more tolerant threshold)
+                                                    if corrected_answer and len(corrected_answer) > 10 and corrected_answer.lower() not in ["null", "none", "yok"]:
+                                                        final_answer = corrected_answer
+                                                        correction_details = {
+                                                            "original_answer": initial_answer,
+                                                            "issues": verify_json.get("issues", []),
+                                                            "was_corrected": True
+                                                        }
+                                                        logger.info(f"✅ SELF-CORRECTION: Answer updated with verified content. New answer length: {len(corrected_answer)}")
+                                                    else:
+                                                        logger.warning(f"⚠️ SELF-CORRECTION: Issues found but no valid corrected answer provided. Got: '{corrected_answer}'")
+                                                        
+                                                        # FALLBACK: Generate a corrected answer ourselves
+                                                        # If the answer is inconsistent with context, provide a safe fallback
+                                                        fallback_answer = "Üzgünüm, verdiğim ilk cevap ders materyalleriyle tutarlı değildi. Bu sorunun cevabı sağlanan ders dökümanlarında net olarak bulunamamaktadır. Lütfen soruyu daha spesifik hale getirin veya farklı bir kaynak kullanın."
+                                                        
+                                                        final_answer = fallback_answer
+                                                        correction_details = {
+                                                            "original_answer": initial_answer,
+                                                            "issues": verify_json.get("issues", []),
+                                                            "was_corrected": True
+                                                        }
+                                                        logger.info("✅ SELF-CORRECTION: Used fallback corrected answer due to inconsistency.")
+                                                else:
+                                                    logger.info("✅ SELF-CORRECTION: Verification passed. Answer is consistent.")
+                                                    # Explicitly state that verification passed
+                                                    correction_details = {
+                                                        "original_answer": initial_answer,
+                                                        "issues": [],
+                                                        "was_corrected": False
+                                                    }
+                                            else:
+                                                logger.warning("⚠️ SELF-CORRECTION: Could not parse JSON from verification response.")
+                                        except Exception as json_err:
+                                            logger.warning(f"⚠️ SELF-CORRECTION: JSON parse error: {json_err}")
+                                            
+                                except Exception as verify_err:
+                                    logger.warning(f"⚠️ SELF-CORRECTION: Verification request failed: {verify_err}")
+
                             return RAGQueryResponse(
-                                answer=answer,
+                                answer=final_answer,
                                 sources=context_docs,
-                                chain_type=chain_type
+                                chain_type=chain_type,
+                                correction=correction_details
                             )
                         else:
                             logger.error(f"Generation failed: {gen_response.status_code}")
@@ -1026,10 +1289,10 @@ async def retrieve_documents(request: RetrieveRequest):
             all_collection_names = []
             
             try:
-                logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Listing all collections...")
+                logger.debug(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Listing all collections...")
                 all_collections = client.list_collections()
                 all_collection_names = [c.name for c in all_collections]
-                logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Available collections ({len(all_collection_names)}): {all_collection_names}")
+                logger.debug(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Available collections ({len(all_collection_names)}): {all_collection_names}")
             except Exception as list_error:
                 logger.error(f"🔍 RETRIEVE TIMESTAMPED SEARCH FAILED: Could not list collections: {list_error}")
             
@@ -1052,14 +1315,14 @@ async def retrieve_documents(request: RetrieveRequest):
                     uuid_format = f"{collection_name[:8]}-{collection_name[8:12]}-{collection_name[12:16]}-{collection_name[16:20]}-{collection_name[20:]}"
                     search_patterns.append(uuid_format)
             
-            logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Search patterns: {search_patterns}")
+            logger.debug(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Search patterns: {search_patterns}")
             
             # Now search for both exact matches AND timestamped versions
             for pattern in search_patterns:
                 # First try exact match (non-timestamped)
                 if pattern in all_collection_names and pattern not in alternative_names:
                     alternative_names.append(pattern)
-                    logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Found exact match: {pattern}")
+                    logger.debug(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Found exact match: {pattern}")
                 
                 # Then try timestamped versions (pattern_TIMESTAMP)
                 for coll_name in all_collection_names:
@@ -1068,9 +1331,9 @@ async def retrieve_documents(request: RetrieveRequest):
                         suffix = coll_name[len(pattern)+1:]
                         if suffix.isdigit() and coll_name not in alternative_names:
                             alternative_names.append(coll_name)
-                            logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Found timestamped version: {coll_name} (pattern: {pattern})")
+                            logger.debug(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Found timestamped version: {coll_name} (pattern: {pattern})")
             
-            logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Total alternatives found: {len(alternative_names)}")
+            logger.debug(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Total alternatives found: {len(alternative_names)}")
             
             # Try each alternative (prefer timestamped versions - they're more recent)
             # Sort by timestamp (newest first) if multiple timestamped versions exist
@@ -1091,7 +1354,7 @@ async def retrieve_documents(request: RetrieveRequest):
             # Try timestamped first (newest), then non-timestamped
             sorted_alternatives = [name for name, _ in timestamped_alternatives] + non_timestamped_alternatives
             
-            logger.info(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Trying alternatives in order: {sorted_alternatives}")
+            logger.debug(f"🔍 RETRIEVE TIMESTAMPED SEARCH: Trying alternatives in order: {sorted_alternatives}")
             
             # Try each alternative
             for alt_name in sorted_alternatives:
@@ -1196,10 +1459,10 @@ async def get_session_chunks(session_id: str):
         all_collection_names = []
         
         try:
-            logger.info(f"🔍 TIMESTAMPED SEARCH: Listing all collections...")
+            logger.debug(f"🔍 TIMESTAMPED SEARCH: Listing all collections...")
             all_collections = client.list_collections()
             all_collection_names = [c.name for c in all_collections]
-            logger.info(f"🔍 TIMESTAMPED SEARCH: Available collections ({len(all_collection_names)}): {all_collection_names}")
+            logger.debug(f"🔍 TIMESTAMPED SEARCH: Available collections ({len(all_collection_names)}): {all_collection_names}")
         except Exception as list_error:
             logger.error(f"🔍 TIMESTAMPED SEARCH FAILED: Could not list collections: {list_error}")
         
@@ -1219,14 +1482,14 @@ async def get_session_chunks(session_id: str):
             uuid_format = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
             search_patterns.append(uuid_format)
         
-        logger.info(f"🔍 TIMESTAMPED SEARCH: Search patterns: {search_patterns}")
+        logger.debug(f"🔍 TIMESTAMPED SEARCH: Search patterns: {search_patterns}")
         
         # Now search for both exact matches AND timestamped versions
         for pattern in search_patterns:
             # First try exact match (non-timestamped)
             if pattern in all_collection_names and pattern not in alternative_names:
                 alternative_names.append(pattern)
-                logger.info(f"🔍 TIMESTAMPED SEARCH: Found exact match: {pattern}")
+                logger.debug(f"🔍 TIMESTAMPED SEARCH: Found exact match: {pattern}")
             
             # Then try timestamped versions (pattern_TIMESTAMP)
             for coll_name in all_collection_names:
@@ -1235,10 +1498,10 @@ async def get_session_chunks(session_id: str):
                     suffix = coll_name[len(pattern)+1:]
                     if suffix.isdigit() and coll_name not in alternative_names:
                         alternative_names.append(coll_name)
-                        logger.info(f"🔍 TIMESTAMPED SEARCH: Found timestamped version: {coll_name} (pattern: {pattern})")
+                        logger.debug(f"🔍 TIMESTAMPED SEARCH: Found timestamped version: {coll_name} (pattern: {pattern})")
         
-        logger.info(f"🔍 TIMESTAMPED SEARCH: Total alternatives found: {len(alternative_names)}")
-        logger.info(f"🔍 TIMESTAMPED SEARCH: Alternatives list: {alternative_names}")
+        logger.debug(f"🔍 TIMESTAMPED SEARCH: Total alternatives found: {len(alternative_names)}")
+        logger.debug(f"🔍 TIMESTAMPED SEARCH: Alternatives list: {alternative_names}")
         
         # Try each alternative (prefer timestamped versions - they're more recent)
         # Sort by timestamp (newest first) if multiple timestamped versions exist
@@ -1259,7 +1522,7 @@ async def get_session_chunks(session_id: str):
         # Try timestamped first (newest), then non-timestamped
         sorted_alternatives = [name for name, _ in timestamped_alternatives] + non_timestamped_alternatives
         
-        logger.info(f"🔍 TIMESTAMPED SEARCH: Trying alternatives in order: {sorted_alternatives}")
+        logger.debug(f"🔍 TIMESTAMPED SEARCH: Trying alternatives in order: {sorted_alternatives}")
         
         for alt_name in sorted_alternatives:
             try:

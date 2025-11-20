@@ -52,6 +52,7 @@ import {
   FeedbackCreate,
   getSessionInteractions,
   getApiUrl,
+  CorrectionDetails,
 } from "@/lib/api";
 import FeedbackModal, { FeedbackData } from "@/components/FeedbackModal";
 import { useStudentChat } from "@/hooks/useStudentChat";
@@ -169,6 +170,39 @@ function SessionCard({
               <span>{session.query_count}</span>
             </div>
           </div>
+          
+          {/* RAG Settings Info */}
+          {session.rag_settings && (
+            <div className="mt-3 pt-3 border-t border-white/20">
+              <div className="text-xs opacity-75 mb-2 font-semibold">⚙️ Oturum Ayarları:</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs opacity-80">
+                {session.rag_settings.embedding_model && (
+                  <div className="flex items-center gap-1">
+                    <span className="opacity-70">📊</span>
+                    <span className="font-mono truncate">{session.rag_settings.embedding_model}</span>
+                  </div>
+                )}
+                {session.rag_settings.chunk_strategy && (
+                  <div className="flex items-center gap-1">
+                    <span className="opacity-70">✂️</span>
+                    <span className="truncate">{session.rag_settings.chunk_strategy}</span>
+                  </div>
+                )}
+                {session.rag_settings.chunk_size && (
+                  <div className="flex items-center gap-1">
+                    <span className="opacity-70">📏</span>
+                    <span>Size: {session.rag_settings.chunk_size}</span>
+                  </div>
+                )}
+                {session.rag_settings.top_k && (
+                  <div className="flex items-center gap-1">
+                    <span className="opacity-70">🔍</span>
+                    <span>Top-K: {session.rag_settings.top_k}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col items-end gap-2 sm:gap-3 min-w-fit">
@@ -415,6 +449,7 @@ export default function HomePage() {
       suggestions?: string[];
       timestamp?: string;
       interactionId?: number; // APRAG interaction ID for feedback
+      correction?: CorrectionDetails; // Self-correction details
     }[]
   >([]);
   const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
@@ -502,6 +537,13 @@ export default function HomePage() {
 
   // APRAG enabled state
   const [apragEnabled, setApragEnabled] = useState<boolean>(false);
+
+  // Redirect students to their dedicated panel
+  useEffect(() => {
+    if (user && userRole === "student") {
+      router.push("/student");
+    }
+  }, [user, userRole, router]);
 
   // Check APRAG status on mount
   useEffect(() => {
@@ -822,6 +864,7 @@ export default function HomePage() {
         newHistory[newHistory.length - 1].suggestions = [];
         // Use actual client-side measured time instead of backend processing_time_ms
         newHistory[newHistory.length - 1].durationMs = actualDurationMs;
+        newHistory[newHistory.length - 1].correction = result.correction; // Save correction details
         return newHistory;
       });
 
@@ -1591,6 +1634,42 @@ export default function HomePage() {
                             {session.description ||
                               "Bu derste kapsamlı materyaller ve etkileşimli öğrenme deneyimi sizi bekliyor."}
                           </p>
+
+                          {/* RAG Settings Info */}
+                          {session.rag_settings && (
+                            <div className="mb-4 p-3 bg-white/50 rounded-lg border border-gray-200/50 backdrop-blur-sm">
+                              <div className="text-xs text-gray-600 font-semibold mb-2 flex items-center gap-1">
+                                <span>⚙️</span>
+                                <span>Oturum Ayarları</span>
+                              </div>
+                              <div className="grid grid-cols-1 gap-2">
+                                {session.rag_settings.embedding_model && (
+                                  <div className="flex items-center justify-between text-xs">
+                                    <span className="text-gray-500">Embedding:</span>
+                                    <span className="font-mono text-gray-700 bg-white px-2 py-0.5 rounded">
+                                      {session.rag_settings.embedding_model}
+                                    </span>
+                                  </div>
+                                )}
+                                {session.rag_settings.chunk_strategy && (
+                                  <div className="flex items-center justify-between text-xs">
+                                    <span className="text-gray-500">Chunk Stratejisi:</span>
+                                    <span className="font-mono text-gray-700 bg-white px-2 py-0.5 rounded">
+                                      {session.rag_settings.chunk_strategy}
+                                    </span>
+                                  </div>
+                                )}
+                                {session.rag_settings.chunk_size && (
+                                  <div className="flex items-center justify-between text-xs">
+                                    <span className="text-gray-500">Chunk Size:</span>
+                                    <span className="font-mono text-gray-700 bg-white px-2 py-0.5 rounded">
+                                      {session.rag_settings.chunk_size}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
 
                           {/* Course Stats */}
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3 mb-4">
@@ -3598,6 +3677,51 @@ export default function HomePage() {
                                         {chat.bot}
                                       </ReactMarkdown>
                                     </div>
+
+                                    {/* Correction Notice */}
+                                    {(chat as any).correction && (chat as any).correction.was_corrected && (
+                                      <div className="mt-4 mb-4 p-4 bg-amber-50 border-l-4 border-amber-500 rounded-r-lg shadow-sm">
+                                        <div className="flex items-start gap-3">
+                                          <div className="text-amber-600 mt-0.5">
+                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                            </svg>
+                                          </div>
+                                          <div className="flex-1">
+                                            <h4 className="text-sm font-bold text-amber-800 mb-1">
+                                              ⚠️ Otomatik Doğrulama ve Düzeltme
+                                            </h4>
+                                            <p className="text-xs text-amber-700 mb-2">
+                                              Yapay zeka, ilk cevabında tutarsızlıklar tespit etti ve aşağıdaki nedenlerle cevabı güncelledi:
+                                            </p>
+                                            <ul className="list-disc list-inside text-xs text-amber-800 space-y-1 bg-amber-100/50 p-2 rounded">
+                                              {(chat as any).correction.issues.map((issue: string, idx: number) => (
+                                                <li key={idx}>{issue}</li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
+                                    
+                                    {/* Verification Success Notice (Debug) */}
+                                    {(chat as any).correction && !(chat as any).correction.was_corrected && (chat as any).correction.issues && (chat as any).correction.issues.length === 0 && (
+                                      <div className="mt-4 mb-4 p-3 bg-green-50 border-l-4 border-green-500 rounded-r-lg shadow-sm">
+                                        <div className="flex items-start gap-2">
+                                          <div className="text-green-600 mt-0.5">
+                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                            </svg>
+                                          </div>
+                                          <div className="flex-1">
+                                            <p className="text-xs font-medium text-green-800">
+                                              ✅ Cevap doğrulandı - Tutarlılık kontrolü başarılı
+                                            </p>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    )}
+
                                     {Array.isArray(chat.suggestions) &&
                                       chat.suggestions.length > 0 && (
                                         <div className="mt-4 pt-4 border-t border-gray-100">

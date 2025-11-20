@@ -63,8 +63,8 @@ class FeatureFlags:
         Priority:
         1. Session-level override (if session_id provided)
         2. User-level override (if user_id provided)
-        3. Global setting from environment variable
-        4. Global setting from database cache
+        3. Global setting from cache (admin panel settings)
+        4. Global setting from environment variable (startup config)
         5. Default value
         
         Args:
@@ -80,14 +80,14 @@ class FeatureFlags:
             if flag in cls._session_cache[session_id]:
                 return cls._session_cache[session_id][flag]
         
-        # Check environment variable first
+        # Check cache first (admin panel settings) - this allows runtime changes
+        if flag in cls._cache:
+            return cls._cache[flag]
+        
+        # Check environment variable (startup config)
         env_value = cls._get_env_value(flag)
         if env_value is not None:
             return env_value
-        
-        # Check cache (populated from database)
-        if flag in cls._cache:
-            return cls._cache[flag]
         
         # Return default
         return cls._defaults.get(flag, False)

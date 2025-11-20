@@ -15,7 +15,7 @@ export default function LogoutButton() {
   return (
     <button
       onClick={onLogout}
-      className="fixed top-3 right-3 inline-flex items-center justify-center rounded-md bg-red-600 px-3 py-2 text-white shadow hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2 z-50"
+      className="inline-flex items-center justify-center rounded-md bg-red-600 px-3 py-2 text-white shadow hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2"
       title="Çıkış Yap"
     >
       <svg

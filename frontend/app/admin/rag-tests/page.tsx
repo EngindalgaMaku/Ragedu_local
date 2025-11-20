@@ -4,6 +4,22 @@ import React, { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import ModernAdminLayout from "../components/ModernAdminLayout";
 
+interface AnswerMetrics {
+  word_count: number;
+  sentence_count: number;
+  has_citation: boolean;
+  keyword_coverage: number;
+  context_relevance: number;
+  completeness_score: number;
+  overall_quality: number;
+}
+
+interface ComparativeAnalysis {
+  similarity: number;
+  length_difference: number;
+  unique_to_answer2: number;
+}
+
 interface TestResult {
   test_id: string;
   query: string;
@@ -27,8 +43,23 @@ interface TestResult {
     simple_rag: string;
     advanced_rag: string;
   };
+  evaluation_metrics?: {
+    direct_llm: AnswerMetrics;
+    simple_rag: AnswerMetrics;
+    advanced_rag: AnswerMetrics;
+  };
+  comparative_analysis?: {
+    direct_vs_simple: ComparativeAnalysis;
+    simple_vs_advanced: ComparativeAnalysis;
+    direct_vs_advanced: ComparativeAnalysis;
+  };
   timestamp?: string;
   crag_evaluation?: any;
+  correction?: {
+    original_answer: string;
+    issues: string[];
+    was_corrected: boolean;
+  };
 }
 
 interface TestSummary {
@@ -100,6 +131,13 @@ export default function RAGTestsPage() {
     summary: TestSummary;
     results: TestResult[];
   } | null>(null);
+
+  const formatPercent = (value?: number | null) => {
+    if (value === undefined || value === null || Number.isNaN(value)) {
+      return "—";
+    }
+    return `${(value * 100).toFixed(1)}%`;
+  };
 
   // Load system status
   useEffect(() => {
@@ -769,6 +807,48 @@ export default function RAGTestsPage() {
                       <p className="text-sm text-gray-800 dark:text-gray-200 whitespace-pre-wrap mt-1">
                         {manualResult.llm_answers.advanced_rag}
                       </p>
+                      
+                      {/* Self-Correction Notice */}
+                      {manualResult.correction && manualResult.correction.was_corrected && (
+                        <div className="mt-3 p-3 bg-amber-50 dark:bg-amber-900/20 border-l-4 border-amber-500 dark:border-amber-600 rounded-r">
+                          <div className="flex items-start gap-2">
+                            <div className="text-amber-600 dark:text-amber-400 mt-0.5">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                              </svg>
+                            </div>
+                            <div className="flex-1">
+                              <h6 className="text-xs font-bold text-amber-800 dark:text-amber-300 mb-1">
+                                ⚠️ Otomatik Doğrulama ve Düzeltme Uygulandı
+                              </h6>
+                              <p className="text-xs text-amber-700 dark:text-amber-400 mb-1">
+                                Sistem ilk cevabında tutarsızlık tespit etti ve cevabı otomatik olarak düzeltti:
+                              </p>
+                              <ul className="list-disc list-inside text-xs text-amber-800 dark:text-amber-300 space-y-0.5 bg-amber-100/50 dark:bg-amber-900/30 p-2 rounded">
+                                {manualResult.correction.issues.map((issue, idx) => (
+                                  <li key={idx}>{issue}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Verification Success Notice */}
+                      {manualResult.correction && !manualResult.correction.was_corrected && manualResult.correction.issues && manualResult.correction.issues.length === 0 && (
+                        <div className="mt-3 p-2 bg-green-50 dark:bg-green-900/20 border-l-4 border-green-500 dark:border-green-600 rounded-r">
+                          <div className="flex items-start gap-2">
+                            <div className="text-green-600 dark:text-green-400">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                            </div>
+                            <p className="text-xs font-medium text-green-800 dark:text-green-300">
+                              ✅ Cevap doğrulandı - Tutarlılık kontrolü başarılı
+                            </p>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {/* Simple RAG Answer */}
@@ -789,6 +869,85 @@ export default function RAGTestsPage() {
                       <p className="text-sm text-gray-700 dark:text-gray-400 whitespace-pre-wrap mt-1">
                         {manualResult.llm_answers.direct_llm}
                       </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Evaluation Metrics */}
+                {manualResult && manualResult.evaluation_metrics && (
+                  <div className="mt-6">
+                    <h4 className="text-md font-bold text-gray-800 dark:text-gray-200 mb-3">
+                      📊 Değerlendirme Metrikleri
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      {/* Direct LLM */}
+                      <div className="p-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                        <h5 className="font-semibold text-gray-700 dark:text-gray-300 text-sm mb-2">
+                          Direkt LLM
+                        </h5>
+                        <div className="space-y-1 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-gray-600 dark:text-gray-400">Kalite:</span>
+                            <span className="font-semibold text-gray-900 dark:text-white">
+                              {(manualResult.evaluation_metrics.direct_llm.overall_quality * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600 dark:text-gray-400">Kelime:</span>
+                            <span className="font-semibold">{manualResult.evaluation_metrics.direct_llm.word_count}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600 dark:text-gray-400">Kaynak:</span>
+                            <span>{manualResult.evaluation_metrics.direct_llm.has_citation ? "✅" : "❌"}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Simple RAG */}
+                      <div className="p-4 rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20">
+                        <h5 className="font-semibold text-blue-700 dark:text-blue-300 text-sm mb-2">
+                          Basit RAG
+                        </h5>
+                        <div className="space-y-1 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-gray-600 dark:text-gray-400">Kalite:</span>
+                            <span className="font-semibold text-blue-700 dark:text-blue-300">
+                              {(manualResult.evaluation_metrics.simple_rag.overall_quality * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600 dark:text-gray-400">Bağlam Alakası:</span>
+                            <span className="font-semibold">{(manualResult.evaluation_metrics.simple_rag.context_relevance * 100).toFixed(0)}%</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600 dark:text-gray-400">Kaynak:</span>
+                            <span>{manualResult.evaluation_metrics.simple_rag.has_citation ? "✅" : "❌"}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Advanced RAG */}
+                      <div className="p-4 rounded-lg border border-indigo-200 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-900/20">
+                        <h5 className="font-semibold text-indigo-700 dark:text-indigo-300 text-sm mb-2">
+                          Gelişmiş RAG (DYSK)
+                        </h5>
+                        <div className="space-y-1 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-gray-600 dark:text-gray-400">Kalite:</span>
+                            <span className="font-semibold text-indigo-700 dark:text-indigo-300">
+                              {(manualResult.evaluation_metrics.advanced_rag.overall_quality * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600 dark:text-gray-400">Bağlam Alakası:</span>
+                            <span className="font-semibold">{(manualResult.evaluation_metrics.advanced_rag.context_relevance * 100).toFixed(0)}%</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-600 dark:text-gray-400">Kaynak:</span>
+                            <span>{manualResult.evaluation_metrics.advanced_rag.has_citation ? "✅" : "❌"}</span>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -996,6 +1155,11 @@ export default function RAGTestsPage() {
             </div>
           )}
         </div>
+      )}
+
+      {/* AUTO TEST TAB */}
+      {activeTab === "auto" && (
+        <div>AUTO TEST CONTENT HERE</div>
       )}
     </ModernAdminLayout>
   );

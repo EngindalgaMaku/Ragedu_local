@@ -14,6 +14,8 @@ import {
   ragQuery,
   generateSuggestions,
   createAPRAGInteraction,
+  apragAdaptiveQuery,
+  getAPRAGSettings,
 } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -149,18 +151,103 @@ export function useStudentChat({
           payload.embedding_model = sessionRagSettings.embedding_model;
         }
 
-        // Get AI response
+        // Get AI response from RAG
         const result = await ragQuery(payload);
         const actualDurationMs = Date.now() - startTime;
 
-        // Create complete message object
+        // Check if APRAG is enabled for adaptive learning
+        let finalResponse = result.answer;
+        let apragInteractionId: number | null = null;
+        let pedagogicalInfo: any = null;
+
+        if (user?.id) {
+          try {
+            // Check APRAG status
+            const apragSettings = await getAPRAGSettings(sessionId);
+            
+            if (apragSettings.enabled && apragSettings.features.cacs) {
+              // Use APRAG Adaptive Query for personalized learning
+              console.log("🎓 Using APRAG Adaptive Query for personalized response...");
+              
+              const adaptiveResult = await apragAdaptiveQuery({
+                user_id: user.id.toString(),
+                session_id: sessionId,
+                query: query,
+                rag_documents: (result.sources || []).map((s: any) => ({
+                  doc_id: s.metadata?.source_file || s.metadata?.filename || "unknown",
+                  content: s.content || "",
+                  score: s.score || 0,
+                  metadata: s.metadata || {},
+                })),
+                rag_response: result.answer,
+              });
+
+              // Use personalized response
+              finalResponse = adaptiveResult.personalized_response;
+              apragInteractionId = adaptiveResult.interaction_id;
+              pedagogicalInfo = {
+                zpd: adaptiveResult.pedagogical_context.zpd_recommended,
+                bloom: adaptiveResult.pedagogical_context.bloom_level,
+                cognitive_load: adaptiveResult.pedagogical_context.cognitive_load,
+                cacs_applied: adaptiveResult.cacs_applied,
+              };
+
+              console.log(`✅ APRAG Applied: ZPD=${pedagogicalInfo.zpd}, Bloom=${pedagogicalInfo.bloom}, CACS=${pedagogicalInfo.cacs_applied}`);
+            } else {
+              // Fallback: Manual APRAG interaction logging
+              const apragResult = await createAPRAGInteraction({
+                user_id: user.id.toString(),
+                session_id: sessionId,
+                query: query,
+                response: result.answer,
+                processing_time_ms: actualDurationMs,
+                model_used: payload.model,
+                chain_type: payload.chain_type,
+                sources: result.sources?.map((s: any) => ({
+                  content: s.content || "",
+                  score: s.score || 0,
+                  metadata: s.metadata,
+                })),
+              });
+              apragInteractionId = apragResult.interaction_id;
+            }
+          } catch (apragError) {
+            // Don't fail the whole request if APRAG fails
+            console.error("Failed to use APRAG adaptive query:", apragError);
+            
+            // Fallback to manual interaction logging
+            try {
+              const apragResult = await createAPRAGInteraction({
+                user_id: user.id.toString(),
+                session_id: sessionId,
+                query: query,
+                response: result.answer,
+                processing_time_ms: actualDurationMs,
+                model_used: payload.model,
+                chain_type: payload.chain_type,
+                sources: result.sources?.map((s: any) => ({
+                  content: s.content || "",
+                  score: s.score || 0,
+                  metadata: s.metadata,
+                })),
+              });
+              apragInteractionId = apragResult.interaction_id;
+            } catch (fallbackError) {
+              console.error("Fallback interaction logging also failed:", fallbackError);
+            }
+          }
+        }
+
+        // Create complete message object with personalized response
         const completeMessage: Omit<StudentChatMessage, "id" | "timestamp"> = {
           user: query,
-          bot: result.answer,
+          bot: finalResponse,
           sources: result.sources || [],
           durationMs: actualDurationMs,
           session_id: sessionId,
           suggestions: [], // Will be filled asynchronously
+          aprag_interaction_id: apragInteractionId || undefined,
+          correction: result.correction, // NEW: Pass correction details
         };
 
         // Update UI with response
@@ -176,44 +263,9 @@ export function useStudentChat({
         // Save to database
         await saveMessage(completeMessage);
 
-        // Log interaction to APRAG service for analytics and tracking
-        let apragInteractionId: number | null = null;
-        if (user?.id) {
-          try {
-            const apragResult = await createAPRAGInteraction({
-              user_id: user.id.toString(),
-              session_id: sessionId,
-              query: query,
-              response: result.answer,
-              processing_time_ms: actualDurationMs,
-              model_used: payload.model,
-              chain_type: payload.chain_type,
-              sources: result.sources?.map((s: any) => ({
-                content: s.content || s.text || "",
-                score: s.score || 0,
-                metadata: s.metadata,
-              })),
-            });
-            apragInteractionId = apragResult.interaction_id;
-
-            // Update message with interaction_id for emoji feedback
-            setMessages((prev) => {
-              const updated = [...prev];
-              if (updated[updated.length - 1]) {
-                updated[updated.length - 1] = {
-                  ...updated[updated.length - 1],
-                  aprag_interaction_id: apragInteractionId || undefined,
-                };
-              }
-              return updated;
-            });
-          } catch (apragError) {
-            // Don't fail the whole request if APRAG logging fails
-            console.error("Failed to log interaction to APRAG:", apragError);
-          }
-        }
-
         // Generate suggestions asynchronously (non-blocking)
+        // Note: We don't save suggestions separately to avoid duplicate entries
+        // Suggestions will be generated and displayed, but not saved to DB
         if (result.sources && result.sources.length > 0) {
           try {
             const suggestions = await generateSuggestions({
@@ -227,14 +279,8 @@ export function useStudentChat({
                 const updated = [...prev];
                 if (updated[updated.length - 1]) {
                   updated[updated.length - 1].suggestions = suggestions;
-
-                  // Update database with suggestions
-                  if (autoSave) {
-                    saveStudentChatMessage({
-                      ...updated[updated.length - 1],
-                      suggestions,
-                    }).catch(console.error);
-                  }
+                  // ✅ BUG FIX: Don't save again to avoid duplicate entries
+                  // Suggestions are ephemeral and will be regenerated if needed
                 }
                 return updated;
               });

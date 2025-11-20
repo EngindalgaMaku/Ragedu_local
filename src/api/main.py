@@ -257,7 +257,8 @@ def root():
             "pdf_processor": PDF_PROCESSOR_URL,
             "document_processor": DOCUMENT_PROCESSOR_URL,
             "model_inference": MODEL_INFERENCE_URL,
-            "auth_service": AUTH_SERVICE_URL
+            "auth_service": AUTH_SERVICE_URL,
+            "aprag_service": APRAG_SERVICE_URL
         }
     }
 
@@ -273,7 +274,8 @@ async def check_microservices():
         "pdf_processor": PDF_PROCESSOR_URL,
         "document_processor": DOCUMENT_PROCESSOR_URL,
         "model_inference": MODEL_INFERENCE_URL,
-        "auth_service": AUTH_SERVICE_URL
+        "auth_service": AUTH_SERVICE_URL,
+        "aprag_service": APRAG_SERVICE_URL
     }
     
     results = {}
@@ -2778,6 +2780,92 @@ app.include_router(rag_tests_router)
 logger.info("✅ RAG Tests routes registered")
 
 # APRAG Service Proxy Endpoints
+
+@app.post("/api/aprag/interactions")
+async def create_aprag_interaction_proxy(request: Request):
+    """Proxy to APRAG service for creating interactions"""
+    try:
+        body = await request.json()
+        logger.info(f"🎓 Creating APRAG interaction for user {body.get('user_id', 'unknown')}")
+        
+        response = requests.post(
+            f"{APRAG_SERVICE_URL}/api/aprag/interactions",
+            json=body,
+            timeout=30
+        )
+        
+        if response.status_code in [200, 201]:
+            return response.json()
+        else:
+            # Log error but don't fail - chat should continue
+            logger.warning(f"APRAG service error: {response.status_code} - {response.text}")
+            # Return a fallback response so chat can continue
+            return {"interaction_id": -1, "message": "APRAG service error, interaction not logged"}
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"APRAG service unavailable: {e}")
+        # Return a fallback response so chat can continue
+        return {"interaction_id": -1, "message": "APRAG service unavailable, interaction not logged"}
+    except Exception as e:
+        logger.warning(f"Error in APRAG interaction proxy: {e}")
+        # Return a fallback response so chat can continue
+        return {"interaction_id": -1, "message": "Error logging interaction"}
+
+@app.post("/api/aprag/adaptive-query")
+async def aprag_adaptive_query_proxy(request: Request):
+    """Proxy to APRAG service for adaptive query with personalization"""
+    try:
+        body = await request.json()
+        logger.info(f"🎯 APRAG adaptive query for user {body.get('user_id', 'unknown')}")
+        
+        response = requests.post(
+            f"{APRAG_SERVICE_URL}/api/aprag/adaptive-query",
+            json=body,
+            timeout=60  # Adaptive query can take longer
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            # Log error but return original response as fallback
+            logger.warning(f"APRAG adaptive query error: {response.status_code} - {response.text}")
+            # Return the original RAG response as fallback
+            return {
+                "personalized_response": body.get("rag_response", ""),
+                "interaction_id": -1,
+                "pedagogical_context": {
+                    "zpd_recommended": "medium",
+                    "bloom_level": "understand",
+                    "cognitive_load": "moderate"
+                },
+                "cacs_applied": False
+            }
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"APRAG service unavailable for adaptive query: {e}")
+        # Return original RAG response as fallback
+        return {
+            "personalized_response": body.get("rag_response", ""),
+            "interaction_id": -1,
+            "pedagogical_context": {
+                "zpd_recommended": "medium",
+                "bloom_level": "understand",
+                "cognitive_load": "moderate"
+            },
+            "cacs_applied": False
+        }
+    except Exception as e:
+        logger.warning(f"Error in APRAG adaptive query proxy: {e}")
+        # Return generic fallback
+        return {
+            "personalized_response": "Cevap hazırlandı.",
+            "interaction_id": -1,
+            "pedagogical_context": {
+                "zpd_recommended": "medium",
+                "bloom_level": "understand",
+                "cognitive_load": "moderate"
+            },
+            "cacs_applied": False
+        }
+
 @app.get("/api/aprag/interactions/session/{session_id}")
 async def get_session_interactions_proxy(session_id: str, request: Request, limit: int = 50, offset: int = 0):
     """Proxy to APRAG service for getting session interactions"""
@@ -3222,6 +3310,233 @@ async def improve_all_chunks_proxy(session_id: str, request: Request):
     except requests.exceptions.RequestException as e:
         logger.error(f"Document processing service unavailable: {e}")
         raise HTTPException(status_code=503, detail="Document processing service unavailable")
+
+
+# ==================== Student Chat History Endpoints ====================
+
+class StudentChatMessageCreate(BaseModel):
+    user: str
+    bot: str
+    sources: Optional[List[Dict[str, Any]]] = None
+    durationMs: Optional[int] = None
+    session_id: str
+    suggestions: Optional[List[str]] = None
+    aprag_interaction_id: Optional[int] = None
+
+class StudentChatMessageResponse(BaseModel):
+    id: int
+    user: str
+    bot: str
+    sources: Optional[List[Dict[str, Any]]] = None
+    durationMs: Optional[int] = None
+    session_id: str
+    timestamp: str
+    suggestions: Optional[List[str]] = None
+    aprag_interaction_id: Optional[int] = None
+
+import sqlite3
+
+def get_student_db_connection():
+    """Get database connection for student chat history"""
+    db_path = os.getenv("DATABASE_PATH", "/app/data/rag_assistant.db")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_student_chat_table():
+    """Initialize student chat history table if it doesn't exist"""
+    try:
+        conn = get_student_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS student_chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_message TEXT NOT NULL,
+                bot_message TEXT NOT NULL,
+                sources TEXT,
+                duration_ms INTEGER,
+                session_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                suggestions TEXT,
+                aprag_interaction_id INTEGER,
+                FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_student_chat_session 
+            ON student_chat_history(session_id)
+        """)
+        conn.commit()
+        conn.close()
+        logger.info("✅ Student chat history table initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize student chat table: {e}")
+
+# Initialize table on startup
+init_student_chat_table()
+
+@app.get("/api/students/chat-history/{session_id}", response_model=List[StudentChatMessageResponse])
+async def get_student_chat_history(session_id: str, request: Request):
+    """Get chat history for a specific session"""
+    try:
+        conn = get_student_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, user_message as user, bot_message as bot, sources, duration_ms as durationMs,
+                   session_id, timestamp, suggestions, aprag_interaction_id
+            FROM student_chat_history
+            WHERE session_id = ?
+            ORDER BY timestamp ASC
+        """, (session_id,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        history = []
+        for row in rows:
+            message = dict(row)
+            # Parse JSON fields
+            if message.get('sources'):
+                try:
+                    message['sources'] = json.loads(message['sources'])
+                except:
+                    message['sources'] = None
+            if message.get('suggestions'):
+                try:
+                    message['suggestions'] = json.loads(message['suggestions'])
+                except:
+                    message['suggestions'] = None
+            history.append(message)
+        
+        return history
+    except Exception as e:
+        logger.error(f"Failed to get chat history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/students/chat-message", response_model=StudentChatMessageResponse)
+async def save_student_chat_message(message: StudentChatMessageCreate, request: Request):
+    """Save a student chat message"""
+    try:
+        conn = get_student_db_connection()
+        cursor = conn.cursor()
+        
+        timestamp = datetime.utcnow().isoformat() + "Z"
+        sources_json = json.dumps(message.sources) if message.sources else None
+        suggestions_json = json.dumps(message.suggestions) if message.suggestions else None
+        
+        cursor.execute("""
+            INSERT INTO student_chat_history 
+            (user_message, bot_message, sources, duration_ms, session_id, timestamp, suggestions, aprag_interaction_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            message.user,
+            message.bot,
+            sources_json,
+            message.durationMs,
+            message.session_id,
+            timestamp,
+            suggestions_json,
+            message.aprag_interaction_id
+        ))
+        
+        message_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        
+        # Return the saved message
+        response = {
+            "id": message_id,
+            "user": message.user,
+            "bot": message.bot,
+            "sources": message.sources,
+            "durationMs": message.durationMs,
+            "session_id": message.session_id,
+            "timestamp": timestamp,
+            "suggestions": message.suggestions,
+            "aprag_interaction_id": message.aprag_interaction_id
+        }
+        
+        logger.info(f"✅ Saved chat message for session {message.session_id}")
+        return response
+    except Exception as e:
+        logger.error(f"Failed to save chat message: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/students/chat-history/{session_id}")
+async def clear_student_chat_history(session_id: str, request: Request):
+    """Clear chat history for a specific session"""
+    try:
+        conn = get_student_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM student_chat_history WHERE session_id = ?", (session_id,))
+        deleted_count = cursor.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Cleared {deleted_count} messages for session {session_id}")
+        return {"status": "success", "deleted_count": deleted_count}
+    except Exception as e:
+        logger.error(f"Failed to clear chat history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== APRAG Service Proxy Routes ====================
+
+@app.api_route("/api/aprag/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_aprag_service(path: str, request: Request):
+    """
+    Proxy all APRAG service requests to the APRAG microservice
+    Handles emoji-feedback, adaptive-query, personalization, etc.
+    """
+    try:
+        # Get request body if present
+        body = None
+        if request.method in ["POST", "PUT", "PATCH"]:
+            try:
+                body = await request.body()
+            except Exception:
+                body = None
+        
+        # Forward headers (including Authorization)
+        headers = dict(request.headers)
+        # Remove host header to avoid conflicts
+        headers.pop("host", None)
+        
+        # Build target URL
+        target_url = f"{APRAG_SERVICE_URL}/api/aprag/{path}"
+        
+        logger.info(f"Proxying {request.method} request to APRAG service: {target_url}")
+        
+        # Forward request to APRAG service
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.request(
+                method=request.method,
+                url=target_url,
+                content=body,
+                headers=headers,
+                params=request.query_params
+            )
+        
+        # Return response from APRAG service
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type=response.headers.get("content-type")
+        )
+        
+    except httpx.TimeoutException:
+        logger.error(f"APRAG service timeout for path: {path}")
+        raise HTTPException(status_code=504, detail="APRAG service timeout")
+    except httpx.RequestError as e:
+        logger.error(f"APRAG service request error: {e}")
+        raise HTTPException(status_code=503, detail=f"APRAG service unavailable: {str(e)}")
+    except Exception as e:
+        logger.error(f"APRAG proxy error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"APRAG proxy error: {str(e)}")
 
 
 if __name__ == "__main__":

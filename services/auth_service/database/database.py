@@ -117,6 +117,9 @@ class DatabaseManager:
             
             # Apply Topic migrations (004_create_topic_tables.sql)
             self.apply_topic_migrations(conn)
+            
+            # Apply Foreign Key Fix migration (005_fix_aprag_foreign_keys.sql)
+            self.apply_foreign_key_fix_migration(conn)
                 
         except Exception as e:
             logger.warning(f"Migration warning: {e}")
@@ -258,6 +261,46 @@ class DatabaseManager:
                 
         except Exception as e:
             logger.warning(f"Topic migration warning (non-critical): {e}")
+    
+    def apply_foreign_key_fix_migration(self, conn: sqlite3.Connection):
+        """Apply Foreign Key Fix migration (005_fix_aprag_foreign_keys.sql)"""
+        try:
+            # Check if migration is already applied by checking user_id type
+            cursor = conn.execute("PRAGMA table_info(student_interactions)")
+            columns = {row[1]: row[2] for row in cursor.fetchall()}
+            
+            # If user_id is INTEGER, migration is already applied
+            if columns.get('user_id') == 'INTEGER':
+                logger.info("Foreign key fix migration already applied")
+                return
+            
+            logger.info("Applying Foreign Key Fix migration...")
+            
+            # Read migration file
+            migration_paths = [
+                os.path.join(os.path.dirname(__file__), "migrations/005_fix_aprag_foreign_keys.sql"),
+                os.path.join(os.path.dirname(__file__), "../database/migrations/005_fix_aprag_foreign_keys.sql"),
+            ]
+            
+            migration_path = None
+            for path in migration_paths:
+                if os.path.exists(path):
+                    migration_path = path
+                    break
+            
+            if migration_path and os.path.exists(migration_path):
+                with open(migration_path, 'r', encoding='utf-8') as f:
+                    migration_sql = f.read()
+                
+                # Execute migration
+                conn.executescript(migration_sql)
+                conn.commit()
+                logger.info("Foreign Key Fix migration applied successfully")
+            else:
+                logger.warning(f"Foreign Key Fix migration file not found at expected paths: {migration_paths}")
+                
+        except Exception as e:
+            logger.warning(f"Foreign Key Fix migration warning (non-critical): {e}")
     
     def create_tables(self, conn: sqlite3.Connection):
         """Create all database tables"""

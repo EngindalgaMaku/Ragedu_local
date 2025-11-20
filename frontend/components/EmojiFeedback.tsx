@@ -188,12 +188,6 @@ export function QuickEmojiFeedback({
 }: QuickEmojiFeedbackProps) {
   const [selectedEmoji, setSelectedEmoji] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const { isEnabled, features } = useAPRAGSettings(sessionId);
-
-  // Don't render if APRAG or emoji feedback is disabled
-  if (!isEnabled || !features.feedback_collection) {
-    return null;
-  }
 
   const handleEmojiClick = async (emoji: "😊" | "👍" | "😐" | "❌") => {
     if (submitting || selectedEmoji) return;
@@ -227,7 +221,7 @@ export function QuickEmojiFeedback({
   }
 
   return (
-    <div className="inline-flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+    <div className="inline-flex items-center gap-1">
       {["👍", "😊", "😐", "❌"].map((emoji) => (
         <button
           key={emoji}

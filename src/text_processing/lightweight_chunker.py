@@ -34,6 +34,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from datetime import datetime, timedelta
 
+# Import markdown table cleaner
+try:
+    from .markdown_table_cleaner import clean_markdown_tables
+except ImportError:
+    # Fallback if not available
+    def clean_markdown_tables(text: str) -> str:
+        return text
+
 # Import the LLM post-processor (Batch-optimized version - BEST)
 try:
     from .chunk_post_processor_batch import BatchChunkPostProcessor as ChunkPostProcessor, BatchProcessingConfig as PostProcessingConfig
@@ -1058,6 +1066,9 @@ class LightweightSemanticChunker:
         """
         if not text or not text.strip():
             return []
+        
+        # Clean markdown tables for better LLM understanding
+        text = clean_markdown_tables(text)
         
         # Update config with parameters
         chunk_config = ChunkingConfig(

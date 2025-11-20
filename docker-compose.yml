@@ -19,6 +19,7 @@ services:
       - MODEL_INFERENCE_HOST=${MODEL_INFERENCE_HOST:-model-inference-service}
       - MODEL_INFERENCE_PORT=${MODEL_INFERENCE_PORT:-8002}
       - MODEL_INFERENCE_URL=${MODEL_INFERENCE_URL:-http://${MODEL_INFERENCE_HOST:-model-inference-service}:${MODEL_INFERENCE_PORT:-8002}}
+      - RAG_EVALUATOR_URL=${RAG_EVALUATOR_URL:-http://rag-evaluator-service:8005}
       - CHROMADB_HOST=${CHROMADB_HOST:-chromadb-service}
       - CHROMADB_PORT=${CHROMADB_PORT:-8000}
       - CHROMADB_URL=${CHROMADB_URL:-http://${CHROMADB_HOST:-chromadb-service}:${CHROMADB_PORT:-8000}}
@@ -258,6 +259,22 @@ services:
       resources:
         limits:
           memory: 2G  # Model inference doesn't need much RAM when Ollama is external
+    restart: unless-stopped
+    networks:
+      - rag-network
+
+  evaluation-service:
+    build:
+      context: ./services/evaluation_service
+      dockerfile: Dockerfile
+    container_name: evaluation-service
+    ports:
+      - "${EVALUATION_SERVICE_PORT:-8010}:${EVALUATION_SERVICE_PORT:-8010}"
+    environment:
+      - PORT=${EVALUATION_SERVICE_PORT:-8010}
+      - EVALUATION_SERVICE_PORT=${EVALUATION_SERVICE_PORT:-8010}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     restart: unless-stopped
     networks:
       - rag-network

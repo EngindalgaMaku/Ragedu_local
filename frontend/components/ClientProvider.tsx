@@ -101,7 +101,7 @@ function ClientProviderInner({ children }: { children: React.ReactNode }) {
         onLogout={logout} // Use the correct logout function from AuthContext
       />
 
-      {!pathname.startsWith("/admin") && (
+      {!pathname.startsWith("/admin") && !pathname.startsWith("/student") && (
         <header className="bg-card border-b border-border">
           <div className="w-full px-4 sm:px-6 lg:px-8">
             <div className="flex items-center justify-between h-16">
@@ -260,9 +260,13 @@ function ClientProviderInner({ children }: { children: React.ReactNode }) {
         </header>
       )}
 
-      <main className="w-full px-4 sm:px-6 lg:px-10 py-8 min-h-[calc(100vh-8rem)] animate-fade-in">
-        <div className="w-full">{children}</div>
-      </main>
+      {pathname.startsWith("/admin") || pathname.startsWith("/student") ? (
+        children
+      ) : (
+        <main className="w-full px-4 sm:px-6 lg:px-10 py-8 min-h-[calc(100vh-8rem)] animate-fade-in">
+          <div className="w-full">{children}</div>
+        </main>
+      )}
 
       {/* Profile Settings Modal */}
       {isProfileModalOpen && (
