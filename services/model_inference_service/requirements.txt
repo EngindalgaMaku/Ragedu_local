@@ -6,3 +6,4 @@ ollama
 groq
 huggingface_hub
 sentence-transformers
+openai

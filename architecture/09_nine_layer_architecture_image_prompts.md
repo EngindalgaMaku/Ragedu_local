@@ -80,3 +80,8 @@ Label all steps in English, use clear arrows and decision diamonds, and visually
 Bu prompt’lar doğrudan bir görsel üretim aracına (ör. DALL·E, Midjourney, Stable Diffusion vb.) verilecek şekilde tasarlanmıştır; gerekirse katman adları veya teknoloji isimleri kolayca özelleştirilebilir.
 
 
+
+
+
+
+

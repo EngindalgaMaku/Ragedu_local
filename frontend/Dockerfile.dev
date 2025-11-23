@@ -1,0 +1,25 @@
+# Development Dockerfile for Frontend
+# Hot reload için Next.js dev server kullanır
+FROM node:20-alpine
+
+WORKDIR /app
+
+# SSL sertifika sorununu geçici olarak çözmek için
+ENV NODE_TLS_REJECT_UNAUTHORIZED=0
+
+# Install dependencies
+COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* .npmrc* ./
+RUN if [ -f package-lock.json ]; then npm ci; \
+    elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile; \
+    elif [ -f yarn.lock ]; then yarn install --frozen-lockfile; \
+    else npm install; fi
+
+# Port expose
+EXPOSE 3000
+
+# Development mode - hot reload
+# Command docker-compose.dev.yml'de override edilecek
+CMD ["npm", "run", "dev"]
+
+
+

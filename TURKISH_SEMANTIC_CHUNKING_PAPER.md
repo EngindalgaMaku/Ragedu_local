@@ -500,3 +500,8 @@ yapısı ve jeolojik özellikleri gibi unsurları kapsar...
 
 
 
+
+
+
+
+

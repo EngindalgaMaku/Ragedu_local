@@ -164,6 +164,108 @@ class FeatureFlags:
         
         return os.getenv("ENABLE_EMOJI_FEEDBACK", "true").lower() == "true"
     
+    @staticmethod
+    def is_progressive_assessment_enabled(session_id=None):
+        """
+        Progressive Assessment Flow System
+        
+        APRAG ve Eğitsel-KBRAG'a bağlı
+        Progressive, adaptive assessment that provides deeper learning insights
+        
+        Args:
+            session_id: Optional session ID for session-specific checks
+        """
+        if not FeatureFlags.is_egitsel_kbrag_enabled():
+            logger.debug("Progressive Assessment disabled: Eğitsel-KBRAG not enabled")
+            return False
+        
+        # Check session-specific settings first
+        if session_id and FeatureFlags._db_manager:
+            try:
+                result = FeatureFlags._db_manager.execute_query(
+                    "SELECT enable_progressive_assessment FROM session_settings WHERE session_id = ?",
+                    (session_id,)
+                )
+                if result:
+                    session_setting = bool(result[0].get("enable_progressive_assessment", False))
+                    logger.debug(f"Session {session_id} progressive assessment setting: {session_setting}")
+                    return session_setting
+            except Exception as e:
+                logger.warning(f"Failed to check session progressive assessment setting: {e}")
+        
+        # Fallback to environment variable
+        env_setting = os.getenv("ENABLE_PROGRESSIVE_ASSESSMENT", "true").lower() == "true"
+        logger.debug(f"Using environment progressive assessment setting: {env_setting}")
+        return env_setting
+    
+    @staticmethod
+    def is_personalized_responses_enabled(session_id=None):
+        """
+        Personalized Response System
+        
+        APRAG ve Eğitsel-KBRAG'a bağlı
+        AI-powered response personalization based on student profile
+        
+        Args:
+            session_id: Optional session ID for session-specific checks
+        """
+        if not FeatureFlags.is_egitsel_kbrag_enabled():
+            logger.debug("Personalized Responses disabled: Eğitsel-KBRAG not enabled")
+            return False
+        
+        # Check session-specific settings first
+        if session_id and FeatureFlags._db_manager:
+            try:
+                result = FeatureFlags._db_manager.execute_query(
+                    "SELECT enable_personalized_responses FROM session_settings WHERE session_id = ?",
+                    (session_id,)
+                )
+                if result:
+                    session_setting = bool(result[0].get("enable_personalized_responses", False))
+                    logger.debug(f"Session {session_id} personalized responses setting: {session_setting}")
+                    return session_setting
+            except Exception as e:
+                logger.warning(f"Failed to check session personalized responses setting: {e}")
+        
+        # Fallback to environment variable
+        env_setting = os.getenv("ENABLE_PERSONALIZED_RESPONSES", "false").lower() == "true"
+        logger.debug(f"Using environment personalized responses setting: {env_setting}")
+        return env_setting
+    
+    @staticmethod
+    def is_multi_dimensional_feedback_enabled(session_id=None):
+        """
+        Multi-Dimensional Feedback System
+        
+        APRAG ve Eğitsel-KBRAG'a bağlı
+        Advanced feedback collection and analysis
+        
+        Args:
+            session_id: Optional session ID for session-specific checks
+        """
+        if not FeatureFlags.is_egitsel_kbrag_enabled():
+            logger.debug("Multi-Dimensional Feedback disabled: Eğitsel-KBRAG not enabled")
+            return False
+        
+        # Check session-specific settings first
+        if session_id and FeatureFlags._db_manager:
+            try:
+                result = FeatureFlags._db_manager.execute_query(
+                    "SELECT enable_multi_dimensional_feedback FROM session_settings WHERE session_id = ?",
+                    (session_id,)
+                )
+                if result:
+                    session_setting = bool(result[0].get("enable_multi_dimensional_feedback", False))
+                    logger.debug(f"Session {session_id} multi-dimensional feedback setting: {session_setting}")
+                    return session_setting
+            except Exception as e:
+                logger.warning(f"Failed to check session multi-dimensional feedback setting: {e}")
+        
+        # Fallback to environment variable
+        env_setting = os.getenv("ENABLE_MULTI_DIMENSIONAL_FEEDBACK", "false").lower() == "true"
+        logger.debug(f"Using environment multi-dimensional feedback setting: {env_setting}")
+        return env_setting
+    
     # ==========================================
     # Yardımcı Metodlar
     # ==========================================
@@ -192,7 +294,8 @@ class FeatureFlags:
                     "zpd": FeatureFlags.is_zpd_enabled(),
                     "bloom": FeatureFlags.is_bloom_enabled(),
                     "cognitive_load": FeatureFlags.is_cognitive_load_enabled(),
-                    "emoji_feedback": FeatureFlags.is_emoji_feedback_enabled()
+                    "emoji_feedback": FeatureFlags.is_emoji_feedback_enabled(),
+                    "progressive_assessment": FeatureFlags.is_progressive_assessment_enabled()
                 }
             }
         }
@@ -209,6 +312,7 @@ class FeatureFlags:
         os.environ["ENABLE_BLOOM"] = "false"
         os.environ["ENABLE_COGNITIVE_LOAD"] = "false"
         os.environ["ENABLE_EMOJI_FEEDBACK"] = "false"
+        os.environ["ENABLE_PROGRESSIVE_ASSESSMENT"] = "false"
         
         logger.info("All Eğitsel-KBRAG features disabled")
     
@@ -228,6 +332,7 @@ class FeatureFlags:
         os.environ["ENABLE_BLOOM"] = "true"
         os.environ["ENABLE_COGNITIVE_LOAD"] = "true"
         os.environ["ENABLE_EMOJI_FEEDBACK"] = "true"
+        os.environ["ENABLE_PROGRESSIVE_ASSESSMENT"] = "true"
         
         logger.info("All Eğitsel-KBRAG features enabled")
         return True

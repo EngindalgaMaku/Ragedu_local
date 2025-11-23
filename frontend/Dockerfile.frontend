@@ -14,6 +14,8 @@ RUN if [ -f package-lock.json ]; then npm ci; \
 
 # Copy source and build - ensure all files are copied
 COPY . .
+# Clear Next.js cache and build without cache
+RUN rm -rf .next
 RUN npm run build
 
 # Runtime stage

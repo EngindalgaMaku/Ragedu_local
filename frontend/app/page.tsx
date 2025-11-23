@@ -1,5 +1,6 @@
 "use client";
 import React, { useState, useEffect, useMemo, FormEvent } from "react";
+import Link from "next/link";
 
 // Utility function for Turkish date formatting
 const formatTimestamp = (timestamp: string): string => {
@@ -69,6 +70,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import TeacherLayout from "@/app/components/TeacherLayout";
 import RecommendationPanel from "@/components/RecommendationPanel";
 import TopicProgressCard from "@/components/TopicProgressCard";
+import TopicAnalyticsDashboard from "@/components/TopicAnalyticsDashboard";
 
 // Type definition for RAG source (extend if RAGSource is not exported from api.ts)
 interface ExtendedRAGSource {
@@ -152,7 +154,9 @@ function SessionCard({
     >
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
-          <h3 className="text-base sm:text-lg font-bold mb-1 truncate">{session.name}</h3>
+          <h3 className="text-base sm:text-lg font-bold mb-1 truncate">
+            {session.name}
+          </h3>
           <p className="text-xs sm:text-sm opacity-80 mb-3 sm:mb-4 line-clamp-2">
             {session.description}
           </p>
@@ -170,22 +174,28 @@ function SessionCard({
               <span>{session.query_count}</span>
             </div>
           </div>
-          
+
           {/* RAG Settings Info */}
           {session.rag_settings && (
             <div className="mt-3 pt-3 border-t border-white/20">
-              <div className="text-xs opacity-75 mb-2 font-semibold">⚙️ Oturum Ayarları:</div>
+              <div className="text-xs opacity-75 mb-2 font-semibold">
+                ⚙️ Oturum Ayarları:
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs opacity-80">
                 {session.rag_settings.embedding_model && (
                   <div className="flex items-center gap-1">
                     <span className="opacity-70">📊</span>
-                    <span className="font-mono truncate">{session.rag_settings.embedding_model}</span>
+                    <span className="font-mono truncate">
+                      {session.rag_settings.embedding_model}
+                    </span>
                   </div>
                 )}
                 {session.rag_settings.chunk_strategy && (
                   <div className="flex items-center gap-1">
                     <span className="opacity-70">✂️</span>
-                    <span className="truncate">{session.rag_settings.chunk_strategy}</span>
+                    <span className="truncate">
+                      {session.rag_settings.chunk_strategy}
+                    </span>
                   </div>
                 )}
                 {session.rag_settings.chunk_size && (
@@ -230,14 +240,26 @@ function SessionCard({
                 e.stopPropagation();
                 onToggleStatus(session.session_id, session.status);
               }}
-              className={`px-2 py-1 text-xs font-medium rounded-md transition-colors min-h-[32px] min-w-[32px] ${
+              className={`px-3 sm:px-4 py-2 text-sm font-semibold rounded-lg transition-all min-h-[40px] shadow-md hover:shadow-lg ${
                 session.status === "active"
-                  ? "bg-red-500/50 text-white hover:bg-red-500/80"
-                  : "bg-green-500/50 text-white hover:bg-green-500/80"
+                  ? "bg-red-600 text-white hover:bg-red-700 active:bg-red-800"
+                  : "bg-green-600 text-white hover:bg-green-700 active:bg-green-800"
               }`}
               title={session.status === "active" ? "Deaktif et" : "Aktif et"}
             >
-              {session.status === "active" ? "🔴" : "🟢"}
+              <span className="flex items-center gap-1.5 whitespace-nowrap">
+                {session.status === "active" ? (
+                  <>
+                    <span className="text-base">🔴</span>
+                    <span className="hidden sm:inline">Deaktif Et</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-base">🟢</span>
+                    <span className="hidden sm:inline">Aktif Et</span>
+                  </>
+                )}
+              </span>
             </button>
 
             {/* Recent Interactions Button */}
@@ -431,7 +453,7 @@ export default function HomePage() {
   const [sessionPage, setSessionPage] = useState(1);
   const SESSIONS_PER_PAGE = 5;
   const [activeTab, setActiveTab] = useState<
-    "dashboard" | "sessions" | "upload" | "query"
+    "dashboard" | "sessions" | "upload" | "query" | "analytics"
   >("dashboard");
 
   // Form states
@@ -489,8 +511,12 @@ export default function HomePage() {
   );
   const [sessionRagSettings, setSessionRagSettings] = useState<any>(null);
 
-  // Accordion states for settings and chat
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  // Reranker selection
+  const [selectedRerankerType, setSelectedRerankerType] =
+    useState<string>("ms-marco"); // "bge" or "ms-marco"
+  const [useRerankerService, setUseRerankerService] = useState<boolean>(false); // Use new reranker service
+
+  // Accordion state for chat
   const [isChatOpen, setIsChatOpen] = useState(true);
 
   // Embedding model selection for document processing
@@ -831,7 +857,7 @@ export default function HomePage() {
         session_id: selectedSessionId || "direct-llm-session",
         query: userMessage,
         top_k: 5,
-        use_rerank: true,
+        use_rerank: sessionRagSettings?.use_rerank ?? false, // Use session settings, default false
         min_score: sessionRagSettings?.min_score ?? 0.5,
         max_context_chars: 8000,
         use_direct_llm: useDirectLLM,
@@ -839,9 +865,12 @@ export default function HomePage() {
         conversation_history:
           conversationHistory.length > 0 ? conversationHistory : undefined,
       };
+      // Use session RAG settings if available, otherwise use defaults
       if (userRole !== "student") {
-        payload.model = selectedQueryModel;
-        payload.chain_type = chainType;
+        payload.model =
+          sessionRagSettings?.model || selectedQueryModel || undefined;
+        payload.chain_type =
+          sessionRagSettings?.chain_type || chainType || "stuff";
       }
       // IMPORTANT: Always use session's embedding_model if available
       // This ensures chat uses the same embedding model as documents
@@ -1386,6 +1415,14 @@ export default function HomePage() {
           if (session.rag_settings.use_direct_llm !== undefined) {
             setUseDirectLLM(session.rag_settings.use_direct_llm);
           }
+
+          // Load reranker settings
+          if (session.rag_settings.use_reranker_service !== undefined) {
+            setUseRerankerService(session.rag_settings.use_reranker_service);
+          }
+          if (session.rag_settings.reranker_type) {
+            setSelectedRerankerType(session.rag_settings.reranker_type);
+          }
         } else {
           setSessionRagSettings(null);
         }
@@ -1645,7 +1682,9 @@ export default function HomePage() {
                               <div className="grid grid-cols-1 gap-2">
                                 {session.rag_settings.embedding_model && (
                                   <div className="flex items-center justify-between text-xs">
-                                    <span className="text-gray-500">Embedding:</span>
+                                    <span className="text-gray-500">
+                                      Embedding:
+                                    </span>
                                     <span className="font-mono text-gray-700 bg-white px-2 py-0.5 rounded">
                                       {session.rag_settings.embedding_model}
                                     </span>
@@ -1653,7 +1692,9 @@ export default function HomePage() {
                                 )}
                                 {session.rag_settings.chunk_strategy && (
                                   <div className="flex items-center justify-between text-xs">
-                                    <span className="text-gray-500">Chunk Stratejisi:</span>
+                                    <span className="text-gray-500">
+                                      Chunk Stratejisi:
+                                    </span>
                                     <span className="font-mono text-gray-700 bg-white px-2 py-0.5 rounded">
                                       {session.rag_settings.chunk_strategy}
                                     </span>
@@ -1661,7 +1702,9 @@ export default function HomePage() {
                                 )}
                                 {session.rag_settings.chunk_size && (
                                   <div className="flex items-center justify-between text-xs">
-                                    <span className="text-gray-500">Chunk Size:</span>
+                                    <span className="text-gray-500">
+                                      Chunk Size:
+                                    </span>
                                     <span className="font-mono text-gray-700 bg-white px-2 py-0.5 rounded">
                                       {session.rag_settings.chunk_size}
                                     </span>
@@ -1933,7 +1976,10 @@ export default function HomePage() {
             <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
               {/* Chat Input - Top */}
               <div className="border-b border-gray-100 p-4 sm:p-6">
-                <form onSubmit={handleQuery} className="flex flex-col sm:flex-row gap-3">
+                <form
+                  onSubmit={handleQuery}
+                  className="flex flex-col sm:flex-row gap-3"
+                >
                   <div className="flex-1 relative">
                     <input
                       value={query}
@@ -2233,10 +2279,16 @@ export default function HomePage() {
                   <p className="text-blue-100 text-xs sm:text-sm font-medium truncate">
                     Ders Oturumları
                   </p>
-                  <p className="text-2xl sm:text-3xl font-bold">{totalSessions}</p>
-                  <p className="text-blue-200 text-xs truncate">Aktif sınıflar</p>
+                  <p className="text-2xl sm:text-3xl font-bold">
+                    {totalSessions}
+                  </p>
+                  <p className="text-blue-200 text-xs truncate">
+                    Aktif sınıflar
+                  </p>
                 </div>
-                <div className="text-3xl sm:text-4xl opacity-80 ml-2 flex-shrink-0">📚</div>
+                <div className="text-3xl sm:text-4xl opacity-80 ml-2 flex-shrink-0">
+                  📚
+                </div>
               </div>
             </div>
 
@@ -2246,10 +2298,16 @@ export default function HomePage() {
                   <p className="text-green-100 text-xs sm:text-sm font-medium truncate">
                     Ders Materyalleri
                   </p>
-                  <p className="text-2xl sm:text-3xl font-bold">{totalDocuments}</p>
-                  <p className="text-green-200 text-xs truncate">Yüklenen belgeler</p>
+                  <p className="text-2xl sm:text-3xl font-bold">
+                    {totalDocuments}
+                  </p>
+                  <p className="text-green-200 text-xs truncate">
+                    Yüklenen belgeler
+                  </p>
                 </div>
-                <div className="text-3xl sm:text-4xl opacity-80 ml-2 flex-shrink-0">📄</div>
+                <div className="text-3xl sm:text-4xl opacity-80 ml-2 flex-shrink-0">
+                  📄
+                </div>
               </div>
             </div>
 
@@ -2259,10 +2317,16 @@ export default function HomePage() {
                   <p className="text-purple-100 text-xs sm:text-sm font-medium truncate">
                     Bilgi Parçaları
                   </p>
-                  <p className="text-2xl sm:text-3xl font-bold">{totalChunks}</p>
-                  <p className="text-purple-200 text-xs truncate">İşlenmiş içerik</p>
+                  <p className="text-2xl sm:text-3xl font-bold">
+                    {totalChunks}
+                  </p>
+                  <p className="text-purple-200 text-xs truncate">
+                    İşlenmiş içerik
+                  </p>
                 </div>
-                <div className="text-3xl sm:text-4xl opacity-80 ml-2 flex-shrink-0">🧩</div>
+                <div className="text-3xl sm:text-4xl opacity-80 ml-2 flex-shrink-0">
+                  🧩
+                </div>
               </div>
             </div>
 
@@ -2272,10 +2336,16 @@ export default function HomePage() {
                   <p className="text-orange-100 text-xs sm:text-sm font-medium truncate">
                     Öğrenci Soruları
                   </p>
-                  <p className="text-2xl sm:text-3xl font-bold">{totalQueries}</p>
-                  <p className="text-orange-200 text-xs truncate">Yanıtlanan sorular</p>
+                  <p className="text-2xl sm:text-3xl font-bold">
+                    {totalQueries}
+                  </p>
+                  <p className="text-orange-200 text-xs truncate">
+                    Yanıtlanan sorular
+                  </p>
                 </div>
-                <div className="text-3xl sm:text-4xl opacity-80 ml-2 flex-shrink-0">❓</div>
+                <div className="text-3xl sm:text-4xl opacity-80 ml-2 flex-shrink-0">
+                  ❓
+                </div>
               </div>
             </div>
           </div>
@@ -2936,302 +3006,43 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Settings Accordion */}
-          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
-            <button
-              onClick={() => {
-                setIsSettingsOpen(!isSettingsOpen);
-                if (!isSettingsOpen) {
-                  setIsChatOpen(false);
-                }
-              }}
-              className="w-full px-8 py-6 bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200 flex items-center justify-between hover:from-gray-100 hover:to-gray-200 transition-all"
-            >
+          {/* Session Selection - RAG Settings moved to session detail page */}
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden p-6">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-3">
+                🎯 Ders Oturumu Seçin
+              </label>
               <div className="flex items-center gap-3">
-                <span className="text-2xl">⚙️</span>
-                <h2 className="text-2xl font-bold text-gray-800">
-                  RAG Ayarları
-                </h2>
-              </div>
-              <svg
-                className={`w-6 h-6 text-gray-600 transition-transform duration-200 ${
-                  isSettingsOpen ? "rotate-180" : ""
-                }`}
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth="2"
-                  d="M19 9l-7 7-7-7"
-                />
-              </svg>
-            </button>
-
-            {isSettingsOpen && (
-              <div className="p-8">
-                {/* Model Selection */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-3">
-                      🎯 Hedef Ders Oturumu
-                    </label>
-                    <select
-                      value={selectedSessionId}
-                      onChange={(e) => setSelectedSessionId(e.target.value)}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-white shadow-sm"
-                    >
-                      <option value="">Ders Oturumu Seçin</option>
-                      {sessions
-                        .filter((s) => s.status === "active")
-                        .map((session) => (
-                          <option
-                            key={session.session_id}
-                            value={session.session_id}
-                          >
-                            📚 {session.name} ({session.document_count} doküman)
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-3">
-                      🤖 AI Provider
-                    </label>
-                    <select
-                      value={selectedProvider}
-                      onChange={(e) => handleProviderChange(e.target.value)}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-white shadow-sm mb-3"
-                      disabled={modelsLoading}
-                    >
-                      <option value="groq">🌐 Groq (Cloud - Hızlı)</option>
-                      <option value="openrouter">
-                        🚀 OpenRouter (Cloud - Güçlü)
-                      </option>
-                      <option value="huggingface">
-                        🤗 HuggingFace (Ücretsiz)
-                      </option>
-                      <option value="ollama">🏠 Ollama (Yerel)</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-3">
-                      🤖 AI Modeli
-                    </label>
-                    <select
-                      value={selectedQueryModel}
-                      onChange={(e) => setSelectedQueryModel(e.target.value)}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-white shadow-sm"
-                      disabled={modelsLoading || filteredModels.length === 0}
-                    >
-                      <option value="">
-                        {modelsLoading
-                          ? "Modeller yükleniyor..."
-                          : filteredModels.length === 0
-                          ? "Bu provider için model bulunamadı"
-                          : "Model seçin..."}
-                      </option>
-                      {filteredModels.map((model: any) => (
-                        <option
-                          key={model.id || model}
-                          value={model.id || model}
-                        >
-                          {typeof model === "string"
-                            ? model
-                            : model.name || model.id}
-                        </option>
-                      ))}
-                    </select>
-                    {availableModels.length === 0 && !modelsLoading && (
-                      <button
-                        onClick={fetchAvailableModels}
-                        className="mt-2 text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                <select
+                  value={selectedSessionId}
+                  onChange={(e) => setSelectedSessionId(e.target.value)}
+                  className="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-white shadow-sm"
+                >
+                  <option value="">Ders Oturumu Seçin</option>
+                  {sessions
+                    .filter((s) => s.status === "active")
+                    .map((session) => (
+                      <option
+                        key={session.session_id}
+                        value={session.session_id}
                       >
-                        <span>🔄</span>
-                        Modelleri Yükle
-                      </button>
-                    )}
-                  </div>
-
-                  {/* Embedding Model Selection (Teacher) */}
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-3">
-                      🧠 Embedding Modeli
-                    </label>
-                    <div className="mb-2">
-                      <select
-                        value={selectedEmbeddingProvider}
-                        onChange={(e) => {
-                          setSelectedEmbeddingProvider(e.target.value);
-                          // Reset model when provider changes
-                          const providerModels =
-                            e.target.value === "ollama"
-                              ? availableEmbeddingModels.ollama
-                              : availableEmbeddingModels.huggingface.map(
-                                  (m) => m.id
-                                );
-                          if (providerModels.length > 0) {
-                            setSelectedEmbeddingModel(providerModels[0]);
-                          }
-                        }}
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-white shadow-sm text-sm mb-2"
-                      >
-                        <option value="ollama">Ollama (Yerel)</option>
-                        <option value="huggingface">
-                          HuggingFace (Ücretsiz)
-                        </option>
-                      </select>
-                    </div>
-                    <select
-                      value={selectedEmbeddingModel}
-                      onChange={(e) =>
-                        setSelectedEmbeddingModel(e.target.value)
-                      }
-                      className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-white shadow-sm"
-                      disabled={embeddingModelsLoading}
-                    >
-                      {embeddingModelsLoading ? (
-                        <option value="">Modeller yükleniyor...</option>
-                      ) : selectedEmbeddingProvider === "ollama" ? (
-                        availableEmbeddingModels.ollama.length > 0 ? (
-                          availableEmbeddingModels.ollama.map((model) => (
-                            <option key={model} value={model}>
-                              {model.replace(":latest", "")}
-                            </option>
-                          ))
-                        ) : (
-                          <option value="">Ollama model bulunamadı</option>
-                        )
-                      ) : availableEmbeddingModels.huggingface.length > 0 ? (
-                        availableEmbeddingModels.huggingface.map((model) => (
-                          <option key={model.id} value={model.id}>
-                            {model.name}{" "}
-                            {model.description ? `- ${model.description}` : ""}{" "}
-                            {model.dimensions ? `(${model.dimensions}D)` : ""}
-                          </option>
-                        ))
-                      ) : (
-                        <option value="">HuggingFace model bulunamadı</option>
-                      )}
-                    </select>
-                    {availableEmbeddingModels.ollama.length === 0 &&
-                      availableEmbeddingModels.huggingface.length === 0 &&
-                      !embeddingModelsLoading && (
-                        <button
-                          onClick={fetchAvailableEmbeddingModels}
-                          className="mt-2 text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1"
-                        >
-                          <span>🔄</span>
-                          Embedding Modellerini Yükle
-                        </button>
-                      )}
-                  </div>
-                </div>
-
-                {/* Chain Type Selection (Teacher) */}
-                <div className="mb-6">
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    🔗 RAG Zinciri (Chain Type)
-                  </label>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setChainType("stuff")}
-                      className={`p-3 border rounded-lg text-left ${
-                        chainType === "stuff"
-                          ? "border-blue-500 bg-blue-50"
-                          : "border-gray-300"
-                      }`}
-                    >
-                      <div className="font-semibold">Stuff</div>
-                      <div className="text-xs text-gray-600">
-                        Top‑k parçayı tek seferde modele verir. Hızlı ve basit;
-                        kısa bağlamlarda ideal.
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setChainType("refine")}
-                      className={`p-3 border rounded-lg text-left ${
-                        chainType === "refine"
-                          ? "border-blue-500 bg-blue-50"
-                          : "border-gray-300"
-                      }`}
-                    >
-                      <div className="font-semibold">Refine</div>
-                      <div className="text-xs text-gray-600">
-                        İlk cevabı üretir, sonraki parçalarla kademeli
-                        iyileştirir. Dağınık bilgi için iyi.
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setChainType("map_reduce")}
-                      className={`p-3 border rounded-lg text-left ${
-                        chainType === "map_reduce"
-                          ? "border-blue-500 bg-blue-50"
-                          : "border-gray-300"
-                      }`}
-                    >
-                      <div className="font-semibold">Map‑Reduce</div>
-                      <div className="text-xs text-gray-600">
-                        Her parça için ara cevap üretir, sonra birleştirir. Çok
-                        büyük bağlamlarda ölçeklenir.
-                      </div>
-                    </button>
-                  </div>
-                  <div className="mt-4">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (!selectedSessionId) {
-                          setError("Önce bir oturum seçin");
-                          return;
-                        }
-                        try {
-                          setSavingSettings(true);
-                          setSavedSettingsInfo(null);
-                          const resp = await saveSessionRagSettings(
-                            selectedSessionId,
-                            {
-                              model: selectedQueryModel || undefined,
-                              chain_type: chainType,
-                              top_k: 5,
-                              use_rerank: true,
-                              min_score: 0.5,
-                              max_context_chars: 8000,
-                              use_direct_llm: useDirectLLM || false,
-                              embedding_model: selectedEmbeddingModel,
-                            }
-                          );
-                          setSavedSettingsInfo("Ders ayarları kaydedildi.");
-                          setSessionRagSettings(resp.rag_settings);
-                        } catch (e: any) {
-                          setError(e.message || "Ayarlar kaydedilemedi");
-                        } finally {
-                          setSavingSettings(false);
-                        }
-                      }}
-                      className="px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                      disabled={savingSettings}
-                    >
-                      {savingSettings
-                        ? "Kaydediliyor..."
-                        : "Ders Ayarlarını Kaydet"}
-                    </button>
-                    {savedSettingsInfo && (
-                      <span className="ml-3 text-sm text-green-700">
-                        {savedSettingsInfo}
-                      </span>
-                    )}
-                  </div>
-                </div>
+                        📚 {session.name} ({session.document_count} doküman)
+                      </option>
+                    ))}
+                </select>
+                {selectedSessionId && (
+                  <Link
+                    href={`/sessions/${selectedSessionId}`}
+                    className="px-4 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors font-medium whitespace-nowrap"
+                  >
+                    ⚙️ Ayarları Düzenle
+                  </Link>
+                )}
               </div>
-            )}
+              <p className="text-xs text-gray-500 mt-2">
+                💡 RAG ayarlarını düzenlemek için oturum sayfasına gidin
+              </p>
+            </div>
           </div>
 
           {/* Chat Interface Accordion */}
@@ -3240,9 +3051,6 @@ export default function HomePage() {
               <button
                 onClick={() => {
                   setIsChatOpen(!isChatOpen);
-                  if (!isChatOpen) {
-                    setIsSettingsOpen(false);
-                  }
                 }}
                 className="w-full px-8 py-6 bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200 flex items-center justify-between hover:from-gray-100 hover:to-gray-200 transition-all"
               >
@@ -3270,9 +3078,10 @@ export default function HomePage() {
                       </p>
                     )}
                     <div className="mt-2 flex flex-wrap items-center gap-2">
-                      {!!selectedQueryModel && (
+                      {!!(sessionRagSettings?.model || selectedQueryModel) && (
                         <span className="px-2 py-0.5 rounded-full text-xs bg-indigo-50 text-indigo-700 border border-indigo-200">
-                          Model: {selectedQueryModel}
+                          Model:{" "}
+                          {sessionRagSettings?.model || selectedQueryModel}
                         </span>
                       )}
                       {!!(
@@ -3285,9 +3094,9 @@ export default function HomePage() {
                             selectedEmbeddingModel}
                         </span>
                       )}
-                      {!!chainType && (
+                      {!!(sessionRagSettings?.chain_type || chainType) && (
                         <span className="px-2 py-0.5 rounded-full text-xs bg-blue-50 text-blue-700 border border-blue-200">
-                          Chain: {chainType}
+                          Chain: {sessionRagSettings?.chain_type || chainType}
                         </span>
                       )}
                     </div>
@@ -3387,7 +3196,10 @@ export default function HomePage() {
                           onChange={(e) => setQuery(e.target.value)}
                           placeholder="Ders materyalleri hakkında sorunuzu yazın..."
                           className="w-full p-4 pr-12 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-gray-800 placeholder-gray-400"
-                          disabled={isQuerying || !selectedQueryModel}
+                          disabled={
+                            isQuerying ||
+                            (!sessionRagSettings?.model && !selectedQueryModel)
+                          }
                         />
                         <div className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400">
                           💭
@@ -3396,7 +3208,9 @@ export default function HomePage() {
                       <button
                         type="submit"
                         disabled={
-                          isQuerying || !query.trim() || !selectedQueryModel
+                          isQuerying ||
+                          !query.trim() ||
+                          (!sessionRagSettings?.model && !selectedQueryModel)
                         }
                         className="px-6 py-4 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-xl hover:from-blue-600 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 transform hover:scale-105 active:scale-95 shadow-lg font-medium"
                       >
@@ -3679,48 +3493,86 @@ export default function HomePage() {
                                     </div>
 
                                     {/* Correction Notice */}
-                                    {(chat as any).correction && (chat as any).correction.was_corrected && (
-                                      <div className="mt-4 mb-4 p-4 bg-amber-50 border-l-4 border-amber-500 rounded-r-lg shadow-sm">
-                                        <div className="flex items-start gap-3">
-                                          <div className="text-amber-600 mt-0.5">
-                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                                            </svg>
-                                          </div>
-                                          <div className="flex-1">
-                                            <h4 className="text-sm font-bold text-amber-800 mb-1">
-                                              ⚠️ Otomatik Doğrulama ve Düzeltme
-                                            </h4>
-                                            <p className="text-xs text-amber-700 mb-2">
-                                              Yapay zeka, ilk cevabında tutarsızlıklar tespit etti ve aşağıdaki nedenlerle cevabı güncelledi:
-                                            </p>
-                                            <ul className="list-disc list-inside text-xs text-amber-800 space-y-1 bg-amber-100/50 p-2 rounded">
-                                              {(chat as any).correction.issues.map((issue: string, idx: number) => (
-                                                <li key={idx}>{issue}</li>
-                                              ))}
-                                            </ul>
+                                    {(chat as any).correction &&
+                                      (chat as any).correction
+                                        .was_corrected && (
+                                        <div className="mt-4 mb-4 p-4 bg-amber-50 border-l-4 border-amber-500 rounded-r-lg shadow-sm">
+                                          <div className="flex items-start gap-3">
+                                            <div className="text-amber-600 mt-0.5">
+                                              <svg
+                                                className="w-5 h-5"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                viewBox="0 0 24 24"
+                                              >
+                                                <path
+                                                  strokeLinecap="round"
+                                                  strokeLinejoin="round"
+                                                  strokeWidth="2"
+                                                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                                                />
+                                              </svg>
+                                            </div>
+                                            <div className="flex-1">
+                                              <h4 className="text-sm font-bold text-amber-800 mb-1">
+                                                ⚠️ Otomatik Doğrulama ve
+                                                Düzeltme
+                                              </h4>
+                                              <p className="text-xs text-amber-700 mb-2">
+                                                Yapay zeka, ilk cevabında
+                                                tutarsızlıklar tespit etti ve
+                                                aşağıdaki nedenlerle cevabı
+                                                güncelledi:
+                                              </p>
+                                              <ul className="list-disc list-inside text-xs text-amber-800 space-y-1 bg-amber-100/50 p-2 rounded">
+                                                {(
+                                                  chat as any
+                                                ).correction.issues.map(
+                                                  (
+                                                    issue: string,
+                                                    idx: number
+                                                  ) => (
+                                                    <li key={idx}>{issue}</li>
+                                                  )
+                                                )}
+                                              </ul>
+                                            </div>
                                           </div>
                                         </div>
-                                      </div>
-                                    )}
-                                    
+                                      )}
+
                                     {/* Verification Success Notice (Debug) */}
-                                    {(chat as any).correction && !(chat as any).correction.was_corrected && (chat as any).correction.issues && (chat as any).correction.issues.length === 0 && (
-                                      <div className="mt-4 mb-4 p-3 bg-green-50 border-l-4 border-green-500 rounded-r-lg shadow-sm">
-                                        <div className="flex items-start gap-2">
-                                          <div className="text-green-600 mt-0.5">
-                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                            </svg>
-                                          </div>
-                                          <div className="flex-1">
-                                            <p className="text-xs font-medium text-green-800">
-                                              ✅ Cevap doğrulandı - Tutarlılık kontrolü başarılı
-                                            </p>
+                                    {(chat as any).correction &&
+                                      !(chat as any).correction.was_corrected &&
+                                      (chat as any).correction.issues &&
+                                      (chat as any).correction.issues.length ===
+                                        0 && (
+                                        <div className="mt-4 mb-4 p-3 bg-green-50 border-l-4 border-green-500 rounded-r-lg shadow-sm">
+                                          <div className="flex items-start gap-2">
+                                            <div className="text-green-600 mt-0.5">
+                                              <svg
+                                                className="w-4 h-4"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                viewBox="0 0 24 24"
+                                              >
+                                                <path
+                                                  strokeLinecap="round"
+                                                  strokeLinejoin="round"
+                                                  strokeWidth="2"
+                                                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                                                />
+                                              </svg>
+                                            </div>
+                                            <div className="flex-1">
+                                              <p className="text-xs font-medium text-green-800">
+                                                ✅ Cevap doğrulandı - Tutarlılık
+                                                kontrolü başarılı
+                                              </p>
+                                            </div>
                                           </div>
                                         </div>
-                                      </div>
-                                    )}
+                                      )}
 
                                     {Array.isArray(chat.suggestions) &&
                                       chat.suggestions.length > 0 && (
@@ -4075,6 +3927,25 @@ export default function HomePage() {
               <p className="text-yellow-700">
                 Soru sormak için önce yukarıdan bir ders oturumu seçin veya
                 "LLM'den direkt cevap al" seçeneğini açın.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === "analytics" && (
+        <div className="space-y-6">
+          {selectedSessionId ? (
+            <TopicAnalyticsDashboard sessionId={selectedSessionId} />
+          ) : (
+            <div className="text-center py-12">
+              <div className="text-6xl mb-4">📊</div>
+              <h3 className="text-2xl font-bold text-gray-700 mb-4">
+                Analytics Dashboard
+              </h3>
+              <p className="text-gray-500 max-w-md mx-auto mb-8">
+                Konu seviyesi analytics verilerini görüntülemek için bir ders
+                oturumu seçin.
               </p>
             </div>
           )}

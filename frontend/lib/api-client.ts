@@ -34,7 +34,9 @@ import { tokenManager } from "./token-manager";
 // ===== CONSTANTS =====
 
 const DEFAULT_CONFIG: ApiClientConfig = {
-  baseURL: process.env.NEXT_PUBLIC_AUTH_URL || "/api",
+  // Always use /api for browser requests (Next.js rewrites will proxy to api-gateway)
+  // For server-side, this will be handled by next.config.js rewrites
+  baseURL: "/api",
   timeout: 30000, // 30 seconds
   retries: 3,
   retryDelay: 1000,

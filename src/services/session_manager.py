@@ -936,12 +936,26 @@ class ProfessionalSessionManager:
         """Save teacher-defined RAG settings for a session."""
         if not self._session_exists_by_id(session_id):
             return False
+        import logging
+        logger = logging.getLogger(__name__)
+        print(f"[SESSION MANAGER] Saving RAG settings for session {session_id}: {settings}")
+        logger.info(f"[SESSION MANAGER] Saving RAG settings for session {session_id}: {settings}")
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            settings_json = json.dumps(settings or {})
+            print(f"[SESSION MANAGER] JSON to save: {settings_json}")
+            logger.info(f"[SESSION MANAGER] JSON to save: {settings_json}")
             cursor.execute(
                 "UPDATE sessions SET rag_settings = ?, updated_at = ? WHERE session_id = ?",
-                (json.dumps(settings or {}), datetime.now().isoformat(), session_id)
+                (settings_json, datetime.now().isoformat(), session_id)
             )
+            conn.commit()  # Explicit commit
+            # Verify the save
+            cursor.execute("SELECT rag_settings FROM sessions WHERE session_id = ?", (session_id,))
+            row = cursor.fetchone()
+            if row:
+                print(f"[SESSION MANAGER] Verified saved settings: {row[0]}")
+                logger.info(f"[SESSION MANAGER] Verified saved settings: {row[0]}")
         self._log_activity(session_id, "rag_settings_updated", "RAG settings saved", user_id, settings)
         return True
 

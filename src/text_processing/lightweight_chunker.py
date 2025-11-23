@@ -466,8 +466,9 @@ class TopicAwareChunker:
             'markdown': re.compile(r'^#{1,6}\s+(.+)$', re.MULTILINE),
             # ALL CAPS headers (büyük harfle yazılan başlık)
             'all_caps': re.compile(r'^[A-ZÇĞIŞÖÜ\s\d\-\.]+$'),
-            # Numbered sections
-            'numbered': re.compile(r'^\d+[\.\)]\s+[A-ZÇĞIŞÖÜ].*$'),
+            # Numbered sections (headers) - more flexible pattern
+            # Matches: "3. Başlık", "3) Başlık", "3. başlık" (case insensitive)
+            'numbered': re.compile(r'^\d+[\.\)]\s+[A-ZÇĞIŞÖÜa-zçğışöü].*$'),
         }
         
         # Topic transition indicators for Turkish
@@ -496,7 +497,11 @@ class TopicAwareChunker:
         chunks = self._build_chunks_with_topic_awareness(sections)
         
         # Step 3: Ensure seamless transitions (bir chunkın bittiği yerden diğer chunk başlamalı)
+        # NOTE: Duplicate content removal disabled - it was causing too many issues
         final_chunks = self._ensure_seamless_transitions(chunks)
+        
+        # Step 4: Validate chunks don't overlap in position
+        final_chunks = self._validate_chunk_positions(final_chunks)
         
         return final_chunks
     
@@ -528,7 +533,18 @@ class TopicAwareChunker:
             if i in line_to_list:
                 list_start, list_end, list_type = line_to_list[i]
                 
-                # Save previous section
+                # CRITICAL: If current section is a header_section, add list to header content
+                # This ensures lists under headers stay with their headers
+                if current_section and current_section.type == 'header_section':
+                    # Add list content to header section
+                    for j in range(list_start, list_end + 1):
+                        if lines[j].strip():  # Skip empty lines within lists
+                            current_section.content.append(lines[j].strip())
+                    # Skip to end of list
+                    i = list_end + 1
+                    continue
+                
+                # Save previous section (if not header)
                 if current_section:
                     sections.append(current_section)
                     current_section = None
@@ -577,10 +593,19 @@ class TopicAwareChunker:
                 ))
                 
             else:  # Regular text
-                if not current_section:
+                # CRITICAL: If current section is a header_section, add content to it
+                # This ensures header and its content stay together
+                if current_section and current_section.type == 'header_section':
+                    if line.strip():  # Skip empty lines
+                        current_section.content.append(line.strip())
+                elif not current_section:
                     current_section = DocumentSection(type='text_section', content=[])
-                if line.strip():  # Skip empty lines
-                    current_section.content.append(line.strip())
+                    if line.strip():  # Skip empty lines
+                        current_section.content.append(line.strip())
+                else:
+                    # Regular text section
+                    if line.strip():  # Skip empty lines
+                        current_section.content.append(line.strip())
             
             i += 1
         
@@ -601,16 +626,30 @@ class TopicAwareChunker:
         # Markdown headers
         if line.startswith('#'):
             return 'header'
-            
+        
+        # Bold headers (**text** or **text:**) - CRITICAL for Turkish documents
+        if line.startswith('**') and line.endswith('**'):
+            # Remove bold markers and check if it's a header
+            inner_text = line[2:-2].strip()
+            # Check if it ends with colon (header indicator) or is short (likely header)
+            if inner_text.endswith(':') or (len(inner_text) < 100 and len(inner_text) > 2):
+                return 'header'
+        
+        # Numbered sections (headers, not list items) - check both bold and regular
+        # CRITICAL: Check bold numbered headers first (e.g., "**2. Glikojen**")
+        if line.startswith('**') and line.endswith('**'):
+            inner_text = line[2:-2].strip()
+            if self.header_patterns['numbered'].match(inner_text):
+                return 'header'
+        # Check regular numbered headers (e.g., "2. Glikojen")
+        if self.header_patterns['numbered'].match(line):
+            return 'header'
+        
         # ALL CAPS headers (Turkish style) - büyük harfle yazılan tek şey varsa o başlık
         if len(line) > 3 and self.header_patterns['all_caps'].match(line):
             # Additional check: must be standalone and not too long
             if len(line) < 100 and not any(char in line for char in '.,;:'):
                 return 'header'
-                
-        # Numbered sections (headers, not list items)
-        if self.header_patterns['numbered'].match(line):
-            return 'header'
             
         # Enhanced list item detection
         if (re.match(r'^\s*[-\*\+•]\s+', line) or  # Bulleted lists
@@ -645,14 +684,27 @@ class TopicAwareChunker:
         """
         Enhanced chunk building with list structure preservation.
         CRITICAL: Headers stay with content AND lists never get fragmented.
+        CRITICAL FIX: Each section is used exactly once - no duplication.
+        CRITICAL: Chunks must be non-overlapping in position (start_index < end_index for each, 
+        and chunk[i].end_index <= chunk[i+1].start_index).
         """
         chunks = []
         current_chunk_text = ""
         current_chunk_start = 0
         current_chunk_sentences = 0
         current_header = None
+        processed_sections = set()  # Track processed sections to prevent duplication
         
         for i, section in enumerate(sections):
+            # CRITICAL: Prevent processing the same section twice
+            section_id = id(section)  # Use object ID to track sections
+            if section_id in processed_sections:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"⚠️ Section {i} already processed, skipping to prevent duplication")
+                continue
+            processed_sections.add(section_id)
+            
             section_text = self._section_to_text(section)
             section_sentences = self.sentence_detector.split_into_sentences(section_text)
             section_size = len(section_text)
@@ -666,16 +718,16 @@ class TopicAwareChunker:
                         chunk = Chunk(
                             text=current_chunk_text.strip(),
                             start_index=current_chunk_start,
-                            end_index=current_chunk_start + len(current_chunk_text),
+                            end_index=current_chunk_start + len(current_chunk_text.strip()),
                             sentence_count=current_chunk_sentences,
                             word_count=len(current_chunk_text.split()),
                             has_header=current_header is not None
                         )
                         chunks.append(chunk)
                         
-                        # Start fresh for atomic section
+                        # Start fresh for atomic section - start from where previous chunk ended
+                        current_chunk_start = chunk.end_index
                         current_chunk_text = ""
-                        current_chunk_start += len(current_chunk_text)
                         current_chunk_sentences = 0
                         current_header = None
                     
@@ -689,7 +741,8 @@ class TopicAwareChunker:
                         has_header=False
                     )
                     chunks.append(atomic_chunk)
-                    current_chunk_start += section_size
+                    # Next chunk starts where this atomic chunk ends
+                    current_chunk_start = atomic_chunk.end_index
                     continue
                     
                 # Check if adding atomic section would exceed limit
@@ -699,16 +752,21 @@ class TopicAwareChunker:
                         chunk = Chunk(
                             text=current_chunk_text.strip(),
                             start_index=current_chunk_start,
-                            end_index=current_chunk_start + len(current_chunk_text),
+                            end_index=current_chunk_start + len(current_chunk_text.strip()),
                             sentence_count=current_chunk_sentences,
                             word_count=len(current_chunk_text.split()),
                             has_header=current_header is not None
                         )
                         chunks.append(chunk)
+                        # Next chunk starts where previous chunk ended
+                        current_chunk_start = chunk.end_index
+                    else:
+                        # If no previous chunk, keep current start
+                        pass
                     
                     # Start new chunk with atomic section
                     current_chunk_text = section_text
-                    current_chunk_start += len(current_chunk_text) if current_chunk_text else section_size
+                    # Start from where previous chunk ended (or keep current start if no previous chunk)
                     current_chunk_sentences = len(section_sentences)
                     current_header = None
                 else:
@@ -720,40 +778,109 @@ class TopicAwareChunker:
                     current_chunk_sentences += len(section_sentences)
                 continue
             
-            # Regular processing for non-atomic sections
-            if (len(current_chunk_text) + section_size > self.config.max_size and
-                current_chunk_text):
-                
-                # Create chunk with current content
-                if current_chunk_text.strip():
-                    chunk = Chunk(
-                        text=current_chunk_text.strip(),
-                        start_index=current_chunk_start,
-                        end_index=current_chunk_start + len(current_chunk_text),
-                        sentence_count=current_chunk_sentences,
-                        word_count=len(current_chunk_text.split()),
-                        has_header=current_header is not None
-                    )
-                    chunks.append(chunk)
-                
-                # Start new chunk
-                current_chunk_text = ""
-                current_chunk_start += len(current_chunk_text) if current_chunk_text else 0
-                current_chunk_sentences = 0
-                current_header = None
-            
             # Handle headers specially - they MUST stay with their content
+            # CRITICAL: Never split a header from its content - they must be in the same chunk
             if section.type == 'header_section':
+                # CRITICAL: Verify section has content and get full text
+                section_text_full = self._section_to_text(section)
+                section_size_full = len(section_text_full)
+                
+                # Verify content exists
+                if not section.content or len(section.content) == 0:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"⚠️ Header section '{section.title}' has no content! This may cause issues.")
+                
+                # If header section itself is very large, it must stay together (like atomic)
+                if section_size_full > self.config.max_size:
+                    # Finish current chunk first
+                    if current_chunk_text.strip():
+                        chunk = Chunk(
+                            text=current_chunk_text.strip(),
+                            start_index=current_chunk_start,
+                            end_index=current_chunk_start + len(current_chunk_text.strip()),
+                            sentence_count=current_chunk_sentences,
+                            word_count=len(current_chunk_text.split()),
+                            has_header=current_header is not None
+                        )
+                        chunks.append(chunk)
+                        current_chunk_start = chunk.end_index
+                    
+                    # Create chunk for large header section (header + content together)
+                    header_chunk = Chunk(
+                        text=section_text_full,  # Use full text with title + content
+                        start_index=current_chunk_start,
+                        end_index=current_chunk_start + section_size_full,
+                        sentence_count=len(section_sentences),
+                        word_count=len(section_text_full.split()),
+                        has_header=True
+                    )
+                    chunks.append(header_chunk)
+                    current_chunk_start = header_chunk.end_index
+                    current_chunk_text = ""
+                    current_chunk_sentences = 0
+                    current_header = None
+                    continue
+                
+                # Check if adding this header section would exceed limit
+                # If so, finish current chunk first, then start new chunk with header+content together
+                if (len(current_chunk_text) + section_size_full > self.config.max_size and
+                    current_chunk_text):
+                    
+                    # Finish current chunk before adding header section
+                    if current_chunk_text.strip():
+                        chunk = Chunk(
+                            text=current_chunk_text.strip(),
+                            start_index=current_chunk_start,
+                            end_index=current_chunk_start + len(current_chunk_text.strip()),
+                            sentence_count=current_chunk_sentences,
+                            word_count=len(current_chunk_text.split()),
+                            has_header=current_header is not None
+                        )
+                        chunks.append(chunk)
+                        current_chunk_start = chunk.end_index
+                    
+                    # Start fresh chunk for header section (header + content together, never split)
+                    current_chunk_text = ""
+                    current_chunk_sentences = 0
+                    current_header = None
+                
+                # CRITICAL: Add header section (title + ALL content together, never split)
+                # Use section_text_full to ensure we get title + all content
                 current_header = section.title
-                # Always include header in chunk
                 if current_chunk_text:
-                    current_chunk_text += "\n\n" + section_text
+                    current_chunk_text += "\n\n" + section_text_full  # Use full text
                 else:
-                    current_chunk_text = section_text
+                    current_chunk_text = section_text_full  # Use full text
                 current_chunk_sentences += len(section_sentences)
                 
             else:
-                # Regular content
+                # Regular processing for non-header sections
+                if (len(current_chunk_text) + section_size > self.config.max_size and
+                    current_chunk_text):
+                    
+                    # Create chunk with current content
+                    if current_chunk_text.strip():
+                        chunk = Chunk(
+                            text=current_chunk_text.strip(),
+                            start_index=current_chunk_start,
+                            end_index=current_chunk_start + len(current_chunk_text.strip()),
+                            sentence_count=current_chunk_sentences,
+                            word_count=len(current_chunk_text.split()),
+                            has_header=current_header is not None
+                        )
+                        chunks.append(chunk)
+                        # CRITICAL: Next chunk starts exactly where this chunk ends
+                        # Chunks should be adjacent (end_index == next start_index), not overlapping
+                        current_chunk_start = chunk.end_index
+                    
+                    # CRITICAL: Start new chunk - DO NOT include any content from previous chunk
+                    # This ensures chunks don't overlap in content or position
+                    current_chunk_text = ""
+                    current_chunk_sentences = 0
+                    current_header = None
+                
+                # Add regular content
                 if current_chunk_text:
                     current_chunk_text += "\n\n" + section_text
                 else:
@@ -765,7 +892,7 @@ class TopicAwareChunker:
             chunk = Chunk(
                 text=current_chunk_text.strip(),
                 start_index=current_chunk_start,
-                end_index=current_chunk_start + len(current_chunk_text),
+                end_index=current_chunk_start + len(current_chunk_text.strip()),
                 sentence_count=current_chunk_sentences,
                 word_count=len(current_chunk_text.split()),
                 has_header=current_header is not None
@@ -784,14 +911,134 @@ class TopicAwareChunker:
         else:
             return "\n".join(section.content)
     
-    def _ensure_seamless_transitions(self, chunks: List[Chunk]) -> List[Chunk]:
+    def _header_section_to_parts(self, section: DocumentSection) -> tuple[str, str]:
         """
-        Smart overlap calculation that prevents line repetition and maintains semantic units.
-        Core principle: Overlap based on complete semantic units, not character counts.
+        Split header section into title and content parts.
+        Returns: (title_text, content_text)
+        """
+        title_text = section.title
+        if section.content:
+            content_text = "\n".join(section.content)
+        else:
+            content_text = ""
+        return title_text, content_text
+    
+    def _remove_duplicate_content(self, chunks: List[Chunk]) -> List[Chunk]:
+        """
+        Remove duplicate content from chunk starts.
+        If a chunk's start contains content that exists in the previous chunk's end,
+        remove that duplicate part from the current chunk.
+        
+        CRITICAL: Be very careful not to remove too much - only remove exact duplicates.
+        Never remove content that might be part of a header or important structure.
+        
+        This prevents chunks from having overlapping text content.
+        Performance impact: Minimal - only string comparisons.
         """
         if len(chunks) <= 1:
             return chunks
+        
+        cleaned_chunks = [chunks[0]]  # First chunk has no previous chunk
+        
+        for i in range(1, len(chunks)):
+            current_chunk = chunks[i]
+            prev_chunk = chunks[i-1]
             
+            # Get last part of previous chunk (last 150 chars for comparison - reduced from 200)
+            prev_end = prev_chunk.text[-150:].strip() if len(prev_chunk.text) > 150 else prev_chunk.text.strip()
+            current_start = current_chunk.text[:200].strip() if len(current_chunk.text) > 200 else current_chunk.text.strip()
+            
+            if not prev_end or not current_start:
+                cleaned_chunks.append(current_chunk)
+                continue
+            
+            # CRITICAL: Check if current chunk starts with a header (markdown or bold)
+            # If so, don't remove anything - headers should never be removed
+            starts_with_header = (
+                current_chunk.text.strip().startswith('#') or
+                current_chunk.text.strip().startswith('**') or
+                current_chunk.text.strip().startswith('*')
+            )
+            
+            if starts_with_header:
+                # Don't touch chunks that start with headers
+                cleaned_chunks.append(current_chunk)
+                continue
+            
+            # Check for duplicate content at the start of current chunk
+            # We'll check progressively smaller portions to find the duplicate
+            duplicate_found = False
+            max_check_length = min(100, len(prev_end), len(current_start))  # Reduced from 150
+            
+            for check_len in range(max_check_length, 15, -5):  # Check from 100 chars down to 15 chars, step 5
+                prev_snippet = prev_end[-check_len:].strip()
+                current_snippet = current_start[:check_len].strip()
+                
+                if not prev_snippet or not current_snippet or len(prev_snippet) < 15 or len(current_snippet) < 15:
+                    continue
+                
+                # Normalize for comparison (lowercase, remove extra whitespace)
+                prev_normalized = " ".join(prev_snippet.lower().split())
+                current_normalized = " ".join(current_snippet.lower().split())
+                
+                # CRITICAL: Only remove if it's an EXACT match (not partial)
+                # This prevents removing too much content
+                if prev_normalized == current_normalized:
+                    # Found exact duplicate! Remove it from current chunk
+                    duplicate_found = True
+                    
+                    # Find the actual duplicate text in current chunk (more precise)
+                    # Try to find the exact match position
+                    duplicate_text = ""
+                    for j in range(min(check_len, len(current_chunk.text))):
+                        test_text = current_chunk.text[:j+1]
+                        test_normalized = " ".join(test_text.lower().split())
+                        if test_normalized == prev_normalized:
+                            duplicate_text = current_chunk.text[:j+1]
+                            break
+                    
+                    if not duplicate_text:
+                        # Fallback: use check_len
+                        duplicate_text = current_chunk.text[:check_len]
+                    
+                    # Remove duplicate from start of current chunk
+                    cleaned_text = current_chunk.text[len(duplicate_text):].lstrip()
+                    
+                    # CRITICAL: Only remove if there's still meaningful content left
+                    # And make sure we're not removing too much (max 100 chars)
+                    if cleaned_text and len(duplicate_text) <= 100:
+                        cleaned_chunk = Chunk(
+                            text=cleaned_text,
+                            start_index=current_chunk.start_index + len(duplicate_text),
+                            end_index=current_chunk.end_index,
+                            sentence_count=current_chunk.sentence_count,  # Approximate
+                            word_count=len(cleaned_text.split()),
+                            has_header=current_chunk.has_header
+                        )
+                        cleaned_chunks.append(cleaned_chunk)
+                    else:
+                        # If we would remove too much or nothing left, keep original
+                        cleaned_chunks.append(current_chunk)
+                    break
+            
+            # If no duplicate found, keep original chunk
+            if not duplicate_found:
+                cleaned_chunks.append(current_chunk)
+        
+        return cleaned_chunks
+    
+    def _ensure_seamless_transitions(self, chunks: List[Chunk]) -> List[Chunk]:
+        """
+        Smart overlap calculation that preserves context without causing duplication.
+        
+        Core principle: Overlap adds context from previous chunk to current chunk,
+        but ONLY if that content is NOT already in the current chunk.
+        
+        IMPORTANT: Overlap is beneficial for RAG systems to preserve context at chunk boundaries.
+        """
+        if len(chunks) <= 1:
+            return chunks
+        
         # Apply smart overlap if configured
         if self.config.overlap_ratio > 0:
             return self._create_smart_overlap(chunks)
@@ -800,88 +1047,180 @@ class TopicAwareChunker:
     
     def _create_smart_overlap(self, chunks: List[Chunk]) -> List[Chunk]:
         """
-        Create smart overlap that completely avoids line repetition.
-        FIXES: Critical overlap issues - ensures NO duplicate content between chunks.
+        Create smart overlap that preserves context WITHOUT duplication.
+        
+        CRITICAL FIX: 
+        1. Take last 1-2 sentences from previous chunk
+        2. Check if these sentences already exist in current chunk's START
+        3. If NOT, add them to current chunk's START
+        4. This preserves context while preventing duplication
+        
+        IMPORTANT: Overlap is added ONLY to text content, NOT to position indices.
+        Position indices (start_index, end_index) remain unchanged to prevent chunks
+        from overlapping in the original document.
+        
+        Example:
+        - Chunk 1: "A. B. C." (start_index=0, end_index=10)
+        - Chunk 2: "D. E. F." (start_index=11, end_index=20)
+        - With overlap: Chunk 2 text becomes "C. D. E. F." but indices stay (11, 20)
+        - But if Chunk 2 already starts with "C.", no overlap is added
         """
         overlapped_chunks = []
         
         for i, chunk in enumerate(chunks):
             if i == 0:
+                # First chunk has no previous chunk
                 overlapped_chunks.append(chunk)
             else:
                 prev_chunk = chunks[i-1]
                 
-                # Split text by lines to check for exact line duplicates
-                prev_lines = [line.strip() for line in prev_chunk.text.split('\n') if line.strip()]
-                current_lines = [line.strip() for line in chunk.text.split('\n') if line.strip()]
+                # CRITICAL: Check if chunks are actually adjacent in the document
+                # If prev_chunk.end_index >= chunk.start_index, they overlap in position!
+                if prev_chunk.end_index >= chunk.start_index:
+                    # Chunks already overlap in position - DO NOT add text overlap
+                    overlapped_chunks.append(chunk)
+                    continue
                 
-                # Find lines that already exist in current chunk
-                duplicate_lines = set()
-                for current_line in current_lines[:3]:  # Check first 3 lines of current chunk
-                    for prev_line in prev_lines[-5:]:  # Check last 5 lines of previous chunk
-                        if (current_line and prev_line and
-                            (current_line == prev_line or
-                             current_line in prev_line or
-                             prev_line in current_line)):
-                            duplicate_lines.add(prev_line)
-                
-                # Get sentences for semantic overlap (avoiding duplicates)
+                # Get sentences from both chunks
                 prev_sentences = self.sentence_detector.split_into_sentences(prev_chunk.text)
+                current_sentences = self.sentence_detector.split_into_sentences(chunk.text)
                 
-                # Create overlap only if no duplicates exist
-                if not duplicate_lines and prev_sentences and self.config.overlap_ratio > 0:
-                    # Calculate conservative overlap
-                    max_overlap_sentences = max(1, int(len(prev_sentences) * self.config.overlap_ratio * 0.5))  # Reduced overlap
+                if not prev_sentences or not current_sentences:
+                    overlapped_chunks.append(chunk)
+                    continue
+                
+                # Calculate how many sentences to use for overlap (1-2 sentences max)
+                max_overlap = max(1, min(2, int(len(prev_sentences) * self.config.overlap_ratio * 2)))
+                candidate_overlap_sentences = prev_sentences[-max_overlap:]
+                
+                # CRITICAL: Check if overlap sentences already exist in current chunk's START
+                # We check the first 5 sentences of current chunk (more thorough check)
+                overlap_already_exists = False
+                
+                # Also check the raw text start for exact matches (first 300 chars)
+                current_text_start = chunk.text[:300].lower().strip()
+                
+                for overlap_sent in candidate_overlap_sentences:
+                    overlap_sent_clean = overlap_sent.strip()
+                    if not overlap_sent_clean or len(overlap_sent_clean) < 10:
+                        continue
                     
-                    # Get candidate overlap sentences
-                    candidate_overlap = prev_sentences[-max_overlap_sentences:]
+                    overlap_sent_lower = overlap_sent_clean.lower()
                     
-                    # Filter out sentences that would create duplicates
-                    valid_overlap = []
-                    for sent in candidate_overlap:
-                        sent_clean = sent.strip()
-                        if sent_clean:
-                            # Check if any part of this sentence exists in current chunk
-                            has_duplicate = False
-                            for current_line in current_lines[:2]:  # Only check first 2 lines
-                                if len(sent_clean) > 20 and len(current_line) > 20:
-                                    # For longer sentences, check for substantial overlap
-                                    if (sent_clean.lower() == current_line.lower() or
-                                        (len(sent_clean) > 30 and sent_clean.lower() in current_line.lower()) or
-                                        (len(current_line) > 30 and current_line.lower() in sent_clean.lower())):
-                                        has_duplicate = True
-                                        break
-                                else:
-                                    # For shorter sentences, exact match only
-                                    if sent_clean.lower() == current_line.lower():
-                                        has_duplicate = True
-                                        break
-                            
-                            if not has_duplicate:
-                                valid_overlap.append(sent_clean)
+                    # Check 1: Check if overlap sentence appears in current chunk's text start
+                    if overlap_sent_lower in current_text_start:
+                        overlap_already_exists = True
+                        break
                     
-                    # Create overlap chunk only if we have valid, non-duplicate content
-                    if valid_overlap:
-                        overlap_text = " ".join(valid_overlap)
-                        overlapped_text = overlap_text + "\n\n" + chunk.text
+                    # Check 2: Check if overlap sentence matches any sentence in current chunk's start
+                    for current_sent in current_sentences[:5]:  # Check first 5 sentences
+                        current_sent_clean = current_sent.strip()
+                        if not current_sent_clean:
+                            continue
                         
-                        overlapped_chunk = Chunk(
-                            text=overlapped_text,
-                            start_index=chunk.start_index,
-                            end_index=chunk.end_index,
-                            sentence_count=chunk.sentence_count + len(valid_overlap),
-                            word_count=len(overlapped_text.split()),
-                            has_header=chunk.has_header
-                        )
-                        overlapped_chunks.append(overlapped_chunk)
-                    else:
-                        # No valid overlap possible, use original chunk
-                        overlapped_chunks.append(chunk)
+                        current_sent_lower = current_sent_clean.lower()
+                        
+                        # Exact match
+                        if overlap_sent_lower == current_sent_lower:
+                            overlap_already_exists = True
+                            break
+                        
+                        # Substantial overlap (>30 chars and >80% similarity)
+                        if (len(overlap_sent_clean) > 30 and len(current_sent_clean) > 30):
+                            # Check if one contains the other (substantial overlap)
+                            if (overlap_sent_lower in current_sent_lower or 
+                                current_sent_lower in overlap_sent_lower):
+                                # Calculate similarity
+                                shorter = min(len(overlap_sent_lower), len(current_sent_lower))
+                                longer = max(len(overlap_sent_lower), len(current_sent_lower))
+                                if shorter / longer > 0.8:  # 80% similarity
+                                    overlap_already_exists = True
+                                    break
+                    
+                    if overlap_already_exists:
+                        break
+                
+                # Add overlap only if it doesn't already exist AND chunks don't overlap in position
+                if not overlap_already_exists and candidate_overlap_sentences:
+                    # Join overlap sentences
+                    overlap_text = " ".join(candidate_overlap_sentences).strip()
+                    
+                    # Add overlap to current chunk's START
+                    overlapped_text = overlap_text + "\n\n" + chunk.text
+                    
+                    # CRITICAL: Keep original start_index and end_index UNCHANGED
+                    # Overlap is only in text content for context, NOT in document position
+                    # This ensures chunks remain non-overlapping in the original document
+                    overlapped_chunk = Chunk(
+                        text=overlapped_text,
+                        start_index=chunk.start_index,  # Position unchanged - prevents position overlap
+                        end_index=chunk.end_index,      # Position unchanged - prevents position overlap
+                        sentence_count=chunk.sentence_count + len(candidate_overlap_sentences),
+                        word_count=len(overlapped_text.split()),
+                        has_header=chunk.has_header
+                    )
+                    overlapped_chunks.append(overlapped_chunk)
                 else:
-                    # Duplicates detected or no overlap configured, use original chunk
+                    # No overlap added (already exists or no valid overlap)
                     overlapped_chunks.append(chunk)
         
         return overlapped_chunks
+    
+    def _validate_chunk_positions(self, chunks: List[Chunk]) -> List[Chunk]:
+        """
+        Validate that chunks don't overlap in position (start_index, end_index).
+        If overlap is detected, fix it by adjusting positions.
+        
+        CRITICAL: This ensures chunks are truly non-overlapping in the document.
+        Chunks should be adjacent (chunk[i].end_index == chunk[i+1].start_index), not overlapping.
+        """
+        if len(chunks) <= 1:
+            return chunks
+        
+        validated_chunks = []
+        last_end_index = 0
+        
+        for i, chunk in enumerate(chunks):
+            # Check if this chunk overlaps with previous chunk in position
+            if chunk.start_index < last_end_index:
+                # Overlap detected! Fix by adjusting start_index to be adjacent (not overlapping)
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"⚠️ Chunk {i} position overlap detected: "
+                    f"start_index={chunk.start_index} < last_end_index={last_end_index}. "
+                    f"Adjusting start_index to {last_end_index} (adjacent, not overlapping)"
+                )
+                
+                # Adjust start_index to be adjacent to previous chunk (not overlapping)
+                # Calculate new end_index based on text length
+                fixed_chunk = Chunk(
+                    text=chunk.text,
+                    start_index=last_end_index,  # Start where previous chunk ended (adjacent)
+                    end_index=last_end_index + len(chunk.text),  # Adjust end_index accordingly
+                    sentence_count=chunk.sentence_count,
+                    word_count=chunk.word_count,
+                    has_header=chunk.has_header
+                )
+                validated_chunks.append(fixed_chunk)
+                last_end_index = fixed_chunk.end_index
+            elif chunk.start_index > last_end_index:
+                # Gap detected - chunks should be adjacent
+                # This is less critical but we can log it
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.debug(
+                    f"ℹ️ Chunk {i} has gap: start_index={chunk.start_index} > last_end_index={last_end_index}. "
+                    f"Gap size: {chunk.start_index - last_end_index}"
+                )
+                validated_chunks.append(chunk)
+                last_end_index = chunk.end_index
+            else:
+                # Perfectly adjacent - chunk is valid
+                validated_chunks.append(chunk)
+                last_end_index = chunk.end_index
+        
+        return validated_chunks
 
 
 class LightweightChunkValidator:

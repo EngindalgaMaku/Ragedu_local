@@ -510,43 +510,35 @@ async def process_and_store(request: ProcessRequest):
         # Generate chunk IDs
         chunk_ids = [str(uuid.uuid4()) for _ in chunks]
         
-        # ENHANCED COLLECTION NAMING WITH TIMESTAMP TO PREVENT COLLISIONS
+        # CRITICAL FIX: Use SAME collection for all files in a session (no timestamp per file!)
         collection_name = request.collection_name or "documents"
         logger.info(f"🔍 DIAGNOSTIC: Initial collection_name: '{collection_name}'")
         
-        # If collection name starts with "session_", use enhanced naming with timestamp
+        # If collection name starts with "session_", convert to UUID format WITHOUT timestamp
+        # This ensures all files in the same session go to the SAME collection
         if collection_name.startswith("session_"):
             session_id = collection_name[8:]  # Remove "session_" prefix
             logger.info(f"🔍 DIAGNOSTIC: Extracted session_id: '{session_id}' (length: {len(session_id)})")
             
-            # Generate timestamp for collision prevention
-            timestamp = int(time.time())  # Unix timestamp
-            logger.info(f"🔍 ENHANCED NAMING: Using timestamp {timestamp} to prevent collection collisions")
-            
             # Convert 32-char hex string to proper UUID format (8-4-4-4-12)
+            # NO TIMESTAMP - all files in same session use same collection
             if len(session_id) == 32 and session_id.replace('-', '').isalnum():
                 original_collection_name = collection_name
                 base_uuid = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
-                # Use timestamp-based naming: uuid_timestamp
-                collection_name = f"{base_uuid}_{timestamp}"
-                logger.info(f"🔍 ENHANCED NAMING: Transformed '{original_collection_name}' -> '{collection_name}'")
-                logger.info(f"✅ Using timestamped UUID collection name: {collection_name}")
+                collection_name = base_uuid  # NO TIMESTAMP - use same collection for all files
+                logger.info(f"🔍 FIXED NAMING: Transformed '{original_collection_name}' -> '{collection_name}' (NO TIMESTAMP)")
+                logger.info(f"✅ Using UUID collection name (same for all files in session): {collection_name}")
             elif len(session_id) == 36:  # Already formatted UUID
-                # Use timestamp-based naming: uuid_timestamp
-                collection_name = f"{session_id}_{timestamp}"
-                logger.info(f"🔍 ENHANCED NAMING: Session ID already in UUID format, adding timestamp: '{collection_name}'")
-                logger.info(f"✅ Using timestamped UUID collection name: {collection_name}")
+                collection_name = session_id  # NO TIMESTAMP - use same collection for all files
+                logger.info(f"🔍 FIXED NAMING: Session ID already in UUID format, using as-is (NO TIMESTAMP): '{collection_name}'")
+                logger.info(f"✅ Using UUID collection name (same for all files in session): {collection_name}")
             else:
                 logger.warning(f"🔍 DIAGNOSTIC: Unusual session_id format: '{session_id}' (length: {len(session_id)}, isalnum: {session_id.replace('-', '').isalnum()})")
-                # Still add timestamp for collision prevention
-                collection_name = f"{session_id}_{timestamp}"
-                logger.info(f"✅ Using timestamped unusual format collection name: {collection_name}")
+                collection_name = session_id  # Use as-is, no timestamp
+                logger.info(f"✅ Using session_id as collection name (NO TIMESTAMP): {collection_name}")
         else:
-            # For non-session collections, also add timestamp to prevent collisions
-            if collection_name != "documents":  # Don't timestamp the default collection
-                timestamp = int(time.time())
-                collection_name = f"{collection_name}_{timestamp}"
-                logger.info(f"🔍 ENHANCED NAMING: Added timestamp to non-session collection: '{collection_name}'")
+            # For non-session collections, keep as-is (no timestamp)
+            logger.info(f"🔍 Using collection name as-is (non-session): '{collection_name}'")
         
         # Store chunks and embeddings in ChromaDB
         if not CHROMA_SERVICE_URL:
@@ -591,6 +583,9 @@ async def process_and_store(request: ProcessRequest):
                 chunk_metadata["chunk_index"] = i + 1
                 chunk_metadata["total_chunks"] = len(chunks)
                 chunk_metadata["chunk_length"] = len(chunk)
+                
+                # CRITICAL: Store embedding model in metadata to detect dimension mismatches
+                chunk_metadata["embedding_model"] = embedding_model
                 
                 # IMPORTANT: Add session_id to metadata for extra security/validation
                 # This ensures even if collection names are somehow mixed, we can filter by session_id
@@ -638,6 +633,40 @@ async def process_and_store(request: ProcessRequest):
                 metadata={"created_by": "document_processing_service", "hnsw:space": "cosine"}
             )
             logger.info(f"✅ Collection '{collection_name}' ready with cosine distance")
+            
+            # CRITICAL: Check if collection already has embeddings with different model/dimension
+            try:
+                existing_samples = collection.get(limit=1, include=["metadatas", "embeddings"])
+                if existing_samples and existing_samples.get('metadatas') and len(existing_samples['metadatas']) > 0:
+                    existing_model = existing_samples['metadatas'][0].get('embedding_model')
+                    if existing_model and existing_model != embedding_model:
+                        # Check embedding dimensions
+                        existing_embeddings = existing_samples.get('embeddings', [])
+                        if existing_embeddings and len(existing_embeddings) > 0:
+                            existing_dim = len(existing_embeddings[0])
+                            new_dim = len(embeddings[0]) if embeddings and len(embeddings) > 0 else 0
+                            if existing_dim != new_dim:
+                                error_msg = (
+                                    f"❌ EMBEDDING DIMENSION MISMATCH: "
+                                    f"Collection '{collection_name}' already contains embeddings from model '{existing_model}' "
+                                    f"with dimension {existing_dim}, but you're trying to add embeddings from model '{embedding_model}' "
+                                    f"with dimension {new_dim}. "
+                                    f"ChromaDB requires all embeddings in a collection to have the same dimension. "
+                                    f"Please use the same embedding model for all documents in this session, or create a new session."
+                                )
+                                logger.error(error_msg)
+                                raise HTTPException(status_code=400, detail=error_msg)
+                            else:
+                                logger.warning(
+                                    f"⚠️ Different embedding model detected but same dimension: "
+                                    f"existing='{existing_model}' vs new='{embedding_model}' (both {existing_dim}D). "
+                                    f"This may cause retrieval quality issues. Consider using the same model."
+                                )
+            except HTTPException:
+                raise
+            except Exception as e:
+                # If check fails, log warning but continue (might be empty collection)
+                logger.warning(f"⚠️ Could not verify embedding model compatibility: {e}")
             
             # Add documents to collection
             logger.info(f"🔧 Adding {len(chunks)} documents to collection")
@@ -999,7 +1028,26 @@ async def rag_query(request: RAGQueryRequest):
                     })
                 
                 # CRAG Evaluation with detailed scoring
-                crag_evaluator = CRAGEvaluator(model_inference_url=MODEL_INFERENCER_URL)
+                # Get reranker_type from session rag_settings if available
+                reranker_type = None
+                try:
+                    # Try to get session rag_settings from API Gateway
+                    session_response = requests.get(
+                        f"{os.getenv('API_GATEWAY_URL', 'http://api-gateway:8001')}/sessions/{request.session_id}",
+                        timeout=5
+                    )
+                    if session_response.status_code == 200:
+                        session_data = session_response.json()
+                        rag_settings = session_data.get('rag_settings', {})
+                        if rag_settings.get('use_reranker_service') and rag_settings.get('reranker_type'):
+                            reranker_type = rag_settings.get('reranker_type')
+                            logger.info(f"Using reranker_type from session rag_settings: {reranker_type}")
+                except Exception as e:
+                    logger.warning(f"Could not fetch session rag_settings for reranker_type: {e}")
+                
+                # Import new CRAGEvaluator from services
+                from services.crag_evaluator import CRAGEvaluator as NewCRAGEvaluator
+                crag_evaluator = NewCRAGEvaluator(model_inference_url=MODEL_INFERENCER_URL, reranker_type=reranker_type)
                 crag_evaluation_result = crag_evaluator.evaluate_retrieved_docs(
                     query=request.query,
                     retrieved_docs=context_docs
@@ -1546,64 +1594,349 @@ async def get_session_chunks(session_id: str):
             }
     
     # If we reach here, we have a valid collection
-    # Get all documents from the collection
-    results = collection.get()
+    # CRITICAL FIX: Since all files in a session use the SAME collection (no timestamp),
+    # we only need to get chunks from this single collection
+    # However, we should also check for any timestamped versions that might exist from old code
+    all_collections_for_session = []
     
-    # Format chunks for frontend
-    chunks = []
-    documents = results.get('documents', [])
-    metadatas = results.get('metadatas', [])
-    ids = results.get('ids', [])
+    # First, add the found collection
+    all_collections_for_session.append(collection)
     
-    for i, document in enumerate(documents):
-        metadata = metadatas[i] if i < len(metadatas) else {}
-        chunk_id = ids[i] if i < len(ids) else f"chunk_{i}"
+    # Then, find all timestamped versions of this collection (for backward compatibility)
+    # This ensures we get chunks from ALL files, even if some were processed with old code
+    try:
+        all_collections = client.list_collections()
+        all_collection_names = [c.name for c in all_collections]
         
-        # Robust metadata parsing - check multiple possible keys for source information
-        source_files = ["Unknown"]
-        source_value = None
+        # Build base pattern to search for
+        base_patterns = [collection_name]
+        if len(session_id) == 32:
+            uuid_format = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
+            base_patterns.append(uuid_format)
+            base_patterns.append(f"session_{session_id}")
         
-        # Check multiple possible keys that could contain source file information
-        for key in ["source_files", "source_file", "filename", "document_name", "file_name"]:
-            if metadata.get(key):
-                source_value = metadata.get(key)
-                logger.debug(f"🔍 METADATA FIX: Found source info in key '{key}': {source_value}")
-                break
-        
-        if source_value:
-            try:
-                # Try to parse as JSON string first (for source_files array)
-                parsed_value = json.loads(source_value)
-                if isinstance(parsed_value, list):
-                    source_files = [str(item) for item in parsed_value if item]
-                else:
-                    source_files = [str(parsed_value)]
-                logger.debug(f"🔍 METADATA FIX: Parsed JSON source_files: {source_files}")
-            except (json.JSONDecodeError, TypeError):
-                # If it's not JSON, treat as string
-                source_files = [str(source_value)]
-                logger.debug(f"🔍 METADATA FIX: Using string source_files: {source_files}")
-        else:
-            logger.warning(f"🔍 METADATA FIX: No source file information found in metadata keys: {list(metadata.keys())}")
-        
-        document_name = source_files[0] if source_files and source_files[0] != "Unknown" else "Unknown"
-        logger.debug(f"🔍 METADATA FIX: Final document_name: '{document_name}'")
-        
-        chunks.append({
-            "document_name": document_name,
-            "chunk_index": i + 1,
-            "chunk_text": document,
-            "chunk_metadata": metadata,
-            "chunk_id": chunk_id
-        })
+        # Find all collections that match this session (including timestamped versions from old code)
+        for pattern in base_patterns:
+            for coll_name in all_collection_names:
+                if coll_name == pattern:
+                    # Exact match - already added
+                    continue
+                elif coll_name.startswith(pattern + "_"):
+                    # Timestamped version (from old code)
+                    suffix = coll_name[len(pattern)+1:]
+                    if suffix.isdigit():
+                        try:
+                            alt_collection = client.get_collection(name=coll_name)
+                            if alt_collection not in all_collections_for_session:
+                                all_collections_for_session.append(alt_collection)
+                                logger.info(f"✅ Found additional timestamped collection (old code): {coll_name}")
+                        except Exception as e:
+                            logger.warning(f"Could not load collection {coll_name}: {e}")
+    except Exception as e:
+        logger.warning(f"Could not list all collections: {e}")
     
-    logger.info(f"Retrieved {len(chunks)} chunks for session {session_id}")
+    # Get all documents from ALL collections
+    # CRITICAL: Group chunks by document_name to ensure we get chunks from ALL files
+    all_chunks = []
+    chunks_by_document = {}  # Track chunks per document for logging
+    
+    for coll in all_collections_for_session:
+        results = coll.get()
+        documents = results.get('documents', [])
+        metadatas = results.get('metadatas', [])
+        ids = results.get('ids', [])
+        
+        for i, document in enumerate(documents):
+            metadata = metadatas[i] if i < len(metadatas) else {}
+            chunk_id = ids[i] if i < len(ids) else f"chunk_{i}"
+            
+            # Robust metadata parsing - check multiple possible keys for source information
+            source_files = ["Unknown"]
+            source_value = None
+            
+            # Check multiple possible keys that could contain source file information
+            for key in ["source_files", "source_file", "filename", "document_name", "file_name"]:
+                if metadata.get(key):
+                    source_value = metadata.get(key)
+                    logger.debug(f"🔍 METADATA FIX: Found source info in key '{key}': {source_value}")
+                    break
+            
+            if source_value:
+                try:
+                    # Try to parse as JSON string first (for source_files array)
+                    parsed_value = json.loads(source_value)
+                    if isinstance(parsed_value, list):
+                        source_files = [str(item) for item in parsed_value if item]
+                    else:
+                        source_files = [str(parsed_value)]
+                    logger.debug(f"🔍 METADATA FIX: Parsed JSON source_files: {source_files}")
+                except (json.JSONDecodeError, TypeError):
+                    # If it's not JSON, treat as string
+                    source_files = [str(source_value)]
+                    logger.debug(f"🔍 METADATA FIX: Using string source_files: {source_files}")
+            else:
+                logger.warning(f"🔍 METADATA FIX: No source file information found in metadata keys: {list(metadata.keys())}")
+            
+            document_name = source_files[0] if source_files and source_files[0] != "Unknown" else "Unknown"
+            logger.debug(f"🔍 METADATA FIX: Final document_name: '{document_name}'")
+            
+            # Track chunks per document for logging
+            if document_name not in chunks_by_document:
+                chunks_by_document[document_name] = 0
+            chunks_by_document[document_name] += 1
+            
+            # CRITICAL FIX: Use chunk_index from metadata if available, otherwise use global index
+            chunk_index_from_metadata = metadata.get("chunk_index")
+            if chunk_index_from_metadata is not None:
+                # Use metadata chunk_index (preserves original file-based indexing)
+                chunk_index = int(chunk_index_from_metadata)
+            else:
+                # Fallback: use global index (all_chunks length + 1)
+                chunk_index = len(all_chunks) + 1
+            
+            all_chunks.append({
+                "document_name": document_name,
+                "chunk_index": chunk_index,  # Use metadata chunk_index or global index
+                "chunk_text": document,
+                "chunk_metadata": metadata,
+                "chunk_id": chunk_id
+            })
+    
+    # Sort chunks by document_name and chunk_index for consistent display
+    all_chunks.sort(key=lambda x: (x["document_name"], x["chunk_index"]))
+    
+    # Re-number chunks globally (1, 2, 3, ...) for display
+    for i, chunk in enumerate(all_chunks):
+        chunk["display_index"] = i + 1  # Global display index
+        # Keep original chunk_index in metadata for reference
+    
+    # Log summary of chunks per document
+    logger.info(f"📊 Chunks per document: {chunks_by_document}")
+    logger.info(f"✅ Retrieved {len(all_chunks)} chunks from {len(all_collections_for_session)} collection(s) for session {session_id}")
+    logger.info(f"📁 Found chunks from {len(chunks_by_document)} unique document(s)")
     
     return {
-        "chunks": chunks,
-        "total_count": len(chunks),
+        "chunks": all_chunks,
+        "total_count": len(all_chunks),
         "session_id": session_id
     }
+
+@app.get("/sessions/{session_id}/chunks-with-embeddings")
+async def get_session_chunks_with_embeddings(session_id: str):
+    """
+    Get chunks WITH EMBEDDINGS for a specific session from ChromaDB.
+    Used for backup/restore operations.
+    """
+    logger.info(f"Getting chunks with embeddings for session: {session_id}")
+    
+    # Convert session_id to collection name format
+    if len(session_id) == 32 and session_id.replace('-', '').isalnum():
+        collection_name = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
+    elif len(session_id) == 36:
+        collection_name = session_id
+    else:
+        collection_name = f"session_{session_id}"
+    
+    try:
+        collection = client.get_collection(name=collection_name)
+    except Exception as collection_error:
+        logger.warning(f"Collection '{collection_name}' not found, trying alternatives...")
+        # Try alternative collection names
+        all_collections = client.list_collections()
+        all_collection_names = [c.name for c in all_collections]
+        
+        alternative_names = []
+        base_patterns = [collection_name, session_id, f"session_{session_id}"]
+        
+        for pattern in base_patterns:
+            if pattern in all_collection_names:
+                alternative_names.append(pattern)
+            for coll_name in all_collection_names:
+                if coll_name.startswith(pattern + "_") and coll_name not in alternative_names:
+                    suffix = coll_name[len(pattern)+1:]
+                    if suffix.isdigit():
+                        alternative_names.append(coll_name)
+        
+        collection = None
+        for alt_name in alternative_names:
+            try:
+                collection = client.get_collection(name=alt_name)
+                collection_name = alt_name
+                break
+            except:
+                continue
+        
+        if collection is None:
+            logger.error(f"Collection not found for session {session_id}")
+            return {
+                "chunks": [],
+                "total_count": 0,
+                "session_id": session_id
+            }
+    
+    # Get chunks WITH embeddings
+    try:
+        results = collection.get(include=['embeddings', 'documents', 'metadatas'])
+        documents = results.get('documents', [])
+        metadatas = results.get('metadatas', [])
+        ids = results.get('ids', [])
+        embeddings = results.get('embeddings', [])
+        
+        chunks_with_embeddings = []
+        for i, document in enumerate(documents):
+            metadata = metadatas[i] if i < len(metadatas) else {}
+            chunk_id = ids[i] if i < len(ids) else f"chunk_{i}"
+            embedding = embeddings[i] if i < len(embeddings) else None
+            
+            # Extract document name
+            document_name = metadata.get("document_name") or metadata.get("source_file") or metadata.get("filename") or "Unknown"
+            
+            chunks_with_embeddings.append({
+                "chunk_id": chunk_id,
+                "chunk_text": document,
+                "chunk_metadata": metadata,
+                "document_name": document_name,
+                "chunk_index": metadata.get("chunk_index", i + 1),
+                "embedding": embedding  # Include embedding for restore
+            })
+        
+        logger.info(f"✅ Retrieved {len(chunks_with_embeddings)} chunks with embeddings for session {session_id}")
+        
+        return {
+            "chunks": chunks_with_embeddings,
+            "total_count": len(chunks_with_embeddings),
+            "session_id": session_id
+        }
+    except Exception as e:
+        logger.error(f"Error getting chunks with embeddings: {e}", exc_info=True)
+        return {
+            "chunks": [],
+            "total_count": 0,
+            "session_id": session_id,
+            "error": str(e)
+        }
+
+@app.post("/sessions/{session_id}/restore-chunks")
+async def restore_session_chunks(session_id: str, request: dict = Body(...)):
+    """
+    Restore chunks WITH EMBEDDINGS to ChromaDB for a session.
+    Used for backup/restore operations.
+    
+    Request body:
+    {
+        "chunks": [
+            {
+                "chunk_id": "...",
+                "chunk_text": "...",
+                "chunk_metadata": {...},
+                "document_name": "...",
+                "chunk_index": 1,
+                "embedding": [0.1, 0.2, ...]  # Optional, will regenerate if missing
+            }
+        ],
+        "original_session_id": "..."
+    }
+    """
+    logger.info(f"Restoring chunks for session: {session_id}")
+    
+    chunks = request.get("chunks", [])
+    original_session_id = request.get("original_session_id", session_id)
+    
+    if not chunks:
+        return {
+            "success": False,
+            "error": "No chunks provided",
+            "chunks_restored": 0
+        }
+    
+    # Convert session_id to collection name format
+    if len(session_id) == 32 and session_id.replace('-', '').isalnum():
+        collection_name = f"{session_id[:8]}-{session_id[8:12]}-{session_id[12:16]}-{session_id[16:20]}-{session_id[20:]}"
+    elif len(session_id) == 36:
+        collection_name = session_id
+    else:
+        collection_name = f"session_{session_id}"
+    
+    try:
+        # Get or create collection
+        try:
+            collection = client.get_collection(name=collection_name)
+            # Clear existing chunks if restoring to same session
+            if session_id == original_session_id:
+                logger.info(f"Clearing existing chunks in collection {collection_name}")
+                existing = collection.get()
+                if existing.get("ids"):
+                    collection.delete(ids=existing["ids"])
+        except:
+            # Collection doesn't exist, create it
+            logger.info(f"Creating new collection: {collection_name}")
+            collection = client.create_collection(
+                name=collection_name,
+                metadata={"session_id": session_id, "restored_from": original_session_id}
+            )
+        
+        # Prepare chunks for insertion
+        documents = []
+        metadatas = []
+        ids = []
+        embeddings = []
+        has_embeddings = False
+        
+        for chunk in chunks:
+            chunk_id = chunk.get("chunk_id") or chunk.get("id")
+            chunk_text = chunk.get("chunk_text") or chunk.get("text") or ""
+            chunk_metadata = chunk.get("chunk_metadata") or chunk.get("metadata") or {}
+            embedding = chunk.get("embedding")
+            
+            # Ensure metadata has required fields
+            chunk_metadata["session_id"] = session_id
+            chunk_metadata["document_name"] = chunk.get("document_name") or chunk_metadata.get("document_name") or "Unknown"
+            chunk_metadata["chunk_index"] = chunk.get("chunk_index") or chunk_metadata.get("chunk_index") or len(documents) + 1
+            
+            documents.append(chunk_text)
+            metadatas.append(chunk_metadata)
+            ids.append(chunk_id)
+            
+            if embedding and isinstance(embedding, list) and len(embedding) > 0:
+                embeddings.append(embedding)
+                has_embeddings = True
+            else:
+                embeddings.append(None)  # Will be generated by ChromaDB
+        
+        # Add chunks to collection
+        if has_embeddings and all(e is not None for e in embeddings):
+            # Add with embeddings
+            collection.add(
+                documents=documents,
+                metadatas=metadatas,
+                ids=ids,
+                embeddings=embeddings
+            )
+            logger.info(f"✅ Added {len(chunks)} chunks with embeddings to collection {collection_name}")
+        else:
+            # Add without embeddings (ChromaDB will generate them)
+            collection.add(
+                documents=documents,
+                metadatas=metadatas,
+                ids=ids
+            )
+            logger.info(f"✅ Added {len(chunks)} chunks (embeddings will be generated) to collection {collection_name}")
+        
+        return {
+            "success": True,
+            "chunks_restored": len(chunks),
+            "session_id": session_id,
+            "collection_name": collection_name,
+            "has_embeddings": has_embeddings
+        }
+        
+    except Exception as e:
+        logger.error(f"Error restoring chunks: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+            "chunks_restored": 0
+        }
 
 @app.post("/sessions/{session_id}/reprocess")
 async def reprocess_session_documents(
@@ -1815,13 +2148,91 @@ async def reprocess_session_documents(
             try:
                 logger.info(f"Re-processing {len(chunks)} chunks from file: {source_file}")
                 
-                # ✅ CRITICAL FIX: Do NOT re-chunk! Just keep existing chunks and re-embed them
-                # This preserves LLM improvements and metadata
-                logger.info(f"✅ REPROCESS: Keeping existing {len(chunks)} chunks (preserving LLM improvements and metadata)")
-                logger.info(f"✅ REPROCESS: Only re-embedding with new model: {embedding_model}")
+                # Check if we should re-chunk or just re-embed
+                re_chunk = request.get("re_chunk", False)  # New parameter to force re-chunking
                 
-                # Extract chunk texts (preserving order and content)
-                new_chunks = [chunk["text"] for chunk in chunks]
+                if re_chunk:
+                    # Re-chunk the file content
+                    logger.info(f"🔄 REPROCESS: Re-chunking file {source_file} with new chunking parameters")
+                    
+                    # CRITICAL: Get original file content from session data directory
+                    # Try to read the original file from data/markdown directory
+                    import os
+                    from pathlib import Path
+                    
+                    # Try multiple possible locations for the original file
+                    possible_paths = [
+                        Path(f"data/markdown/{source_file}"),
+                        Path(f"data/markdown/{session_id}/{source_file}"),
+                        Path(f"../data/markdown/{source_file}"),
+                        Path(f"../data/markdown/{session_id}/{source_file}"),
+                    ]
+                    
+                    original_text = None
+                    for path in possible_paths:
+                        if path.exists():
+                            try:
+                                with open(path, 'r', encoding='utf-8') as f:
+                                    original_text = f.read()
+                                logger.info(f"✅ Found original file at {path}")
+                                break
+                            except Exception as e:
+                                logger.warning(f"Could not read {path}: {e}")
+                                continue
+                    
+                    # Fallback: Reconstruct from chunks (not ideal but better than nothing)
+                    if not original_text:
+                        logger.warning(f"⚠️ Original file not found, reconstructing from chunks (may have issues)")
+                        # Remove overlap by deduplicating
+                        chunk_texts = [chunk["text"] for chunk in chunks]
+                        # Try to remove obvious duplicates at boundaries
+                        deduplicated = []
+                        for i, text in enumerate(chunk_texts):
+                            if i == 0:
+                                deduplicated.append(text)
+                            else:
+                                # Check if start of current chunk is in previous chunk
+                                prev_text = deduplicated[-1]
+                                # Find where current chunk actually starts (not in previous)
+                                # Simple heuristic: if first 100 chars of current are in previous, skip them
+                                first_100 = text[:100]
+                                if first_100 in prev_text:
+                                    # Find the position after the duplicate
+                                    pos = prev_text.find(first_100)
+                                    if pos != -1:
+                                        # Start from after the duplicate part
+                                        overlap_len = len(first_100)
+                                        new_start = overlap_len
+                                        # But be smarter - find sentence boundary
+                                        sentences = text.split('.')
+                                        if len(sentences) > 1:
+                                            # Skip first sentence if it's duplicate
+                                            if sentences[0].strip() in prev_text:
+                                                new_text = '.'.join(sentences[1:]).strip()
+                                                if new_text:
+                                                    deduplicated.append(new_text)
+                                                    continue
+                                deduplicated.append(text)
+                        original_text = "\n\n".join(deduplicated)
+                    
+                    # Re-chunk with new parameters
+                    from services.chunking_service import chunk_text_with_strategy
+                    new_chunks = chunk_text_with_strategy(
+                        text=original_text,
+                        chunk_size=chunk_size,
+                        chunk_overlap=chunk_overlap,
+                        strategy="lightweight",
+                        use_llm_post_processing=False
+                    )
+                    logger.info(f"✅ REPROCESS: Re-chunked into {len(new_chunks)} new chunks")
+                else:
+                    # ✅ CRITICAL FIX: Do NOT re-chunk! Just keep existing chunks and re-embed them
+                    # This preserves LLM improvements and metadata
+                    logger.info(f"✅ REPROCESS: Keeping existing {len(chunks)} chunks (preserving LLM improvements and metadata)")
+                    logger.info(f"✅ REPROCESS: Only re-embedding with new model: {embedding_model}")
+                    
+                    # Extract chunk texts (preserving order and content)
+                    new_chunks = [chunk["text"] for chunk in chunks]
                 
                 if not new_chunks:
                     logger.warning(f"No chunks found for {source_file}")

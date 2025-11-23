@@ -15,9 +15,10 @@ export function setGlobalApiUrl(url: string) {
 // Get API URL from context or use default
 export function getApiUrl(): string {
   if (typeof window !== "undefined") {
-    // Client-side: try to get from global state
-    return (window as any).__BACKEND_API_URL__ || DEFAULT_API_URL;
+    // Client-side: always use /api (Next.js rewrites will proxy to api-gateway)
+    return "/api";
   }
+  // Server-side: use default (for SSR)
   return DEFAULT_API_URL;
 }
 
@@ -44,6 +45,7 @@ export type SessionMeta = {
   backup_count: number;
   rag_settings?: {
     model?: string;
+    provider?: string;
     chain_type?: "stuff" | "refine" | "map_reduce";
     top_k?: number;
     use_rerank?: boolean;
@@ -51,9 +53,12 @@ export type SessionMeta = {
     max_context_chars?: number;
     use_direct_llm?: boolean;
     embedding_model?: string;
+    embedding_provider?: string;
     chunk_strategy?: string;
     chunk_size?: number;
     chunk_overlap?: number;
+    use_reranker_service?: boolean;
+    reranker_type?: string;
   } | null;
 };
 
@@ -192,6 +197,87 @@ export async function ragQuery(data: {
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+// KB-Enhanced Hybrid RAG query (APRAG service)
+export async function hybridRAGQuery(data: {
+  session_id: string;
+  query: string;
+  top_k?: number;
+  use_kb?: boolean;
+  use_qa_pairs?: boolean;
+  use_crag?: boolean;
+  model?: string;
+  max_tokens?: number;
+  temperature?: number;
+  max_context_chars?: number;
+  include_examples?: boolean;
+  include_sources?: boolean;
+}): Promise<{
+  answer: string;
+  sources: RAGSource[];
+  processing_time_ms?: number;
+  direct_qa_match?: boolean;
+  matched_topics?: any[];
+  classification_confidence?: number;
+}> {
+  const res = await fetch(`${getApiUrl()}/api/aprag/hybrid-rag/query`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  const json = await res.json();
+
+  const mappedSources: RAGSource[] = Array.isArray(json?.sources)
+    ? json.sources.map((s: any) => {
+        const rawType = s.type || s.source || s.source_type || "unknown";
+        const isQa =
+          rawType === "qa_pair" ||
+          rawType === "direct_qa" ||
+          rawType === "question_answer";
+
+        const baseContent = s.content || "";
+        let content = baseContent;
+
+        // Eğer QA kaynağıysa ve content boşsa, soru/cevap'tan içerik üret
+        if (!content && isQa && (s.question || s.answer)) {
+          const q = s.question || "";
+          const a = s.answer || "";
+          content = `Soru: ${q}\n\nCevap: ${a}`;
+        }
+
+        return {
+          content,
+          score: typeof s.score === "number" ? s.score : 0,
+          metadata: {
+            ...(s.metadata || {}),
+            source_type: rawType,
+            // QA kaynakları için soru/cevap bilgisini de metadata'da sakla
+            ...(isQa && (s.question || s.answer)
+              ? {
+                  qa_question: s.question,
+                  qa_answer: s.answer,
+                  qa_similarity: s.similarity,
+                }
+              : {}),
+          },
+        };
+      })
+    : [];
+
+  return {
+    answer: json.answer,
+    sources: mappedSources,
+    processing_time_ms: json.processing_time_ms,
+    direct_qa_match: json.direct_qa_match,
+    matched_topics: json.matched_topics || [],
+    classification_confidence: json.classification_confidence ?? 0,
+  };
 }
 
 export async function generateSuggestions(data: {
@@ -367,10 +453,13 @@ export async function configureAndProcess(data: {
   formData.append("chunk_size", data.chunk_size.toString());
   formData.append("chunk_overlap", data.chunk_overlap.toString());
   formData.append("embedding_model", data.embedding_model);
-  
+
   // LLM post-processing parameters
   if (data.use_llm_post_processing !== undefined) {
-    formData.append("use_llm_post_processing", data.use_llm_post_processing.toString());
+    formData.append(
+      "use_llm_post_processing",
+      data.use_llm_post_processing.toString()
+    );
   }
   if (data.llm_model_name) {
     formData.append("llm_model_name", data.llm_model_name);
@@ -424,33 +513,193 @@ export async function listAvailableModels(): Promise<{
   models: ModelInfo[];
   providers: Record<string, ModelProvider>;
 }> {
-  const res = await fetch(`${getApiUrl()}/models`, {
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error("Failed to fetch available models");
-  const data = await res.json();
+  try {
+    const res = await fetch(`${getApiUrl()}/models/available`, {
+      cache: "no-store",
+    });
 
-  // Handle both old format (fallback) and new format
-  if (
-    data.models &&
-    Array.isArray(data.models) &&
-    typeof data.models[0] === "string"
-  ) {
-    // Old format - convert to new format
-    return {
-      models: data.models.map((model: string) => ({
+    if (!res.ok) {
+      console.warn(`Failed to fetch models: ${res.status} ${res.statusText}`);
+      // Return fallback models instead of throwing
+      return {
+        models: [
+          {
+            id: "llama-3.1-8b-instant",
+            name: "llama-3.1-8b-instant",
+            provider: "groq",
+            type: "cloud",
+            description: "Groq (Hızlı)",
+          },
+          {
+            id: "llama-3.3-70b-versatile",
+            name: "llama-3.3-70b-versatile",
+            provider: "groq",
+            type: "cloud",
+            description: "Groq (Hızlı)",
+          },
+        ],
+        providers: {
+          groq: {
+            name: "Groq",
+            description: "Hızlı Cloud Modelleri",
+            models: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+          },
+        },
+      };
+    }
+
+    const data = await res.json();
+
+    // Transform provider-based format to flat model list
+    const models: ModelInfo[] = [];
+    const providers: Record<string, ModelProvider> = {};
+
+    // Process each provider
+    if (data.groq && Array.isArray(data.groq)) {
+      const groqModels = data.groq.map((model: string) => ({
         id: model,
         name: model,
-        provider: "unknown",
+        provider: "groq",
         type: "cloud",
-        description: "Model",
-      })),
-      providers: {},
+        description: "Groq (Hızlı)",
+      }));
+      models.push(...groqModels);
+      providers.groq = {
+        name: "Groq",
+        description: "Hızlı Cloud Modelleri",
+        models: data.groq,
+      };
+    }
+
+    if (data.alibaba && Array.isArray(data.alibaba)) {
+      const alibabaModels = data.alibaba.map((model: string) => ({
+        id: model,
+        name: model,
+        provider: "alibaba",
+        type: "cloud",
+        description: "Alibaba DashScope (Qwen)",
+      }));
+      models.push(...alibabaModels);
+      providers.alibaba = {
+        name: "Alibaba",
+        description: "Alibaba DashScope (Qwen Modelleri)",
+        models: data.alibaba,
+      };
+    }
+
+    if (data.deepseek && Array.isArray(data.deepseek)) {
+      const deepseekModels = data.deepseek.map((model: string) => ({
+        id: model,
+        name: model,
+        provider: "deepseek",
+        type: "cloud",
+        description: "DeepSeek (Premium)",
+      }));
+      models.push(...deepseekModels);
+      providers.deepseek = {
+        name: "DeepSeek",
+        description: "DeepSeek Premium Modelleri",
+        models: data.deepseek,
+      };
+    }
+
+    if (data.openrouter && Array.isArray(data.openrouter)) {
+      const openrouterModels = data.openrouter.map((model: string) => ({
+        id: model,
+        name: model,
+        provider: "openrouter",
+        type: "cloud",
+        description: "OpenRouter (Güçlü)",
+      }));
+      models.push(...openrouterModels);
+      providers.openrouter = {
+        name: "OpenRouter",
+        description: "OpenRouter Güçlü Modelleri",
+        models: data.openrouter,
+      };
+    }
+
+    if (data.huggingface && Array.isArray(data.huggingface)) {
+      const hfModels = data.huggingface.map((model: string) => ({
+        id: model,
+        name: model,
+        provider: "huggingface",
+        type: "cloud",
+        description: "HuggingFace (Ücretsiz)",
+      }));
+      models.push(...hfModels);
+      providers.huggingface = {
+        name: "HuggingFace",
+        description: "HuggingFace Ücretsiz Modelleri",
+        models: data.huggingface,
+      };
+    }
+
+    if (data.ollama && Array.isArray(data.ollama)) {
+      const ollamaModels = data.ollama.map((model: string) => ({
+        id: model,
+        name: model,
+        provider: "ollama",
+        type: "local",
+        description: "Ollama (Yerel)",
+      }));
+      models.push(...ollamaModels);
+      providers.ollama = {
+        name: "Ollama",
+        description: "Ollama Yerel Modelleri",
+        models: data.ollama,
+      };
+    }
+
+    // Handle old format if data is already in the expected format
+    if (data.models && Array.isArray(data.models) && data.models.length > 0) {
+      if (typeof data.models[0] === "string") {
+        // Old format - convert to new format
+        return {
+          models: data.models.map((model: string) => ({
+            id: model,
+            name: model,
+            provider: "unknown",
+            type: "cloud",
+            description: "Model",
+          })),
+          providers: data.providers || {},
+        };
+      }
+      // Already in new format
+      return data;
+    }
+
+    return { models, providers };
+  } catch (error: any) {
+    console.error("Error fetching available models:", error);
+    // Return fallback models on network errors
+    return {
+      models: [
+        {
+          id: "llama-3.1-8b-instant",
+          name: "llama-3.1-8b-instant",
+          provider: "groq",
+          type: "cloud",
+          description: "Groq (Hızlı)",
+        },
+        {
+          id: "llama-3.3-70b-versatile",
+          name: "llama-3.3-70b-versatile",
+          provider: "groq",
+          type: "cloud",
+          description: "Groq (Hızlı)",
+        },
+      ],
+      providers: {
+        groq: {
+          name: "Groq",
+          description: "Hızlı Cloud Modelleri",
+          models: ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+        },
+      },
     };
   }
-
-  // New format
-  return data;
 }
 
 // Changelog types and functions
@@ -663,6 +912,7 @@ export async function saveSessionRagSettings(
   sessionId: string,
   settings: {
     model?: string;
+    provider?: string;
     chain_type?: "stuff" | "refine" | "map_reduce";
     top_k?: number;
     use_rerank?: boolean;
@@ -670,6 +920,9 @@ export async function saveSessionRagSettings(
     max_context_chars?: number;
     use_direct_llm?: boolean;
     embedding_model?: string;
+    embedding_provider?: string;
+    use_reranker_service?: boolean;
+    reranker_type?: "bge" | "ms-marco";
   }
 ): Promise<{ success: boolean; session_id: string; rag_settings: any }> {
   const res = await fetch(`${getApiUrl()}/sessions/${sessionId}/rag-settings`, {
@@ -692,6 +945,7 @@ export type EmbeddingModel = {
 export async function listAvailableEmbeddingModels(): Promise<{
   ollama: string[];
   huggingface: EmbeddingModel[];
+  alibaba?: EmbeddingModel[];
 }> {
   const res = await fetch(`${getApiUrl()}/models/embedding`, {
     cache: "no-store",
@@ -699,6 +953,30 @@ export async function listAvailableEmbeddingModels(): Promise<{
   if (!res.ok) throw new Error("Failed to fetch available embedding models");
   return res.json();
 }
+
+export async function listAvailableRerankerModels(): Promise<{
+  local: Array<{
+    id: string;
+    name: string;
+    description: string;
+    provider: string;
+    supports_multilingual: boolean;
+  }>;
+  alibaba?: Array<{
+    id: string;
+    name: string;
+    description: string;
+    provider: string;
+    supports_multilingual: boolean;
+  }>;
+}> {
+  const res = await fetch(`${getApiUrl()}/models/reranker`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error("Failed to fetch available reranker models");
+  return res.json();
+}
+
 
 // Document Conversion Functions
 export async function convertPdfToMarkdown(
@@ -801,12 +1079,15 @@ export async function getStudentChatHistory(
   sessionId: string
 ): Promise<StudentChatMessage[]> {
   const token = tokenManager.getAccessToken();
-  const res = await fetch(`${getApiUrl()}/api/students/chat-history/${sessionId}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
+  const res = await fetch(
+    `${getApiUrl()}/api/students/chat-history/${sessionId}`,
+    {
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }
+  );
 
   if (!res.ok) {
     if (res.status === 404) {
@@ -842,13 +1123,16 @@ export async function clearStudentChatHistory(
   sessionId: string
 ): Promise<{ success: boolean; deleted: number }> {
   const token = tokenManager.getAccessToken();
-  const res = await fetch(`${getApiUrl()}/api/students/chat-history/${sessionId}`, {
-    method: "DELETE",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
+  const res = await fetch(
+    `${getApiUrl()}/api/students/chat-history/${sessionId}`,
+    {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }
+  );
 
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -892,6 +1176,22 @@ export interface APRAGInteraction {
     chunk_text?: string;
   }>;
   metadata?: Record<string, any>;
+  // Enhanced student information
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+  student_name?: string;
+  // Enhanced topic information
+  topic_title?: string;
+  topic_confidence?: number;
+  question_complexity?: string;
+  question_type?: string;
+  topic_info?: {
+    title: string;
+    confidence?: number;
+    question_complexity?: string;
+    question_type?: string;
+  } | null;
 }
 
 export interface APRAGInteractionsResponse {
@@ -1039,6 +1339,52 @@ export interface EmojiFeedbackCreate {
   comment?: string;
 }
 
+// ============================================================================
+// Multi-Dimensional Feedback
+// ============================================================================
+
+export interface MultiFeedbackCreate {
+  interaction_id: number;
+  user_id: string;
+  session_id: string;
+  understanding: number; // 1-5 scale
+  relevance: number; // 1-5 scale
+  clarity: number; // 1-5 scale
+  emoji?: "😊" | "👍" | "😐" | "❌";
+  comment?: string;
+}
+
+export interface MultiFeedbackResponse {
+  message: string;
+  interaction_id: number;
+  feedback_entry_id: number;
+  dimensions: {
+    understanding: number;
+    relevance: number;
+    clarity: number;
+  };
+  overall_score: number;
+  profile_updated: boolean;
+}
+
+export interface MultiDimensionalStats {
+  user_id: string;
+  session_id: string;
+  avg_understanding?: number;
+  avg_relevance?: number;
+  avg_clarity?: number;
+  avg_overall?: number;
+  total_feedback_count: number;
+  dimension_feedback_count: number;
+  emoji_only_count: number;
+  understanding_distribution: Record<string, number>;
+  relevance_distribution: Record<string, number>;
+  clarity_distribution: Record<string, number>;
+  improvement_trend: string;
+  weak_dimensions: string[];
+  strong_dimensions: string[];
+}
+
 export interface EmojiFeedbackResponse {
   message: string;
   emoji: string;
@@ -1127,6 +1473,68 @@ export async function getEmojiStats(
         avg_score: 0.5,
         most_common_emoji: null,
         recent_trend: "neutral",
+      };
+    }
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Submit multi-dimensional feedback
+export async function submitDetailedFeedback(
+  feedback: MultiFeedbackCreate
+): Promise<MultiFeedbackResponse> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(
+    `${getApiUrl()}/api/aprag/emoji-feedback/detailed-feedback`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(feedback),
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Get multi-dimensional feedback stats
+export async function getMultiDimensionalStats(
+  userId: string,
+  sessionId: string
+): Promise<MultiDimensionalStats> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(
+    `${getApiUrl()}/api/aprag/emoji-feedback/multi-stats/${userId}/${sessionId}`,
+    {
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }
+  );
+
+  if (!res.ok) {
+    if (res.status === 404) {
+      return {
+        user_id: userId,
+        session_id: sessionId,
+        total_feedback_count: 0,
+        dimension_feedback_count: 0,
+        emoji_only_count: 0,
+        understanding_distribution: {},
+        relevance_distribution: {},
+        clarity_distribution: {},
+        improvement_trend: "insufficient_data",
+        weak_dimensions: [],
+        strong_dimensions: [],
       };
     }
     throw new Error(await res.text());
@@ -1261,14 +1669,17 @@ export async function getAPRAGSettings(
 ): Promise<APRAGSettings> {
   const token = tokenManager.getAccessToken?.() || null;
   const params = sessionId ? `?session_id=${sessionId}` : "";
-  
+
   try {
-    const res = await fetch(`${getApiUrl()}/api/aprag/settings/status${params}`, {
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    });
+    const res = await fetch(
+      `${getApiUrl()}/api/aprag/settings/status${params}`,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
 
     if (!res.ok) {
       // If APRAG service is down or not configured, return disabled
@@ -1346,7 +1757,7 @@ export async function getRecommendations(
   if (sessionId) {
     params.append("session_id", sessionId);
   }
-  
+
   const res = await fetch(
     `${getApiUrl()}/api/aprag/recommendations/${userId}?${params.toString()}`,
     {
@@ -1470,7 +1881,7 @@ export async function getAnalytics(
   if (sessionId) {
     params.append("session_id", sessionId);
   }
-  
+
   const res = await fetch(
     `${getApiUrl()}/api/aprag/analytics/${userId}?${params.toString()}`,
     {
@@ -1527,7 +1938,7 @@ export async function getAnalyticsSummary(
   if (sessionId) {
     params.append("session_id", sessionId);
   }
-  
+
   const res = await fetch(
     `${getApiUrl()}/api/aprag/analytics/${userId}/summary?${params.toString()}`,
     {
@@ -1657,12 +2068,15 @@ export async function getSessionTopics(sessionId: string): Promise<{
   total: number;
 }> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/api/aprag/topics/session/${sessionId}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
+  const res = await fetch(
+    `${getApiUrl()}/api/aprag/topics/session/${sessionId}`,
+    {
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }
+  );
 
   if (!res.ok) {
     if (res.status === 404) {
@@ -1695,6 +2109,26 @@ export async function updateTopic(
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(updates),
+  });
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Delete a topic
+export async function deleteTopic(
+  topicId: number
+): Promise<{ success: boolean; message: string; topic_id: number }> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(`${getApiUrl()}/api/aprag/topics/${topicId}`, {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
   });
 
   if (!res.ok) {
@@ -1764,10 +2198,10 @@ export async function improveSingleChunk(
   chunkText: string,
   language: string = "tr",
   modelName: string = "llama-3.1-8b-instant",
-  sessionId?: string,          // For ChromaDB update
-  chunkId?: string,            // For ChromaDB update (if known)
-  documentName?: string,       // Alternative to chunkId
-  chunkIndex?: number          // Alternative to chunkId
+  sessionId?: string, // For ChromaDB update
+  chunkId?: string, // For ChromaDB update (if known)
+  documentName?: string, // Alternative to chunkId
+  chunkIndex?: number // Alternative to chunkId
 ): Promise<{
   success: boolean;
   original_text: string;
@@ -1816,18 +2250,194 @@ export async function improveAllChunks(
   processing_time_ms: number;
 }> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/sessions/${sessionId}/chunks/improve-all`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({
-      language,
-      model_name: modelName,
-      skip_already_improved: skipAlreadyImproved,
-    }),
-  });
+  const res = await fetch(
+    `${getApiUrl()}/sessions/${sessionId}/chunks/improve-all`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        language,
+        model_name: modelName,
+        skip_already_improved: skipAlreadyImproved,
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// ============================================================================
+// SESSION SETTINGS (Teacher Panel Controls)
+// ============================================================================
+
+export interface SessionSettings {
+  session_id: string;
+  user_id: string;
+  enable_progressive_assessment: boolean;
+  enable_personalized_responses: boolean;
+  enable_multi_dimensional_feedback: boolean;
+  enable_topic_analytics: boolean;
+  enable_cacs: boolean;
+  enable_zpd: boolean;
+  enable_bloom: boolean;
+  enable_cognitive_load: boolean;
+  enable_emoji_feedback: boolean;
+}
+
+export interface SessionSettingsUpdate {
+  enable_progressive_assessment?: boolean;
+  enable_personalized_responses?: boolean;
+  enable_multi_dimensional_feedback?: boolean;
+  enable_topic_analytics?: boolean;
+  enable_cacs?: boolean;
+  enable_zpd?: boolean;
+  enable_bloom?: boolean;
+  enable_cognitive_load?: boolean;
+  enable_emoji_feedback?: boolean;
+}
+
+export interface SessionSettingsResponse {
+  success: boolean;
+  message: string;
+  settings: SessionSettings;
+  updated_at: string;
+}
+
+export interface SessionSettingsPreset {
+  name: string;
+  description: string;
+  settings: Partial<SessionSettingsUpdate>;
+}
+
+export interface SessionSettingsPresetsResponse {
+  success: boolean;
+  presets: Record<string, SessionSettingsPreset>;
+}
+
+// Get session settings for a specific session
+export async function getSessionSettings(
+  sessionId: string
+): Promise<SessionSettingsResponse> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(
+    `${getApiUrl()}/api/aprag/session-settings/${sessionId}`,
+    {
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Update session settings
+export async function updateSessionSettings(
+  sessionId: string,
+  updates: SessionSettingsUpdate,
+  userId: string
+): Promise<SessionSettingsResponse> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(
+    `${getApiUrl()}/api/aprag/session-settings/${sessionId}?user_id=${encodeURIComponent(
+      userId
+    )}`,
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(updates),
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Reset session settings to defaults
+export async function resetSessionSettings(
+  sessionId: string,
+  userId: string
+): Promise<SessionSettingsResponse> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(
+    `${getApiUrl()}/api/aprag/session-settings/${sessionId}/reset?user_id=${encodeURIComponent(
+      userId
+    )}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Get available settings presets
+export async function getSessionSettingsPresets(
+  sessionId: string
+): Promise<SessionSettingsPresetsResponse> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(
+    `${getApiUrl()}/api/aprag/session-settings/${sessionId}/presets`,
+    {
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Apply a settings preset
+export async function applySessionSettingsPreset(
+  sessionId: string,
+  presetName: string,
+  userId: string
+): Promise<SessionSettingsResponse> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(
+    `${getApiUrl()}/api/aprag/session-settings/${sessionId}/apply-preset/${presetName}?user_id=${encodeURIComponent(
+      userId
+    )}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }
+  );
 
   if (!res.ok) {
     throw new Error(await res.text());

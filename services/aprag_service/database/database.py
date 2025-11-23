@@ -67,7 +67,7 @@ class DatabaseManager:
             with self.get_connection() as conn:
                 # Check if APRAG tables exist
                 cursor = conn.execute("""
-                    SELECT name FROM sqlite_master 
+                    SELECT name FROM sqlite_master
                     WHERE type='table' AND name='student_interactions'
                 """)
                 
@@ -75,6 +75,7 @@ class DatabaseManager:
                     logger.info("APRAG tables not found. Applying migrations...")
                     self.apply_aprag_migrations(conn)
                     self.apply_topic_migrations(conn)
+                    self.apply_session_settings_migration(conn)
                     conn.commit()  # Ensure commit after migration
                     logger.info("APRAG migrations applied successfully")
                 else:
@@ -84,6 +85,8 @@ class DatabaseManager:
                     self.apply_aprag_migrations(conn)
                     self.apply_topic_migrations(conn)
                     self.apply_foreign_key_fix_migration(conn)
+                    self.apply_session_settings_migration(conn)
+                    self.apply_analytics_views(conn)
                     conn.commit()
                     
         except Exception as e:
@@ -241,6 +244,81 @@ class DatabaseManager:
                 
         except Exception as e:
             logger.warning(f"Failed to apply Foreign Key Fix migration (non-critical): {e}")
+    
+    def apply_analytics_views(self, conn: sqlite3.Connection):
+        """Apply Topic Analytics Views"""
+        try:
+            logger.info("Applying Topic Analytics Views...")
+            
+            # Read analytics views SQL file
+            views_path = os.path.join(os.path.dirname(__file__), "topic_analytics_views.sql")
+            
+            if os.path.exists(views_path):
+                with open(views_path, 'r', encoding='utf-8') as f:
+                    views_sql = f.read()
+                
+                # Execute views creation
+                conn.executescript(views_sql)
+                conn.commit()
+                logger.info("Topic Analytics Views applied successfully")
+            else:
+                logger.warning(f"Topic Analytics Views file not found at: {views_path}")
+                
+        except Exception as e:
+            logger.warning(f"Failed to apply Topic Analytics Views (non-critical): {e}")
+    
+    def apply_session_settings_migration(self, conn: sqlite3.Connection):
+        """Apply Session Settings migration (006_create_session_settings.sql)"""
+        try:
+            # Check if session_settings table already exists
+            cursor = conn.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='session_settings'
+            """)
+            
+            if cursor.fetchone():
+                logger.info("Session settings table already exists")
+                return
+            
+            logger.info("Applying Session Settings migration...")
+            
+            # Read migration file
+            possible_paths = [
+                "/app/migrations/006_create_session_settings.sql",  # Docker volume mount path
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "../../auth_service/database/migrations/006_create_session_settings.sql"
+                ),
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "../../../services/auth_service/database/migrations/006_create_session_settings.sql"
+                ),
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "../../../../services/auth_service/database/migrations/006_create_session_settings.sql"
+                ),
+            ]
+            
+            migration_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    migration_path = path
+                    break
+            
+            if migration_path and os.path.exists(migration_path):
+                with open(migration_path, 'r', encoding='utf-8') as f:
+                    migration_sql = f.read()
+                
+                # Execute migration
+                conn.executescript(migration_sql)
+                conn.commit()
+                logger.info("Session Settings migration applied successfully")
+            else:
+                logger.warning(f"Session Settings migration file not found. Expected paths: {possible_paths}")
+                logger.info("Session Settings will be handled by auth_service migration system")
+                
+        except Exception as e:
+            logger.warning(f"Failed to apply Session Settings migration (non-critical): {e}")
     
     def _create_aprag_tables_manual(self, conn: sqlite3.Connection):
         """Manually create APRAG tables if migration file is not available"""

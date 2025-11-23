@@ -14,7 +14,7 @@
     --sidebar-width: 16rem;
     --sidebar-collapsed-width: 4rem;
     --header-height: 4rem;
-    
+
     /* HSL Color System */
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
@@ -55,6 +55,23 @@
   body {
     @apply bg-background text-foreground;
     font-feature-settings: "rlig" 1, "calt" 1;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    margin: 0;
+    padding: 0;
+  }
+
+  /* Sidebar gap fix - only target sidebar spacing */
+  .sidebar-no-gap {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    margin: 0;
+    padding: 0;
   }
 
   h1,
@@ -373,7 +390,7 @@
     border: 1px solid rgba(51, 65, 85, 0.7); /* slate-700 */
     backdrop-filter: saturate(120%) blur(6px);
     color: #e2e8f0; /* slate-200 */
-    box-shadow: 0 8px 30px rgba(0,0,0,.25);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
   }
 
   .gradient-primary {
@@ -402,6 +419,27 @@
 }
 
 ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+/* Custom Scrollbar Class for Components */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #f8fafc;
+  border-radius: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+  border: 2px solid #f8fafc;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
 

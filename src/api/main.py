@@ -102,10 +102,21 @@ if not DOCUMENT_PROCESSOR_URL:
         DOCUMENT_PROCESSOR_URL = f'http://{DOCUMENT_PROCESSOR_HOST}:{DOCUMENT_PROCESSOR_PORT}'
 # Import centralized configuration with fallback
 try:
+    import sys
+    from pathlib import Path
+    # Add project root to path for config import
+    project_root = Path(__file__).parent.parent.parent.parent
+    config_path = project_root / "config"
+    if str(config_path) not in sys.path:
+        sys.path.insert(0, str(config_path))
+    # Also try rag3_for_local/config
+    rag3_config_path = project_root / "rag3_for_local" / "config"
+    if str(rag3_config_path) not in sys.path:
+        sys.path.insert(0, str(rag3_config_path))
     from ports import AUTH_SERVICE_URL, API_GATEWAY_URL, get_service_url
     logger.info("Successfully imported additional ports configuration")
-except ImportError:
-    logger.warning("Could not import additional ports configuration, using fallbacks")
+except (ImportError, Exception) as e:
+    logger.warning(f"Could not import additional ports configuration ({e}), using fallbacks")
     # Use environment variables with sensible defaults
     AUTH_SERVICE_PORT = int(os.getenv('AUTH_SERVICE_PORT', '8006'))
     API_GATEWAY_PORT = int(os.getenv('API_GATEWAY_PORT', os.getenv('PORT', '8000')))
@@ -134,6 +145,17 @@ if not MODEL_INFERENCE_URL:
         MODEL_INFERENCE_URL = MODEL_INFERENCE_HOST
     else:
         MODEL_INFERENCE_URL = f'http://{MODEL_INFERENCE_HOST}:{MODEL_INFERENCE_PORT}'
+
+RERANKER_SERVICE_URL = os.getenv('RERANKER_SERVICE_URL', None)
+if not RERANKER_SERVICE_URL:
+    RERANKER_SERVICE_PORT = int(os.getenv('RERANKER_SERVICE_PORT', '8008'))
+    RERANKER_SERVICE_HOST = os.getenv('RERANKER_SERVICE_HOST', 'reranker-service')
+    if RERANKER_SERVICE_HOST.startswith('http://') or RERANKER_SERVICE_HOST.startswith('https://'):
+        RERANKER_SERVICE_URL = RERANKER_SERVICE_HOST
+    else:
+        RERANKER_SERVICE_URL = f'http://{RERANKER_SERVICE_HOST}:{RERANKER_SERVICE_PORT}'
+
+ALIBABA_API_KEY = os.getenv('ALIBABA_API_KEY', os.getenv('DASHSCOPE_API_KEY'))
 
 # Auth Service - Google Cloud Run compatible
 # If AUTH_SERVICE_URL is set (Cloud Run), use it directly
@@ -929,7 +951,7 @@ async def process_and_store_documents(
     session_id: str = Form(...),
     markdown_files: str = Form(...),  # JSON string of file list
     chunk_strategy: str = Form("lightweight"),
-    chunk_size: int = Form(1000),
+    chunk_size: int = Form(500),  # Reduced from 1000 to 500 for more chunks
     chunk_overlap: int = Form(100),
     embedding_model: str = Form("mixedbread-ai/mxbai-embed-large-v1"),
     use_llm_post_processing: bool = Form(False),  # NEW: Optional LLM post-processing for chunk refinement
@@ -1210,6 +1232,7 @@ def _require_owner_or_admin(request: Request, session_id: str) -> SessionMetadat
 
 class RAGSettings(BaseModel):
     model: Optional[str] = None
+    provider: Optional[str] = None  # AI Provider (groq, deepseek, etc.)
     chain_type: Optional[str] = None
     top_k: Optional[int] = None
     use_rerank: Optional[bool] = None
@@ -1217,6 +1240,9 @@ class RAGSettings(BaseModel):
     max_context_chars: Optional[int] = None
     use_direct_llm: Optional[bool] = None
     embedding_model: Optional[str] = None
+    embedding_provider: Optional[str] = None  # Embedding provider (ollama, huggingface)
+    use_reranker_service: Optional[bool] = None
+    reranker_type: Optional[str] = None
 
 @app.get("/sessions/{session_id}/rag-settings")
 def get_rag_settings(session_id: str, request: Request):
@@ -1236,14 +1262,41 @@ def update_rag_settings(session_id: str, req: RAGSettings, request: Request):
         _require_owner_or_admin(request, session_id)
         uid = current_user.get("id") if current_user else None
         
-        # Filter out None values from request to preserve existing settings
-        update_data = {k: v for k, v in req.model_dump(exclude_none=True).items() if v is not None}
+        # Get all fields from request (including None values for explicit clearing)
+        request_dict = req.model_dump(exclude_unset=True)  # exclude_unset: only include fields that were explicitly set
         
-        success = professional_session_manager.save_session_rag_settings(session_id, update_data, uid)
+        # Debug logging - use print for immediate visibility
+        import logging
+        logger = logging.getLogger(__name__)
+        print(f"[RAG SETTINGS UPDATE] Session: {session_id}, Request data: {request_dict}")
+        logger.info(f"[RAG SETTINGS UPDATE] Session: {session_id}, Request data: {request_dict}")
+        
+        # Merge with existing settings to preserve other fields
+        existing_settings = professional_session_manager.get_session_rag_settings(session_id) or {}
+        print(f"[RAG SETTINGS UPDATE] Existing settings: {existing_settings}")
+        logger.info(f"[RAG SETTINGS UPDATE] Existing settings: {existing_settings}")
+        
+        merged_settings = {**existing_settings, **request_dict}
+        
+        # If use_reranker_service is explicitly False, remove reranker_type
+        if 'use_reranker_service' in request_dict and request_dict['use_reranker_service'] is False:
+            merged_settings.pop('reranker_type', None)
+        
+        # Remove None values only for final save (but keep False, 0, empty strings)
+        final_settings = {k: v for k, v in merged_settings.items() if v is not None}
+        
+        print(f"[RAG SETTINGS UPDATE] Final settings to save: {final_settings}")
+        logger.info(f"[RAG SETTINGS UPDATE] Final settings to save: {final_settings}")
+        
+        success = professional_session_manager.save_session_rag_settings(session_id, final_settings, uid)
         if not success:
             raise HTTPException(status_code=404, detail="Session not found")
-        md = professional_session_manager.get_session_metadata(session_id)
-        return {"success": True, "session_id": session_id, "rag_settings": (md.rag_settings if md else req.model_dump(exclude_none=True))}
+        
+        # Return the saved settings from database
+        saved_settings = professional_session_manager.get_session_rag_settings(session_id) or {}
+        logger.info(f"[RAG SETTINGS UPDATE] Saved settings returned: {saved_settings}")
+        
+        return {"success": True, "session_id": session_id, "rag_settings": saved_settings}
     except HTTPException:
         raise
     except Exception as e:
@@ -2054,6 +2107,35 @@ async def import_session(file: UploadFile = File(...), auto_reindex: bool = True
         raise HTTPException(status_code=500, detail=f"Failed to import session: {str(e)}")
 
 # Model endpoints - Route to Model Inference Service
+# IMPORTANT: /models/available must be defined BEFORE /models to avoid route conflicts
+@app.get("/models/available")
+def get_models_available():
+    """Get available models directly from model inference service - raw format"""
+    try:
+        response = requests.get(f"{MODEL_INFERENCE_URL}/models/available", timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            # Fallback
+            return {
+                "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+                "ollama": [],
+                "huggingface": [],
+                "openrouter": [],
+                "deepseek": [],
+                "alibaba": []
+            }
+    except Exception as e:
+        logger.error(f"Error fetching models from inference service: {e}")
+        return {
+            "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+            "ollama": [],
+            "huggingface": [],
+            "openrouter": [],
+            "deepseek": [],
+            "alibaba": []
+        }
+
 @app.get("/models")
 def get_models():
     """Get available models with provider categorization - Route to Model Inference Service"""
@@ -2098,6 +2180,36 @@ def get_models():
                     "description": "HuggingFace (Ücretsiz)"
                 })
             
+            # Add OpenRouter models (free)
+            for model in model_data.get("openrouter", []):
+                all_models.append({
+                    "id": model,
+                    "name": model.split("/")[-1].split(":")[0] if "/" in model else model.split(":")[0],  # Clean up model names
+                    "provider": "openrouter",
+                    "type": "cloud",
+                    "description": "OpenRouter (Ücretsiz)"
+                })
+            
+            # Add DeepSeek models
+            for model in model_data.get("deepseek", []):
+                all_models.append({
+                    "id": model,
+                    "name": model.replace("deepseek-", "DeepSeek ").title(),  # Clean up model names
+                    "provider": "deepseek",
+                    "type": "cloud",
+                    "description": "DeepSeek (Premium)"
+                })
+            
+            # Add Alibaba models
+            for model in model_data.get("alibaba", []):
+                all_models.append({
+                    "id": model,
+                    "name": model,
+                    "provider": "alibaba",
+                    "type": "cloud",
+                    "description": "Alibaba DashScope (Qwen)"
+                })
+            
             return {
                 "models": all_models,
                 "providers": {
@@ -2118,6 +2230,24 @@ def get_models():
                         "description": "Yerel Modeller",
                         "icon": "🏠",
                         "models": model_data.get("ollama", [])
+                    },
+                    "openrouter": {
+                        "name": "OpenRouter",
+                        "description": "Ücretsiz Modeller",
+                        "icon": "🌐",
+                        "models": model_data.get("openrouter", [])
+                    },
+                    "deepseek": {
+                        "name": "DeepSeek",
+                        "description": "Premium Modeller",
+                        "icon": "🔮",
+                        "models": model_data.get("deepseek", [])
+                    },
+                    "alibaba": {
+                        "name": "Alibaba",
+                        "description": "Alibaba DashScope (Qwen)",
+                        "icon": "🛒",
+                        "models": model_data.get("alibaba", [])
                     }
                 }
             }
@@ -2575,6 +2705,41 @@ async def proxy_roles(request: Request):
     """Proxy for all /roles routes to the Auth Service."""
     return await _proxy_request(request, AUTH_SERVICE_URL)
 
+@app.api_route("/aprag/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_aprag_no_prefix(request: Request, path: str):
+    """Proxy for /aprag routes (when /api prefix is stripped by Next.js rewrites) to the APRAG Service."""
+    # APRAG service expects /api/aprag/... paths, so we add the /api prefix
+    target_path = f"/api/aprag/{path}"
+    logger.info(f"Proxying {request.method} request to APRAG service (no /api prefix): {APRAG_SERVICE_URL}{target_path}")
+    
+    # Create a modified request with the correct path
+    client = httpx.AsyncClient()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    content = await request.body()
+    
+    try:
+        rp = await client.request(
+            method=request.method,
+            url=f"{APRAG_SERVICE_URL}{target_path}",
+            headers=headers,
+            params=request.query_params,
+            content=content,
+            timeout=60.0,
+        )
+        return Response(
+            content=rp.content,
+            status_code=rp.status_code,
+            headers=dict(rp.headers),
+        )
+    except httpx.RequestError as e:
+        logger.error(f"Proxy request to {APRAG_SERVICE_URL}{target_path} failed: {e}")
+        raise HTTPException(
+            status_code=503, detail=f"Service unavailable: {e}"
+        )
+    finally:
+        await client.aclose()
+
 # Analytics: recent interactions for teachers
 @app.get("/analytics/recent-interactions")
 def recent_interactions(limit: int = 20, page: int = 1, session_id: Optional[str] = None, q: Optional[str] = None):
@@ -2679,100 +2844,139 @@ def delete_recent_interactions(session_id: Optional[str] = None, request: Reques
 # ===== MODEL ENDPOINTS =====
 
 @app.get("/api/models")
-async def get_available_models(request: Request):
+def get_available_models(request: Request):
     """
-    Get available LLM models from model inference service
+    Get available LLM models - uses the same logic as /models endpoint
+    This maintains backward compatibility for frontend
+    """
+    # Use the same function as /models endpoint which has provider categorization
+    return get_models()
+
+@app.get("/api/models/available")
+def get_available_models_direct(request: Request):
+    """
+    Get available models directly from model inference service - raw format
+    This is what frontend calls via Next.js proxy
     """
     try:
-        # Forward request to model inference service
-        response = requests.get(
-            f"{MODEL_INFERENCE_URL}/models",
-            timeout=10
-        )
-        
-        if response.status_code != 200:
-            logger.error(f"Model inference service error: {response.status_code} - {response.text}")
-            # Return default models as fallback
-            return {
-                "models": [
-                    {"id": "llama-3.1-8b-instant", "name": "llama-3.1-8b-instant", "provider": "groq"},
-                    {"id": "llama-3.3-70b-versatile", "name": "llama-3.3-70b-versatile", "provider": "groq"},
-                ]
-            }
-        
-        data = response.json()
-        # Ensure consistent format
-        if isinstance(data, list):
-            return {"models": [{"id": m, "name": m, "provider": "groq"} if isinstance(m, str) else m for m in data]}
-        elif "models" in data:
-            return data
+        response = requests.get(f"{MODEL_INFERENCE_URL}/models/available", timeout=10)
+        if response.status_code == 200:
+            return response.json()
         else:
-            return {"models": [data] if isinstance(data, dict) else []}
-            
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch models from inference service: {e}")
-        # Return default models as fallback
-        return {
-            "models": [
-                {"id": "llama-3.1-8b-instant", "name": "llama-3.1-8b-instant", "provider": "groq"},
-                {"id": "llama-3.3-70b-versatile", "name": "llama-3.3-70b-versatile", "provider": "groq"},
-            ]
-        }
+            # Fallback
+            return {
+                "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+                "ollama": [],
+                "huggingface": [],
+                "openrouter": [],
+                "deepseek": [],
+                "alibaba": []
+            }
     except Exception as e:
-        logger.error(f"Unexpected error in /api/models: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get models: {str(e)}")
+        logger.error(f"Error fetching models from inference service: {e}")
+        return {
+            "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+            "ollama": [],
+            "huggingface": [],
+            "openrouter": [],
+            "deepseek": [],
+            "alibaba": []
+        }
+
+@app.get("/models/embedding")
+def get_embedding_models():
+    """Get available embedding models from model inference service"""
+    try:
+        response = requests.get(f"{MODEL_INFERENCE_URL}/models/embedding", timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            # Fallback
+            return {
+                "ollama": [],
+                "huggingface": [],
+                "alibaba": []
+            }
+    except Exception as e:
+        logger.error(f"Error fetching embedding models: {e}")
+        return {
+            "ollama": [],
+            "huggingface": [],
+            "alibaba": []
+        }
 
 @app.get("/api/models/embedding")
-async def get_available_embedding_models(request: Request):
+def get_available_embedding_models(request: Request):
     """
-    Get available embedding models (Ollama and HuggingFace)
+    Get available embedding models - uses the same logic as /models/embedding endpoint
+    This maintains backward compatibility for frontend
     """
+    # Use the same function as /models/embedding endpoint
+    return get_embedding_models()
+
+@app.get("/models/reranker")
+def get_reranker_models():
+    """Get available reranker models"""
     try:
-        # Try to get Ollama models
-        ollama_models = []
-        try:
-            ollama_response = requests.get(
-                f"{MODEL_INFERENCE_URL}/models/embedding/ollama",
-                timeout=5
-            )
-            if ollama_response.status_code == 200:
-                ollama_data = ollama_response.json()
-                if isinstance(ollama_data, list):
-                    ollama_models = ollama_data
-                elif "models" in ollama_data:
-                    ollama_models = ollama_data["models"]
-        except Exception as e:
-            logger.warning(f"Could not fetch Ollama embedding models: {e}")
+        # Get info from reranker service
+        response = requests.get(f"{RERANKER_SERVICE_URL}/info", timeout=10)
+        reranker_info = response.json() if response.status_code == 200 else {}
         
-        # Try to get HuggingFace models
-        hf_models = []
-        try:
-            hf_response = requests.get(
-                f"{MODEL_INFERENCE_URL}/models/embedding/huggingface",
-                timeout=5
-            )
-            if hf_response.status_code == 200:
-                hf_data = hf_response.json()
-                if isinstance(hf_data, list):
-                    hf_models = [{"id": m.get("id", m.get("name", m)), "name": m.get("name", m.get("id", m)), "description": m.get("description", "")} if isinstance(m, dict) else {"id": m, "name": m} for m in hf_data]
-                elif "models" in hf_data:
-                    hf_models = hf_data["models"]
-        except Exception as e:
-            logger.warning(f"Could not fetch HuggingFace embedding models: {e}")
-        
-        # Return combined result
-        return {
-            "ollama": ollama_models if ollama_models else ["nomic-embed-text-latest"],
-            "huggingface": hf_models if hf_models else []
+        # Build available reranker models list
+        reranker_models = {
+            "local": [
+                {
+                    "id": "bge-reranker-v2-m3",
+                    "name": "BGE-Reranker-V2-M3 (Türkçe Optimize)",
+                    "description": "BAAI BGE Reranker - Çok dilli destek, Türkçe optimize",
+                    "provider": "local",
+                    "supports_multilingual": True
+                },
+                {
+                    "id": "ms-marco-minilm-l6",
+                    "name": "MS-MARCO MiniLM-L6",
+                    "description": "Microsoft MS-MARCO - Hızlı ve hafif",
+                    "provider": "local",
+                    "supports_multilingual": False
+                }
+            ],
+            "alibaba": []
         }
         
+        # Add Alibaba reranker if API key is available
+        if ALIBABA_API_KEY:
+            reranker_models["alibaba"] = [
+                {
+                    "id": "gte-rerank-v2",
+                    "name": "GTE-Rerank-V2 (Alibaba)",
+                    "description": "Alibaba DashScope - 50+ dil desteği, yüksek performans",
+                    "provider": "alibaba",
+                    "supports_multilingual": True
+                }
+            ]
+        
+        return reranker_models
     except Exception as e:
-        logger.error(f"Unexpected error in /api/models/embedding: {e}")
-        # Return default embedding models as fallback
+        logger.error(f"Error fetching reranker models: {e}")
         return {
-            "ollama": ["nomic-embed-text-latest"],
-            "huggingface": []
+            "local": [
+                {
+                    "id": "bge-reranker-v2-m3",
+                    "name": "BGE-Reranker-V2-M3 (Türkçe Optimize)",
+                    "description": "BAAI BGE Reranker - Çok dilli destek",
+                    "provider": "local",
+                    "supports_multilingual": True
+                }
+            ],
+            "alibaba": []
         }
+
+@app.get("/api/models/reranker")
+def get_available_reranker_models(request: Request):
+    """
+    Get available reranker models - API endpoint for frontend
+    """
+    return get_reranker_models()
 
 # Include RAG Tests Router
 from src.api.rag_tests_routes import router as rag_tests_router
@@ -3483,6 +3687,51 @@ async def clear_student_chat_history(session_id: str, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==================== Backup and Restore Routes ====================
+
+from src.api.backup_restore import router as backup_restore_router
+app.include_router(backup_restore_router)
+
+# ==================== Auth Service Proxy Routes ====================
+
+@app.api_route("/api/auth/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_auth_api(request: Request, path: str):
+    """Proxy for all /api/auth routes to the Auth Service."""
+    # Auth service expects /auth/... paths, so we need to strip /api prefix
+    # Create a modified request with /auth/... path
+    client = httpx.AsyncClient()
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    content = await request.body()
+    
+    # Build target URL - remove /api prefix
+    target_path = f"/auth/{path}"
+    target_url = f"{AUTH_SERVICE_URL}{target_path}"
+    
+    logger.info(f"Proxying {request.method} request to Auth service: {target_url}")
+    
+    try:
+        rp = await client.request(
+            method=request.method,
+            url=target_url,
+            headers=headers,
+            params=request.query_params,
+            content=content,
+            timeout=60.0,
+        )
+        return Response(
+            content=rp.content,
+            status_code=rp.status_code,
+            headers=dict(rp.headers),
+        )
+    except httpx.RequestError as e:
+        logger.error(f"Proxy request to {target_url} failed: {e}")
+        raise HTTPException(
+            status_code=503, detail=f"Service unavailable: {e}"
+        )
+    finally:
+        await client.aclose()
+
 # ==================== APRAG Service Proxy Routes ====================
 
 @app.api_route("/api/aprag/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
@@ -3509,6 +3758,59 @@ async def proxy_aprag_service(path: str, request: Request):
         target_url = f"{APRAG_SERVICE_URL}/api/aprag/{path}"
         
         logger.info(f"Proxying {request.method} request to APRAG service: {target_url}")
+        
+        # Forward request to APRAG service
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.request(
+                method=request.method,
+                url=target_url,
+                content=body,
+                headers=headers,
+                params=request.query_params
+            )
+        
+        # Return response from APRAG service
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            media_type=response.headers.get("content-type")
+        )
+        
+    except httpx.TimeoutException:
+        logger.error(f"APRAG service timeout for path: {path}")
+        raise HTTPException(status_code=504, detail="APRAG service timeout")
+    except httpx.RequestError as e:
+        logger.error(f"APRAG service request error: {e}")
+        raise HTTPException(status_code=503, detail=f"APRAG service unavailable: {str(e)}")
+    except Exception as e:
+        logger.error(f"APRAG service proxy error: {e}")
+        raise HTTPException(status_code=500, detail=f"APRAG service proxy failed: {str(e)}")
+
+
+@app.api_route("/aprag/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_aprag_service_no_prefix(path: str, request: Request):
+    """
+    Proxy APRAG service requests without /api prefix (for Next.js rewrites that strip /api)
+    """
+    try:
+        # Get request body if present
+        body = None
+        if request.method in ["POST", "PUT", "PATCH"]:
+            try:
+                body = await request.body()
+            except Exception:
+                body = None
+        
+        # Forward headers (including Authorization)
+        headers = dict(request.headers)
+        # Remove host header to avoid conflicts
+        headers.pop("host", None)
+        
+        # Build target URL - add /api prefix back since Next.js rewrites strip it
+        target_url = f"{APRAG_SERVICE_URL}/api/aprag/{path}"
+        
+        logger.info(f"Proxying {request.method} request (no /api prefix) to APRAG service: {target_url}")
         
         # Forward request to APRAG service
         async with httpx.AsyncClient(timeout=30.0) as client:

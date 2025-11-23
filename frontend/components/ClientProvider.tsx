@@ -64,6 +64,49 @@ function ClientProviderInner({ children }: { children: React.ReactNode }) {
     setGlobalApiUrl(apiUrl);
   }, [apiUrl]);
 
+  // Global error handler for browser File System API errors
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      // Suppress "illegal path" errors from File System Access API
+      if (
+        event.message?.includes("illegal path") ||
+        event.message?.includes("Dosya sistemi eklenemiyor") ||
+        event.error?.message?.includes("illegal path") ||
+        event.error?.message?.includes("Dosya sistemi eklenemiyor")
+      ) {
+        event.preventDefault();
+        console.warn(
+          "File system access cancelled or invalid path - this is normal"
+        );
+        return false;
+      }
+    };
+
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      // Suppress "illegal path" errors from File System Access API
+      const errorMessage =
+        event.reason?.message || event.reason?.toString() || "";
+      if (
+        errorMessage.includes("illegal path") ||
+        errorMessage.includes("Dosya sistemi eklenemiyor")
+      ) {
+        event.preventDefault();
+        console.warn(
+          "File system access cancelled or invalid path - this is normal"
+        );
+        return false;
+      }
+    };
+
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleRejection);
+
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleRejection);
+    };
+  }, []);
+
   // Effect to handle auth state changes and protect routes.
   useEffect(() => {
     // When loading is finished, if the user is not authenticated and not on the login page,
@@ -260,7 +303,9 @@ function ClientProviderInner({ children }: { children: React.ReactNode }) {
         </header>
       )}
 
-      {pathname.startsWith("/admin") || pathname.startsWith("/student") ? (
+      {pathname.startsWith("/admin") ||
+      pathname.startsWith("/student") ||
+      pathname === "/" ? (
         children
       ) : (
         <main className="w-full px-4 sm:px-6 lg:px-10 py-8 min-h-[calc(100vh-8rem)] animate-fade-in">

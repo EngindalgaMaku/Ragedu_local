@@ -13,6 +13,36 @@ interface SourceModalProps {
 export default function SourceModal({ source, isOpen, onClose }: SourceModalProps) {
   if (!isOpen || !source) return null;
 
+  const rawType =
+    (source.metadata as any)?.source_type ||
+    (source.metadata as any)?.source ||
+    "unknown";
+
+  const sourceTypeLabel =
+    rawType === "direct_qa" || rawType === "qa_pair" || rawType === "question_answer"
+      ? "Soru Bankası (Otomatik QA)"
+      : rawType === "structured_kb"
+      ? "Bilgi Tabanı Özeti"
+      : rawType === "vector_search"
+      ? "Döküman Parçası (RAG)"
+      : "Döküman";
+
+  const displayContent = (() => {
+    const base = (source.content || "").toString().trim();
+    if (base.length > 0) return base;
+
+    // QA kaynağıysa ve soru/cevap metadata'da varsa, bunlardan içerik oluştur
+    const meta: any = source.metadata || {};
+    if (
+      (rawType === "direct_qa" || rawType === "qa_pair" || rawType === "question_answer") &&
+      (meta.qa_question || meta.qa_answer)
+    ) {
+      return `Soru: ${meta.qa_question || "-"}\n\nCevap: ${meta.qa_answer || "-"}`;
+    }
+
+    return "İçerik bulunamadı";
+  })();
+
   const handleBackdropClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget) {
       onClose();
@@ -32,7 +62,10 @@ export default function SourceModal({ source, isOpen, onClose }: SourceModalProp
             <div>
               <h3 className="text-lg font-semibold">Kaynak Detayları</h3>
               <p className="text-sm text-blue-100">
-                {source.metadata?.filename || source.metadata?.source_file || "Döküman"}
+                {sourceTypeLabel}
+                {source.metadata?.filename || source.metadata?.source_file
+                  ? ` • ${source.metadata.filename || source.metadata.source_file}`
+                  : ""}
               </p>
             </div>
           </div>
@@ -87,7 +120,7 @@ export default function SourceModal({ source, isOpen, onClose }: SourceModalProp
             <h4 className="text-sm font-semibold text-gray-700 mb-3">İçerik</h4>
             <div className="prose prose-sm max-w-none">
               <p className="text-gray-800 leading-relaxed whitespace-pre-wrap">
-                {source.content || "İçerik bulunamadı"}
+                {displayContent}
               </p>
             </div>
           </div>
@@ -109,14 +142,23 @@ export default function SourceModal({ source, isOpen, onClose }: SourceModalProp
                       "total_chunks",
                       "page_number",
                       "section",
+                      "qa_question",
+                      "qa_answer",
                     ].includes(key)
                   ) {
                     return null; // Already displayed above
                   }
+                  // Türkçe anahtar ismi
+                  const label =
+                    key === "source_type"
+                      ? "kaynak_türü"
+                      : key === "qa_similarity"
+                      ? "benzerlik"
+                      : key;
                   return (
                     <div key={key} className="flex items-start gap-2">
                       <span className="font-medium text-gray-600 min-w-[120px]">
-                        {key}:
+                        {label}:
                       </span>
                       <span className="text-gray-800 flex-1">
                         {typeof value === "object"

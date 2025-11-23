@@ -158,6 +158,16 @@ export default function StudentChatPage() {
     }));
   };
 
+  // Get high-level source types (chunk / knowledge_base / qa_pair)
+  const getSourceTypes = (sources?: RAGSource[]) => {
+    const types = new Set<string>();
+    (sources || []).forEach((s) => {
+      const t = (s.metadata?.source_type || s.metadata?.source || "").toString();
+      if (t) types.add(t);
+    });
+    return types;
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[calc(100vh-200px)]">
@@ -320,6 +330,38 @@ export default function StudentChatPage() {
                               {message.bot}
                             </ReactMarkdown>
                           </div>
+
+                          {/* High-level KB / QA usage summary */}
+                          {message.sources && message.sources.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-1.5 text-[11px]">
+                              {(() => {
+                                const types = getSourceTypes(message.sources);
+                                const hasKB = types.has("knowledge_base");
+                                const hasQA = types.has("qa_pair");
+                                const hasChunks =
+                                  types.has("chunk") || types.size === 0;
+                                return (
+                                  <>
+                                    {hasKB && (
+                                      <span className="px-2 py-0.5 rounded-full bg-purple-50 border border-purple-200 text-purple-700">
+                                        📚 Bilgi Tabanı Kullanıldı
+                                      </span>
+                                    )}
+                                    {hasQA && (
+                                      <span className="px-2 py-0.5 rounded-full bg-green-50 border border-green-200 text-green-700">
+                                        ❓ Soru Bankası
+                                      </span>
+                                    )}
+                                    {hasChunks && (
+                                      <span className="px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700">
+                                        📄 Döküman Parçaları
+                                      </span>
+                                    )}
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          )}
 
                           {/* Correction Notice */}
                           {message.correction && message.correction.was_corrected && (

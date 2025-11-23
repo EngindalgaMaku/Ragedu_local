@@ -62,12 +62,18 @@ const nextConfig = {
       }
 
       // Get host from environment variables - prioritize NEXT_PUBLIC_ vars
+      // For server-side (Docker): use internal service name
+      // For client-side (browser): use localhost or external URL
       const apiGatewayHost =
+        process.env.API_GATEWAY_INTERNAL_URL ? 
+          process.env.API_GATEWAY_INTERNAL_URL.replace('http://', '').split(':')[0] :
         process.env.NEXT_PUBLIC_API_HOST ||
         process.env.API_GATEWAY_HOST ||
-        (isDocker ? "api-gateway" : "46.62.254.131");
+        (isDocker ? "api-gateway" : "localhost");
 
       const apiGatewayPort =
+        process.env.API_GATEWAY_INTERNAL_URL ?
+          process.env.API_GATEWAY_INTERNAL_URL.replace('http://', '').split(':')[1] || "8000" :
         process.env.API_GATEWAY_PORT ||
         process.env.API_GATEWAY_INTERNAL_PORT ||
         "8000";
@@ -80,12 +86,19 @@ const nextConfig = {
         return apiGatewayHost;
       }
 
-      return `http://${apiGatewayHost}:${apiGatewayPort}`;
+      // For server-side rendering in Docker, use internal service name
+      // For client-side (browser), use localhost
+      const finalUrl = `http://${apiGatewayHost}:${apiGatewayPort}`;
+      
+      // Log for debugging
+      console.log("🔧 Next.js API proxy configured for:", finalUrl);
+      console.log("🐳 Docker mode:", isDocker);
+      console.log("🌐 Environment:", process.env.NODE_ENV || "development");
+      console.log("🔗 API Gateway Host:", apiGatewayHost);
+      console.log("🔗 API Gateway Port:", apiGatewayPort);
+      
+      return finalUrl;
     })();
-
-    console.log("🔧 Next.js API proxy configured for:", apiUrl);
-    console.log("🐳 Docker mode:", isDocker);
-    console.log("🌐 Environment:", process.env.NODE_ENV || "development");
 
     return [
       {

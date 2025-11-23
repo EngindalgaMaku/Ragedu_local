@@ -13,6 +13,7 @@ import {
   StudentProgressResponse,
   Topic,
   APRAGSettings,
+  TopicProgress,
 } from "@/lib/api";
 import {
   BookOpen,
@@ -40,6 +41,8 @@ export default function StudentDashboard({ userId }: StudentDashboardProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [apragSettings, setApragSettings] = useState<APRAGSettings | null>(null);
+  const [topicPage, setTopicPage] = useState(1);
+  const TOPICS_PER_PAGE = 8;
 
   // Load sessions
   useEffect(() => {
@@ -102,6 +105,11 @@ export default function StudentDashboard({ userId }: StudentDashboardProps) {
 
     loadData();
   }, [selectedSession, userId]);
+
+  // Reset topic page when session changes
+  useEffect(() => {
+    setTopicPage(1);
+  }, [selectedSession]);
 
   if (loading) {
     return (
@@ -174,6 +182,46 @@ export default function StudentDashboard({ userId }: StudentDashboardProps) {
   const trendInfo = analytics ? getTrendInfo(analytics.improvement_trend) : null;
   const TrendIcon = trendInfo?.icon;
 
+  // Build topic hierarchy for progress (ana konu + alt konular)
+  const topicProgressList = progress?.progress || [];
+  const progressMap = new Map<number, TopicProgress>();
+  topicProgressList.forEach((tp) => {
+    progressMap.set(tp.topic_id, tp);
+  });
+
+  const mainTopicsMeta = topics.filter((t) => !t.parent_topic_id);
+  const subtopicsMap = new Map<number, Topic[]>();
+  topics
+    .filter((t) => t.parent_topic_id)
+    .forEach((t) => {
+      const parentId = t.parent_topic_id as number;
+      if (!subtopicsMap.has(parentId)) {
+        subtopicsMap.set(parentId, []);
+      }
+      subtopicsMap.get(parentId)!.push(t);
+    });
+
+  const mainTopicsWithProgress = mainTopicsMeta.map((mt) => ({
+    mainTopic: mt,
+    mainProgress: progressMap.get(mt.topic_id) || null,
+    subtopics:
+      subtopicsMap
+        .get(mt.topic_id)
+        ?.map((st) => ({
+          topic: st,
+          progress: progressMap.get(st.topic_id) || null,
+        })) || [],
+  }));
+
+  const totalTopicPages = Math.max(
+    1,
+    Math.ceil(mainTopicsWithProgress.length / TOPICS_PER_PAGE)
+  );
+  const paginatedMainTopics = mainTopicsWithProgress.slice(
+    (topicPage - 1) * TOPICS_PER_PAGE,
+    topicPage * TOPICS_PER_PAGE
+  );
+
   return (
     <div className="max-w-7xl mx-auto p-6 space-y-6">
       {/* Header */}
@@ -186,23 +234,39 @@ export default function StudentDashboard({ userId }: StudentDashboardProps) {
             <p className="text-gray-600 mt-1">Öğrenme yolculuğuna devam et</p>
           </div>
           
-          {/* Session Selector */}
-          {sessions.length > 0 && (
-            <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-gray-700">Oturum:</label>
-              <select
-                value={selectedSession || ""}
-                onChange={(e) => setSelectedSession(e.target.value)}
-                className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          <div className="flex flex-col items-end gap-2">
+            {/* Session Selector */}
+            {sessions.length > 0 && (
+              <div className="flex items-center gap-2">
+                <label className="text-sm font-medium text-gray-700">Oturum:</label>
+                <select
+                  value={selectedSession || ""}
+                  onChange={(e) => setSelectedSession(e.target.value)}
+                  className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  {sessions.map((session) => (
+                    <option key={session.session_id} value={session.session_id}>
+                      {session.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <a
+                href="/student/chat"
+                className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
               >
-                {sessions.map((session) => (
-                  <option key={session.session_id} value={session.session_id}>
-                    {session.name}
-                  </option>
-                ))}
-              </select>
+                Soru Sor
+              </a>
+              <a
+                href="/student/history"
+                className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+              >
+                Geçmiş Sorularım
+              </a>
             </div>
-          )}
+          </div>
         </div>
       </div>
 
@@ -358,54 +422,126 @@ export default function StudentDashboard({ userId }: StudentDashboardProps) {
         </div>
       )}
 
-      {/* Topic Progress List */}
-      {progress?.progress && progress.progress.length > 0 && (
+      {/* Topic Progress List (Ana konu + alt konular hiyerarşik) */}
+      {mainTopicsWithProgress.length > 0 && (
         <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
-          <div className="flex items-center gap-2 mb-4">
-            <Target className="w-5 h-5 text-blue-500" />
-            <h2 className="text-xl font-bold text-gray-900">Konu İlerlemesi</h2>
+          <div className="flex items-center justify-between gap-2 mb-4">
+            <div className="flex items-center gap-2">
+              <Target className="w-5 h-5 text-blue-500" />
+              <h2 className="text-xl font-bold text-gray-900">Konu İlerlemesi</h2>
+            </div>
+            {totalTopicPages > 1 && (
+              <div className="flex items-center gap-2 text-xs text-gray-600">
+                <span>
+                  Sayfa {topicPage} / {totalTopicPages}
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setTopicPage((p) => Math.max(1, p - 1))}
+                    disabled={topicPage === 1}
+                    className="px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Önceki
+                  </button>
+                  <button
+                    onClick={() =>
+                      setTopicPage((p) => Math.min(totalTopicPages, p + 1))
+                    }
+                    disabled={topicPage >= totalTopicPages}
+                    className="px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Sonraki
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
           <div className="space-y-3">
-            {progress.progress.map((topicProgress) => (
+            {paginatedMainTopics.map(({ mainTopic, mainProgress, subtopics }) => (
               <div
-                key={topicProgress.topic_id}
+                key={mainTopic.topic_id}
                 className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:border-blue-300 transition-colors"
               >
                 <div className="flex-1">
                   <div className="flex items-center gap-3">
                     <h3 className="font-semibold text-gray-900">
-                      {topicProgress.topic_title}
+                      {mainTopic.topic_title}
                     </h3>
-                    {topicProgress.mastery_level === "mastered" && (
+                    {mainProgress?.mastery_level === "mastered" && (
                       <CheckCircle className="w-5 h-5 text-green-500" />
                     )}
                   </div>
                   <div className="flex gap-4 mt-2 text-sm text-gray-600">
-                    <span>{topicProgress.questions_asked} soru</span>
-                    {topicProgress.average_understanding && (
+                    <span>{mainProgress?.questions_asked ?? 0} soru</span>
+                    {mainProgress?.average_understanding && (
                       <span>
-                        Anlama: {topicProgress.average_understanding.toFixed(1)}/5.0
+                        Anlama:{" "}
+                        {mainProgress.average_understanding.toFixed(1)}/5.0
                       </span>
                     )}
-                    {topicProgress.time_spent_minutes && (
-                      <span>{topicProgress.time_spent_minutes} dk</span>
+                    {mainProgress?.time_spent_minutes && (
+                      <span>{mainProgress.time_spent_minutes} dk</span>
                     )}
                   </div>
+
+                  {/* Alt konular */}
+                  {subtopics.length > 0 && (
+                    <div className="mt-3 pl-3 border-l border-gray-300 space-y-1">
+                      {subtopics.map(({ topic, progress }) => (
+                        <div
+                          key={topic.topic_id}
+                          className="flex items-center justify-between text-xs text-gray-700"
+                        >
+                          <span className="truncate flex-1">
+                            {topic.topic_title}
+                          </span>
+                          <div className="flex items-center gap-2 ml-2">
+                            <span className="text-gray-500">
+                              {(progress?.questions_asked ?? 0)} soru
+                            </span>
+                            {progress?.mastery_score !== null &&
+                              progress?.mastery_score !== undefined && (
+                                <div className="w-16">
+                                  <div className="w-full bg-gray-200 rounded-full h-1.5">
+                                    <div
+                                      className="bg-blue-400 h-1.5 rounded-full"
+                                      style={{
+                                        width: `${Math.min(
+                                          progress.mastery_score * 100,
+                                          100
+                                        )}%`,
+                                      }}
+                                    ></div>
+                                  </div>
+                                </div>
+                              )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 
                 {/* Progress Bar */}
-                {topicProgress.mastery_score !== null && (
+                {mainProgress?.mastery_score !== null &&
+                  mainProgress?.mastery_score !== undefined && (
                   <div className="w-32">
                     <div className="w-full bg-gray-200 rounded-full h-2">
                       <div
                         className="bg-blue-500 h-2 rounded-full transition-all"
                         style={{
-                          width: `${Math.min(topicProgress.mastery_score * 100, 100)}%`,
+                          width: `${Math.min(
+                            mainProgress.mastery_score * 100,
+                            100
+                          )}%`,
                         }}
                       ></div>
                     </div>
                     <p className="text-xs text-center text-gray-600 mt-1">
-                      {Math.round((topicProgress.mastery_score || 0) * 100)}%
+                      {Math.round(
+                        (mainProgress.mastery_score || 0) * 100
+                      )}
+                      %
                     </p>
                   </div>
                 )}

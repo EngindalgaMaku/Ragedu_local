@@ -15,6 +15,7 @@ from typing import List, Dict, Any, Optional
 import logging
 import json
 from datetime import datetime
+import requests
 
 # Import all Eğitsel-KBRAG components
 try:
@@ -26,6 +27,7 @@ try:
         get_bloom_detector,
         get_cognitive_load_manager
     )
+    from api.personalization import PersonalizeRequest, personalize_response
 except ImportError:
     import sys
     import os
@@ -38,6 +40,7 @@ except ImportError:
         get_bloom_detector,
         get_cognitive_load_manager
     )
+    from api.personalization import PersonalizeRequest, personalize_response
 
 # DB manager will be injected via dependency
 db_manager = None
@@ -165,13 +168,15 @@ async def adaptive_query(
     try:
         logger.info(f"🚀 Adaptive query for user {request.user_id}: {request.query[:60]}...")
         
-        # Track which components are active
+        # Track which components are active (use session-specific settings)
         components_active = {
             'cacs': FeatureFlags.is_cacs_enabled(),
             'zpd': FeatureFlags.is_zpd_enabled(),
             'bloom': FeatureFlags.is_bloom_enabled(),
             'cognitive_load': FeatureFlags.is_cognitive_load_enabled(),
-            'emoji_feedback': FeatureFlags.is_emoji_feedback_enabled()
+            'emoji_feedback': FeatureFlags.is_emoji_feedback_enabled(),
+            'progressive_assessment': FeatureFlags.is_progressive_assessment_enabled(request.session_id),
+            'personalized_responses': FeatureFlags.is_personalized_responses_enabled(request.session_id)
         }
         
         # === 1. STUDENT PROFILE & HISTORY ===
@@ -312,11 +317,14 @@ async def adaptive_query(
         # === 4. PERSONALIZED RESPONSE GENERATION ===
         logger.info("4️⃣ Generating personalized response...")
         
-        personalized_response = _generate_personalized_response(
+        personalized_response = await _generate_personalized_response(
             request.rag_response,
             request.query,
             pedagogical_context.dict(),
-            [doc.doc_id for doc in top_docs]
+            [doc.doc_id for doc in top_docs],
+            request.user_id,
+            request.session_id,
+            db
         )
         
         # Simplify if needed
@@ -392,17 +400,78 @@ async def adaptive_query(
         )
 
 
-def _generate_personalized_response(
+async def _generate_personalized_response(
     original_response: str,
     query: str,
     pedagogical_context: Dict[str, Any],
-    top_doc_ids: List[str]
+    top_doc_ids: List[str],
+    user_id: str,
+    session_id: str,
+    db: DatabaseManager
 ) -> str:
     """
-    Generate personalized response based on pedagogical context
+    Generate personalized response using the personalization service with real LLM
     
-    In production, this would call an LLM with a specialized prompt.
-    For now, we enhance the response with pedagogical markers.
+    This now calls the personalization service for proper LLM-based personalization
+    instead of using templates.
+    """
+    
+    try:
+        logger.info(f"🧠 Generating personalized response using LLM service...")
+        
+        # Create personalization request
+        personalize_req = PersonalizeRequest(
+            user_id=user_id,
+            session_id=session_id,
+            query=query,
+            original_response=original_response,
+            context={
+                'pedagogical_context': pedagogical_context,
+                'top_doc_ids': top_doc_ids
+            }
+        )
+        
+        # Call the personalization service
+        personalization_result = await personalize_response(personalize_req, db)
+        
+        # Extract personalized response
+        personalized_text = personalization_result.personalized_response
+        
+        # Log successful personalization
+        factors = personalization_result.personalization_factors
+        logger.info(f"  → LLM personalization applied:")
+        logger.info(f"    • Difficulty: {factors.get('difficulty_level', 'N/A')}")
+        logger.info(f"    • Style: {factors.get('explanation_style', 'N/A')}")
+        logger.info(f"    • Examples needed: {factors.get('needs_examples', False)}")
+        
+        if personalization_result.zpd_info:
+            logger.info(f"    • ZPD: {personalization_result.zpd_info.get('current_level')} → {personalization_result.zpd_info.get('recommended_level')}")
+        
+        if personalization_result.bloom_info:
+            logger.info(f"    • Bloom: {personalization_result.bloom_info.get('level')} (Level {personalization_result.bloom_info.get('level_index')})")
+        
+        return personalized_text
+        
+    except Exception as e:
+        logger.warning(f"LLM personalization failed, falling back to template: {e}")
+        
+        # Fallback to template-based approach (original logic)
+        return _generate_template_fallback(
+            original_response,
+            query,
+            pedagogical_context
+        )
+
+
+def _generate_template_fallback(
+    original_response: str,
+    query: str,
+    pedagogical_context: Dict[str, Any]
+) -> str:
+    """
+    Fallback template-based personalization (original logic)
+    
+    Used when LLM personalization service is unavailable.
     """
     
     # Extract context
@@ -435,6 +504,8 @@ def _generate_personalized_response(
     # Add simplification note if needed
     if needs_simplification:
         personalized += "\n\n_💡 Bu yanıt daha kolay anlaşılması için parçalara ayrıldı._"
+    
+    logger.info("  → Template fallback personalization applied")
     
     return personalized
 

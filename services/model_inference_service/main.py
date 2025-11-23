@@ -11,6 +11,7 @@ import ollama
 from groq import Groq
 from huggingface_hub import InferenceClient
 from sentence_transformers import CrossEncoder
+from openai import OpenAI as OpenAIClient
 
 # Disable SSL warnings for HuggingFace API (common in corporate/proxy environments)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -23,6 +24,8 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", os.getenv("OLLAMA_URL", "http://localhost
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+ALIBABA_API_KEY = os.getenv("ALIBABA_API_KEY", os.getenv("DASHSCOPE_API_KEY"))
 
 # --- FastAPI App Initialization ---
 app = FastAPI(
@@ -97,53 +100,116 @@ class OutputCleanerResponse(BaseModel):
 # --- LLM Clients ---
 ollama_client = None
 OLLAMA_AVAILABLE = False
+OLLAMA_LAST_FAILURE_TIME = None  # Track when Ollama last failed
+OLLAMA_RETRY_COOLDOWN = 300  # Don't retry for 5 minutes after failure
 
 def get_ollama_client():
-    """Get or initialize Ollama client with retry logic."""
-    global ollama_client, OLLAMA_AVAILABLE
+    """Get or initialize Ollama client with fast timeout - non-blocking."""
+    global ollama_client, OLLAMA_AVAILABLE, OLLAMA_LAST_FAILURE_TIME
+    
+    # If we already know Ollama is unavailable, check cooldown before retrying
+    if ollama_client is None and not OLLAMA_AVAILABLE:
+        if OLLAMA_LAST_FAILURE_TIME is not None:
+            time_since_failure = time.time() - OLLAMA_LAST_FAILURE_TIME
+            if time_since_failure < OLLAMA_RETRY_COOLDOWN:
+                # Still in cooldown, don't retry
+                return None
+            # Cooldown expired, reset failure time and try again
+            OLLAMA_LAST_FAILURE_TIME = None
     
     if ollama_client is not None and OLLAMA_AVAILABLE:
         try:
-            # Quick check if still available
-            ollama_client.list()
+            # Quick check if still available with very short timeout
+            import threading
+            check_result = [None]
+            check_exception = [None]
+            
+            def quick_check():
+                try:
+                    check_result[0] = ollama_client.list()
+                except Exception as e:
+                    check_exception[0] = e
+            
+            check_thread = threading.Thread(target=quick_check)
+            check_thread.daemon = True
+            check_thread.start()
+            check_thread.join(timeout=0.5)  # Very short timeout
+            
+            if check_thread.is_alive():
+                # Ollama is slow/unavailable, mark as unavailable but don't block
+                ollama_client = None
+                OLLAMA_AVAILABLE = False
+                OLLAMA_LAST_FAILURE_TIME = time.time()
+                return None
+            
+            if check_exception[0]:
+                # Connection failed, reset
+                ollama_client = None
+                OLLAMA_AVAILABLE = False
+                OLLAMA_LAST_FAILURE_TIME = time.time()
+                return None
+            
             return ollama_client
         except:
             # Client became unavailable, reset
             ollama_client = None
             OLLAMA_AVAILABLE = False
+            return None
     
-    # Try to initialize/reconnect
-    max_retries = 5
-    for attempt in range(max_retries):
-        try:
-            print(f"🔵 [DIAGNOSTIC] Attempting to connect to Ollama at: {OLLAMA_HOST} (attempt {attempt + 1}/{max_retries})")
-            client = ollama.Client(host=OLLAMA_HOST)
-            client.list()
-            ollama_client = client
+    # Try to initialize/reconnect with very fast timeout
+    try:
+        import threading
+        connect_result = [None]
+        connect_exception = [None]
+        
+        def try_connect():
+            try:
+                client = ollama.Client(host=OLLAMA_HOST)
+                # Quick test with timeout
+                test_result = client.list()
+                connect_result[0] = client
+            except Exception as e:
+                connect_exception[0] = e
+        
+        connect_thread = threading.Thread(target=try_connect)
+        connect_thread.daemon = True
+        connect_thread.start()
+        connect_thread.join(timeout=1.0)  # 1 second max timeout
+        
+        if connect_thread.is_alive():
+            # Ollama is not responding, mark as unavailable
+            ollama_client = None
+            OLLAMA_AVAILABLE = False
+            OLLAMA_LAST_FAILURE_TIME = time.time()
+            return None
+        
+        if connect_exception[0]:
+            # Connection failed, mark as unavailable
+            ollama_client = None
+            OLLAMA_AVAILABLE = False
+            OLLAMA_LAST_FAILURE_TIME = time.time()
+            return None
+        
+        if connect_result[0]:
+            ollama_client = connect_result[0]
             OLLAMA_AVAILABLE = True
-            print("✅ [DIAGNOSTIC] Successfully connected to Ollama and listed models.")
             return ollama_client
-        except Exception as e:
-            if attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 2
-                print(f"⚠️ [DIAGNOSTIC] Could not connect to Ollama (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time} seconds...")
-                print(f"   Error: {e}")
-                time.sleep(wait_time)
-            else:
-                print(f"❌ [CRITICAL] Could not connect to Ollama at {OLLAMA_HOST} after {max_retries} attempts.")
-                print(f"   Error Type: {type(e).__name__}")
-                print(f"   Error Details: {e}")
-                ollama_client = None
-                OLLAMA_AVAILABLE = False
-                return None
+    except Exception as e:
+        # Any error means Ollama is unavailable
+        ollama_client = None
+        OLLAMA_AVAILABLE = False
+        OLLAMA_LAST_FAILURE_TIME = time.time()
+        return None
     
     return None
 
-# Initial connection attempt (will retry if needed)
+# Initial connection attempt - non-blocking, fast fail
+# Don't block startup if Ollama is unavailable
 try:
     get_ollama_client()
 except Exception as e:
-    print(f"⚠️ Initial Ollama connection failed, will retry on first use: {e}")
+    # Silently fail - Ollama is optional
+    pass
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 if not groq_client:
@@ -170,6 +236,36 @@ try:
 except Exception as e:
     print(f"⚠️ Warning: Failed to initialize HuggingFace client: {e}")
     huggingface_client = None
+
+# DeepSeek client setup (OpenAI-compatible API)
+deepseek_client = None
+if DEEPSEEK_API_KEY:
+    try:
+        deepseek_client = OpenAIClient(
+            api_key=DEEPSEEK_API_KEY,
+            base_url="https://api.deepseek.com"
+        )
+        print("✅ DeepSeek API client initialized.")
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to initialize DeepSeek client: {e}")
+        deepseek_client = None
+else:
+    print("⚠️ Warning: DEEPSEEK_API_KEY not set. DeepSeek models will not be available.")
+
+# Alibaba DashScope client setup (OpenAI-compatible API)
+alibaba_client = None
+if ALIBABA_API_KEY:
+    try:
+        alibaba_client = OpenAIClient(
+            api_key=ALIBABA_API_KEY,
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+        print("✅ Alibaba DashScope API client initialized.")
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to initialize Alibaba client: {e}")
+        alibaba_client = None
+else:
+    print("⚠️ Warning: ALIBABA_API_KEY not set. Alibaba models will not be available.")
 
 # --- Cross-Encoder Model for Reranking ---
 rerank_model = None
@@ -282,7 +378,9 @@ def is_openrouter_model(model_name: str) -> bool:
         "mistralai/mistral-7b-instruct:free",
         "microsoft/phi-3-mini-4k-instruct:free",
         "google/gemma-2-9b-it:free",
-        "nousresearch/hermes-3-llama-3.1-8b:free"
+        "google/gemini-2.5-flash-lite",
+        "nousresearch/hermes-3-llama-3.1-8b:free",
+        "qwen/qwen3-32b"
     ]
     return model_name in openrouter_models
 
@@ -306,6 +404,26 @@ def is_huggingface_model(model_name: str) -> bool:
     # and is not in the excluded list
     return "/" in model_name and model_name not in excluded_models
 
+def is_deepseek_model(model_name: str) -> bool:
+    """Check if the model is a DeepSeek model."""
+    deepseek_models = [
+        "deepseek-chat",
+        "deepseek-reasoner"
+    ]
+    return model_name in deepseek_models
+
+def is_alibaba_model(model_name: str) -> bool:
+    """Check if the model is an Alibaba DashScope model."""
+    alibaba_models = [
+        "qwen-plus",
+        "qwen-turbo",
+        "qwen-max",
+        "qwen-max-longcontext",
+        "qwen-plus-net",
+        "qwen-turbo-net"
+    ]
+    return model_name in alibaba_models
+
 # --- API Endpoints ---
 @app.get("/health", summary="Health Check")
 def health_check():
@@ -316,6 +434,8 @@ def health_check():
         "groq_available": bool(groq_client),
         "huggingface_available": bool(huggingface_client),
         "openrouter_available": bool(openrouter_client and OPENROUTER_API_KEY),
+        "deepseek_available": bool(deepseek_client and DEEPSEEK_API_KEY),
+        "alibaba_available": bool(alibaba_client and ALIBABA_API_KEY),
         "ollama_host": OLLAMA_HOST
     }
 
@@ -329,7 +449,65 @@ async def generate_response(request: GenerationRequest):
     prompt = request.prompt
 
     try:
-        if is_openrouter_model(model_name):
+        if is_alibaba_model(model_name):
+            if not alibaba_client or not ALIBABA_API_KEY:
+                raise HTTPException(status_code=503, detail="Alibaba client is not available. Check ALIBABA_API_KEY.")
+
+            try:
+                chat_completion = alibaba_client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                    stream=False
+                )
+                response_content = chat_completion.choices[0].message.content or ""
+                return GenerationResponse(response=response_content, model_used=model_name)
+            except Exception as e:
+                error_str = str(e)
+                # Check for authentication errors specifically
+                if "401" in error_str or "authentication" in error_str.lower() or "invalid" in error_str.lower():
+                    error_detail = f"Alibaba API authentication failed. Please check your ALIBABA_API_KEY environment variable. Error: {error_str}"
+                    print(f"❌ {error_detail}")
+                    raise HTTPException(status_code=401, detail=error_detail)
+                else:
+                    error_detail = f"Alibaba API error: {error_str}"
+                    print(f"❌ {error_detail}")
+                    raise HTTPException(status_code=500, detail=error_detail)
+
+        elif is_deepseek_model(model_name):
+            if not deepseek_client or not DEEPSEEK_API_KEY:
+                raise HTTPException(status_code=503, detail="DeepSeek client is not available. Check DEEPSEEK_API_KEY.")
+
+            try:
+                chat_completion = deepseek_client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                    stream=False
+                )
+                response_content = chat_completion.choices[0].message.content or ""
+                return GenerationResponse(response=response_content, model_used=model_name)
+            except Exception as e:
+                error_str = str(e)
+                # Check for authentication errors specifically
+                if "401" in error_str or "authentication" in error_str.lower() or "invalid" in error_str.lower():
+                    error_detail = f"DeepSeek API authentication failed. Please check your DEEPSEEK_API_KEY environment variable. Error: {error_str}"
+                    print(f"❌ {error_detail}")
+                    raise HTTPException(status_code=401, detail=error_detail)
+                else:
+                    error_detail = f"DeepSeek API error: {error_str}"
+                    print(f"❌ {error_detail}")
+                    raise HTTPException(status_code=500, detail=error_detail)
+
+        elif is_openrouter_model(model_name):
             if not openrouter_client or not OPENROUTER_API_KEY:
                 raise HTTPException(status_code=503, detail="OpenRouter client is not available. Check OPENROUTER_API_KEY.")
 
@@ -550,7 +728,7 @@ async def generate_response(request: GenerationRequest):
 @app.get("/models/available", summary="List Available Models")
 def get_available_models():
     """Returns a list of available models from all configured providers."""
-    models = {"groq": [], "ollama": [], "huggingface": [], "openrouter": []}
+    models = {"groq": [], "ollama": [], "huggingface": [], "openrouter": [], "deepseek": [], "alibaba": []}
 
     if groq_client:
         # Only tested and confirmed working models
@@ -579,37 +757,83 @@ def get_available_models():
             "mistralai/mistral-7b-instruct:free",
             "microsoft/phi-3-mini-4k-instruct:free",
             "google/gemma-2-9b-it:free",
-            "nousresearch/hermes-3-llama-3.1-8b:free"
+            "google/gemini-2.5-flash-lite",
+            "nousresearch/hermes-3-llama-3.1-8b:free",
+            "qwen/qwen3-32b"
         ]
 
+    if deepseek_client and DEEPSEEK_API_KEY:
+        # DeepSeek models - OpenAI-compatible API
+        models["deepseek"] = [
+            "deepseek-chat",  # Non-thinking mode (DeepSeek-V3.2-Exp)
+            "deepseek-reasoner"  # Thinking mode (DeepSeek-V3.2-Exp)
+        ]
+
+    if alibaba_client and ALIBABA_API_KEY:
+        # Alibaba DashScope models - OpenAI-compatible API
+        models["alibaba"] = [
+            "qwen-plus",
+            "qwen-turbo",
+            "qwen-max",
+            "qwen-max-longcontext",
+            "qwen-plus-net",
+            "qwen-turbo-net"
+        ]
+
+    # Try to get Ollama models with fast timeout (non-blocking)
     client = get_ollama_client()
     if client is not None:
         try:
-            installed_models = client.list()
-            print(f"Ollama list() response: {installed_models}")  # Debug print
-            # Fix the model name extraction
-            if 'models' in installed_models and isinstance(installed_models['models'], list):
-                model_names = []
-                for model in installed_models['models']:
-                    if isinstance(model, dict):
-                        # Check for both 'name' and 'model' fields for compatibility
-                        if 'name' in model:
-                            model_names.append(model['name'])
-                        elif 'model' in model:
-                            model_names.append(model['model'])
-                    elif isinstance(model, str):
-                        model_names.append(model)
-                    else:
-                        # Handle Model objects with 'model' attribute
-                        if hasattr(model, 'model'):
-                            model_names.append(model.model)
-                        elif hasattr(model, 'name'):
-                            model_names.append(model.name)
-                models["ollama"] = model_names
-            else:
-                # Handle case where the response format is different
+            # Use threading to add timeout to Ollama list() call
+            import threading
+            installed_models = None
+            exception_occurred = None
+            
+            def fetch_models():
+                nonlocal installed_models, exception_occurred
+                try:
+                    installed_models = client.list()
+                except Exception as e:
+                    exception_occurred = e
+            
+            thread = threading.Thread(target=fetch_models)
+            thread.daemon = True
+            thread.start()
+            thread.join(timeout=1.0)  # 1 second timeout - fast fail
+            
+            if thread.is_alive():
+                # Ollama is slow/unavailable, skip it silently
                 models["ollama"] = []
-                print(f"Unexpected response format from Ollama list(): {installed_models}")
+            elif exception_occurred:
+                # Ollama connection failed, skip it silently
+                models["ollama"] = []
+            elif installed_models:
+                print(f"Ollama list() response: {installed_models}")  # Debug print
+                # Fix the model name extraction
+                if 'models' in installed_models and isinstance(installed_models['models'], list):
+                    model_names = []
+                    for model in installed_models['models']:
+                        if isinstance(model, dict):
+                            # Check for both 'name' and 'model' fields for compatibility
+                            if 'name' in model:
+                                model_names.append(model['name'])
+                            elif 'model' in model:
+                                model_names.append(model['model'])
+                        elif isinstance(model, str):
+                            model_names.append(model)
+                        else:
+                            # Handle Model objects with 'model' attribute
+                            if hasattr(model, 'model'):
+                                model_names.append(model.model)
+                            elif hasattr(model, 'name'):
+                                model_names.append(model.name)
+                    models["ollama"] = model_names
+                else:
+                    # Handle case where the response format is different
+                    models["ollama"] = []
+                    print(f"Unexpected response format from Ollama list(): {installed_models}")
+            else:
+                models["ollama"] = []
         except Exception as e:
             print(f"Could not fetch Ollama models: {e}")
             # Return empty list for ollama if it fails during the call
@@ -644,17 +868,43 @@ def get_available_models():
 
 @app.get("/models/embedding", summary="List Available Embedding Models")
 def get_available_embedding_models():
-    """Returns a list of available embedding models from Ollama and HuggingFace."""
+    """Returns a list of available embedding models from Ollama, HuggingFace, and Alibaba."""
     embedding_models = {
         "ollama": [],
-        "huggingface": []
+        "huggingface": [],
+        "alibaba": []
     }
     
-    # Get Ollama embedding models
+    # Get Ollama embedding models with fast timeout (non-blocking)
     client = get_ollama_client()
     if client is not None:
         try:
-            installed_models = client.list()
+            # Use threading for fast timeout
+            import threading
+            installed_models = None
+            exception_occurred = None
+            
+            def fetch_models():
+                nonlocal installed_models, exception_occurred
+                try:
+                    installed_models = client.list()
+                except Exception as e:
+                    exception_occurred = e
+            
+            thread = threading.Thread(target=fetch_models)
+            thread.daemon = True
+            thread.start()
+            thread.join(timeout=1.0)  # 1 second timeout - fast fail
+            
+            if thread.is_alive() or exception_occurred:
+                # Ollama is slow/unavailable, skip it silently
+                embedding_models["ollama"] = []
+                return embedding_models
+            
+            if not installed_models:
+                embedding_models["ollama"] = []
+                return embedding_models
+            
             print(f"[Embedding] Ollama list response type: {type(installed_models)}")
             print(f"[Embedding] Ollama list response: {installed_models}")
             
@@ -770,6 +1020,32 @@ def get_available_embedding_models():
             "language": "multilingual"
         }
     ]
+    
+    # Alibaba DashScope embedding models
+    if alibaba_client and ALIBABA_API_KEY:
+        embedding_models["alibaba"] = [
+            {
+                "id": "text-embedding-v4",
+                "name": "text-embedding-v4",
+                "description": "Alibaba DashScope - En güncel embedding modeli (1024 boyut, çok dilli)",
+                "dimensions": 1024,
+                "language": "multilingual"
+            },
+            {
+                "id": "text-embedding-v3",
+                "name": "text-embedding-v3",
+                "description": "Alibaba DashScope - Önceki versiyon (1024 boyut, çok dilli)",
+                "dimensions": 1024,
+                "language": "multilingual"
+            },
+            {
+                "id": "text-embedding-v2",
+                "name": "text-embedding-v2",
+                "description": "Alibaba DashScope - Stabil versiyon (1536 boyut, çok dilli)",
+                "dimensions": 1536,
+                "language": "multilingual"
+            }
+        ]
     
     return embedding_models
 

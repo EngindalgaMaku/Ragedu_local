@@ -61,6 +61,10 @@ export default function SessionsTable({
   const [teacherFilter, setTeacherFilter] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(10);
+  const [backingUp, setBackingUp] = useState<string | null>(null);
+  const [restoreModalOpen, setRestoreModalOpen] = useState(false);
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restoring, setRestoring] = useState(false);
 
   // Get unique values for filter dropdowns
   const uniqueCategories = useMemo(() => {
@@ -315,28 +319,37 @@ export default function SessionsTable({
           </div>
 
           {/* Bulk Actions */}
-          {selectedSessions.size > 0 && (
-            <div className="flex space-x-2">
-              <button
-                onClick={() => handleBulkAction("activate")}
-                className="px-3 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md transition-colors"
-              >
-                Aktifleştir ({selectedSessions.size})
-              </button>
-              <button
-                onClick={() => handleBulkAction("deactivate")}
-                className="px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded-md transition-colors"
-              >
-                Pasifleştir ({selectedSessions.size})
-              </button>
-              <button
-                onClick={() => handleBulkAction("delete")}
-                className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-md transition-colors"
-              >
-                Sil ({selectedSessions.size})
-              </button>
-            </div>
-          )}
+          <div className="flex space-x-2">
+            {selectedSessions.size > 0 && (
+              <>
+                <button
+                  onClick={() => handleBulkAction("activate")}
+                  className="px-3 py-2 bg-green-600 hover:bg-green-700 text-white text-sm rounded-md transition-colors"
+                >
+                  Aktifleştir ({selectedSessions.size})
+                </button>
+                <button
+                  onClick={() => handleBulkAction("deactivate")}
+                  className="px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded-md transition-colors"
+                >
+                  Pasifleştir ({selectedSessions.size})
+                </button>
+                <button
+                  onClick={() => handleBulkAction("delete")}
+                  className="px-3 py-2 bg-red-600 hover:bg-red-700 text-white text-sm rounded-md transition-colors"
+                >
+                  Sil ({selectedSessions.size})
+                </button>
+              </>
+            )}
+            <button
+              onClick={() => setRestoreModalOpen(true)}
+              className="px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm rounded-md transition-colors"
+              title="Yedekten Geri Yükle"
+            >
+              📥 Yedekten Geri Yükle
+            </button>
+          </div>
         </div>
       </div>
 
@@ -573,6 +586,74 @@ export default function SessionsTable({
                       </svg>
                     </button>
                     <button
+                      onClick={async () => {
+                        setBackingUp(session.session_id);
+                        try {
+                          const response = await fetch(
+                            `/api/sessions/${session.session_id}/backup/download`
+                          );
+                          if (response.ok) {
+                            const blob = await response.blob();
+                            const url = window.URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `session_backup_${session.session_id}_${Date.now()}.json`;
+                            document.body.appendChild(a);
+                            a.click();
+                            window.URL.revokeObjectURL(url);
+                            document.body.removeChild(a);
+                            alert("Yedek başarıyla indirildi!");
+                          } else {
+                            alert("Yedek indirme başarısız!");
+                          }
+                        } catch (error) {
+                          console.error("Backup error:", error);
+                          alert("Yedek indirme hatası!");
+                        } finally {
+                          setBackingUp(null);
+                        }
+                      }}
+                      disabled={backingUp === session.session_id}
+                      className="p-1.5 text-blue-600 hover:text-blue-900 dark:text-blue-400 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors disabled:opacity-50"
+                      title="Yedek Al"
+                    >
+                      {backingUp === session.session_id ? (
+                        <svg
+                          className="w-4 h-4 animate-spin"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                        >
+                          <circle
+                            className="opacity-25"
+                            cx="12"
+                            cy="12"
+                            r="10"
+                            stroke="currentColor"
+                            strokeWidth="4"
+                          ></circle>
+                          <path
+                            className="opacity-75"
+                            fill="currentColor"
+                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                          ></path>
+                        </svg>
+                      ) : (
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                          />
+                        </svg>
+                      )}
+                    </button>
+                    <button
                       onClick={() => onDelete(session.session_id)}
                       className="p-1.5 text-red-600 hover:text-red-900 dark:text-red-400 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors"
                       title="Sil"
@@ -660,6 +741,107 @@ export default function SessionsTable({
               >
                 Sonraki
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Restore Modal */}
+      {restoreModalOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-md w-full mx-4">
+            <div className="p-6">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                Yedekten Geri Yükle
+              </h3>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Yedek Dosyası Seç (JSON)
+                </label>
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files[0]) {
+                      setRestoreFile(e.target.files[0]);
+                    }
+                  }}
+                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white"
+                />
+              </div>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                  Yeni Oturum ID (Boş bırakırsanız orijinal ID kullanılır)
+                </label>
+                <input
+                  type="text"
+                  id="newSessionId"
+                  placeholder="Orijinal session_id kullanılacak"
+                  className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 dark:bg-gray-700 dark:text-white"
+                />
+              </div>
+              <div className="flex justify-end space-x-3">
+                <button
+                  onClick={() => {
+                    setRestoreModalOpen(false);
+                    setRestoreFile(null);
+                  }}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 rounded-md hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                >
+                  İptal
+                </button>
+                <button
+                  onClick={async () => {
+                    if (!restoreFile) {
+                      alert("Lütfen bir yedek dosyası seçin!");
+                      return;
+                    }
+                    setRestoring(true);
+                    try {
+                      const text = await restoreFile.text();
+                      const backupData = JSON.parse(text);
+                      const newSessionId = (
+                        document.getElementById("newSessionId") as HTMLInputElement
+                      )?.value.trim() || null;
+                      
+                      const response = await fetch("/api/sessions/restore", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          backup_data: backupData,
+                          new_session_id: newSessionId,
+                          restore_chunks: true,
+                          restore_topics: true,
+                          restore_kb: true,
+                          restore_qa: true,
+                        }),
+                      });
+                      
+                      if (response.ok) {
+                        const result = await response.json();
+                        alert(
+                          `Geri yükleme başarılı!\n${result.message}\nSayfayı yenilemeniz gerekebilir.`
+                        );
+                        setRestoreModalOpen(false);
+                        setRestoreFile(null);
+                        window.location.reload();
+                      } else {
+                        const error = await response.json();
+                        alert(`Geri yükleme başarısız: ${error.detail || "Bilinmeyen hata"}`);
+                      }
+                    } catch (error) {
+                      console.error("Restore error:", error);
+                      alert("Geri yükleme hatası! Dosya formatını kontrol edin.");
+                    } finally {
+                      setRestoring(false);
+                    }
+                  }}
+                  disabled={!restoreFile || restoring}
+                  className="px-4 py-2 text-sm font-medium text-white bg-purple-600 rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {restoring ? "Yükleniyor..." : "Geri Yükle"}
+                </button>
+              </div>
             </div>
           </div>
         </div>

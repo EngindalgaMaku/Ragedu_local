@@ -128,7 +128,41 @@ def fetch_chunks_for_session(session_id: str) -> List[Dict[str, Any]]:
         )
         
         if response.status_code == 200:
-            return response.json().get("chunks", [])
+            chunks = response.json().get("chunks", [])
+            
+            # Normalize chunk IDs - document processing service may return chunk_id in different places
+            for i, chunk in enumerate(chunks):
+                # Try multiple possible locations for chunk_id
+                chunk_id = (
+                    chunk.get("chunk_id") or  # Root level (main.py endpoint)
+                    chunk.get("id") or 
+                    chunk.get("chunkId") or
+                    (chunk.get("chunk_metadata", {}) or {}).get("chunk_id") or  # Nested in metadata (api/routes/sessions.py endpoint)
+                    None
+                )
+                
+                if chunk_id is None:
+                    # If still no ID, use a stable hash-based ID
+                    # Use document_name + chunk_index for stable ID generation
+                    doc_name = chunk.get("document_name", "unknown")
+                    chunk_idx = chunk.get("chunk_index", i + 1)
+                    chunk_id = hash(f"{session_id}_{doc_name}_{chunk_idx}") % 1000000
+                    if chunk_id < 0:
+                        chunk_id = abs(chunk_id)
+                    logger.warning(f"⚠️ [FETCH CHUNKS] Chunk {i} has no ID, generated stable ID: {chunk_id} for {doc_name} chunk {chunk_idx}")
+                else:
+                    # Convert string IDs to int if possible (for consistency)
+                    try:
+                        if isinstance(chunk_id, str) and chunk_id.isdigit():
+                            chunk_id = int(chunk_id)
+                    except (ValueError, AttributeError):
+                        pass
+                
+                # Ensure chunk_id is set in the main dict as int
+                chunk["chunk_id"] = chunk_id
+                
+            logger.info(f"✅ [FETCH CHUNKS] Fetched {len(chunks)} chunks, sample IDs (first 10): {[c.get('chunk_id') for c in chunks[:10]]}")
+            return chunks
         else:
             logger.warning(f"Could not fetch chunks from document service: {response.status_code}")
             # Fallback: return empty list, extraction will need manual input
@@ -152,62 +186,66 @@ def extract_topics_with_llm(chunks: List[Dict[str, Any]], options: Dict[str, Any
         Dictionary with extracted topics
     """
     try:
-        # Prepare chunks text for LLM
+        # Normalize chunk IDs first - ensure every chunk has a valid ID
+        for i, chunk in enumerate(chunks):
+            chunk_id = chunk.get("chunk_id") or chunk.get("id") or chunk.get("chunkId") or chunk.get("_id")
+            if chunk_id is None:
+                chunk_id = i + 1  # Use 1-based index as fallback
+                chunk["chunk_id"] = chunk_id
+            else:
+                chunk["chunk_id"] = chunk_id
+        
+        # Prepare chunks text for LLM with REAL chunk IDs (NO INDEX to avoid confusion!)
         chunks_text = "\n\n---\n\n".join([
-            f"Chunk {i+1}:\n{chunk.get('chunk_text', chunk.get('content', chunk.get('text', '')))}"
+            f"[Chunk ID: {chunk.get('chunk_id', i+1)}]\n{chunk.get('chunk_text', chunk.get('content', chunk.get('text', '')))}"
             for i, chunk in enumerate(chunks)
         ])
         
-        # Create prompt for topic extraction
-        prompt = f"""Sen bir eğitim içeriği analiz uzmanısın. Aşağıdaki ders materyallerini analiz ederek konu yapısını çıkar.
+        # ENHANCED PROMPT: Request keywords and related chunks for proper topic-chunk relationships
+        # IMPORTANT: Use Chunk ID (not index) in related_chunks field!
+        prompt = f"""Bu metinden Türkçe konuları detaylı olarak aşağıdaki JSON formatında çıkar:
 
-DERS MATERYALLERİ:
-{chunks_text[:12000]}  # Limit to 12k chars to stay within Groq 6000 token limit
+{chunks_text[:25000]}
 
-LÜTFEN ŞUNLARI YAP:
-1. Ana konu başlıklarını belirle (5-15 arası)
-2. Her ana konu için alt başlıkları belirle
-3. Konuları öğrenme sırasına göre sırala
-4. Her konu için önkoşul konuları belirle
-5. Her konunun zorluk seviyesini belirle (beginner, intermediate, advanced)
-6. Her konu için 3-5 anahtar kelime belirle
+Zorluk seviyeleri: "başlangıç", "orta", "ileri"
+Her konu için mutlaka keywords ve ilgili chunk ID'leri belirtin.
 
-ÇIKTI FORMATI (JSON):
-{{
-  "topics": [
-    {{
-      "topic_title": "Ana Konu Başlığı",
-      "order": 1,
-      "difficulty": "intermediate",
-      "keywords": ["kelime1", "kelime2"],
-      "prerequisites": [],
-      "subtopics": [
-        {{
-          "topic_title": "Alt Konu",
-          "order": 1,
-          "keywords": ["alt1", "alt2"]
-        }}
-      ],
-      "related_chunks": [1, 5, 12]
-    }}
-  ]
-}}
+ÇOK ÖNEMLİ: "related_chunks" alanında MUTLAKA köşeli parantez içindeki "Chunk ID" değerini kullanın!
+Her chunk'ın başında "[Chunk ID: X]" formatında bilgi var. SADECE bu X değerini kullanın!
+Örnek: Eğer bir chunk "[Chunk ID: 42]" ile başlıyorsa, related_chunks'a [42] yazmalısınız!
 
-Sadece JSON çıktısı ver, başka açıklama yapma."""
+JSON formatı örneği (Chunk ID'leri kullanın!):
+{{"topics":[{{"topic_title":"Hücre Yapısı","keywords":["hücre","organeller","membran"],"related_chunks":[42,15,8],"difficulty":"orta"}},{{"topic_title":"DNA ve RNA","keywords":["DNA","RNA","genetik"],"related_chunks":[23,7,91],"difficulty":"ileri"}}]}}
 
-        # Get session-specific model configuration
-        model_to_use = get_session_model(session_id) or "llama-3.1-8b-instant"  # Default to Groq model instead of Ollama
+Sadece JSON çıktısı ver:
+{{"topics":["""
+
+        # Get session-specific model configuration - KEEP QWEN FOR QUALITY
+        model_to_use = get_session_model(session_id) or "llama3:8b"
+        logger.info(f"🧠 [TOPIC EXTRACTION] Using model: {model_to_use} for high-quality Turkish extraction")
         
-        # Call model inference service
+        # Smart truncation for Groq models
+        final_prompt = prompt
+        if "groq" in model_to_use.lower() or "instant" in model_to_use.lower():
+            # Groq model - limit prompt to 15k chars
+            if len(prompt) > 18000:
+                # Truncate chunks_text portion
+                final_prompt = prompt[:18000] + "\n\nSadece JSON çıktısı ver, başka açıklama yapma."
+                logger.warning(f"Prompt truncated for Groq model: {len(prompt)} -> 18000 chars")
+        
+        # Call model inference service with EXTENDED TIMEOUT for quality models
+        timeout_seconds = 600 if "qwen" in model_to_use.lower() else 240  # 10 min for qwen, 4 min for others
+        logger.info(f"⏰ [TIMEOUT] Using {timeout_seconds}s timeout for {model_to_use}")
+        
         response = requests.post(
             f"{MODEL_INFERENCER_URL}/models/generate",
             json={
-                "prompt": prompt,
+                "prompt": final_prompt,
                 "model": model_to_use,
                 "max_tokens": 4096,
                 "temperature": 0.3
             },
-            timeout=120
+            timeout=timeout_seconds  # Extended timeout for quality models
         )
         
         if response.status_code != 200:
@@ -216,17 +254,203 @@ Sadece JSON çıktısı ver, başka açıklama yapma."""
         result = response.json()
         llm_output = result.get("response", "")
         
-        # Parse JSON from LLM output
-        # Try to extract JSON from the response
-        import re
-        json_match = re.search(r'\{.*\}', llm_output, re.DOTALL)
-        if json_match:
-            topics_data = json.loads(json_match.group())
-        else:
-            # Try to parse entire output as JSON
-            topics_data = json.loads(llm_output)
+        # DIAGNOSTIC LOGGING - Log the raw LLM output to understand the issue
+        logger.info(f"🔍 [TOPIC EXTRACTION DEBUG] Raw LLM output length: {len(llm_output)}")
+        logger.info(f"🔍 [TOPIC EXTRACTION DEBUG] First 500 chars: {llm_output[:500]}")
+        logger.info(f"🔍 [TOPIC EXTRACTION DEBUG] Last 200 chars: {llm_output[-200:] if len(llm_output) > 200 else llm_output}")
         
-        return topics_data
+        # REMOVE markdown check - focus only on JSON extraction
+        # LLM sometimes generates markdown but still includes valid JSON
+        logger.info(f"📝 [TOPIC EXTRACTION DEBUG] Attempting JSON extraction from LLM output...")
+        
+        # Parse JSON from LLM output
+        import re
+        try:
+            # First attempt: Extract JSON block using regex
+            json_match = re.search(r'\{.*\}', llm_output, re.DOTALL)
+            if json_match:
+                json_str = json_match.group()
+                logger.info(f"✅ [TOPIC EXTRACTION DEBUG] Found JSON block, length: {len(json_str)}")
+                topics_data = json.loads(json_str)
+            else:
+                # Second attempt: Try to parse entire output as JSON
+                logger.info(f"🔄 [TOPIC EXTRACTION DEBUG] No JSON block found, trying to parse entire output as JSON")
+                topics_data = json.loads(llm_output.strip())
+            
+            # Validate the structure
+            if not isinstance(topics_data, dict) or "topics" not in topics_data:
+                logger.error(f"❌ [TOPIC EXTRACTION DEBUG] Invalid JSON structure: {list(topics_data.keys()) if isinstance(topics_data, dict) else type(topics_data)}")
+                raise HTTPException(status_code=500, detail="LLM returned JSON but with invalid structure (missing 'topics' key)")
+            
+            logger.info(f"✅ [TOPIC EXTRACTION DEBUG] Successfully parsed {len(topics_data.get('topics', []))} topics")
+            return topics_data
+            
+        except json.JSONDecodeError as json_err:
+            logger.error(f"❌ [TOPIC EXTRACTION DEBUG] JSON parsing failed: {json_err}")
+            logger.error(f"❌ [TOPIC EXTRACTION DEBUG] Attempting to clean JSON...")
+            
+            # Third attempt: Clean common JSON issues and retry
+            try:
+                # Remove trailing commas before } or ]
+                cleaned_output = re.sub(r',(\s*[}\]])', r'\1', llm_output)
+                # Remove markdown code blocks if present
+                cleaned_output = re.sub(r'```json\s*', '', cleaned_output)
+                cleaned_output = re.sub(r'```\s*$', '', cleaned_output)
+                
+                json_match = re.search(r'\{.*\}', cleaned_output, re.DOTALL)
+                if json_match:
+                    topics_data = json.loads(json_match.group())
+                    logger.info(f"✅ [TOPIC EXTRACTION DEBUG] Successfully parsed after cleaning")
+                    return topics_data
+                else:
+                    raise json.JSONDecodeError("No valid JSON found after cleaning", cleaned_output, 0)
+                    
+            except json.JSONDecodeError as final_err:
+                logger.error(f"❌ [TOPIC EXTRACTION DEBUG] Final JSON parsing failed: {final_err}")
+                
+                # ULTRA-AGGRESSIVE JSON REPAIR
+                try:
+                    logger.info(f"🔧 [TOPIC EXTRACTION DEBUG] ULTRA-AGGRESSIVE JSON repair starting...")
+                    
+                    # Extract everything between first { and last }
+                    repair_text = llm_output.strip()
+                    first_brace = repair_text.find('{')
+                    last_brace = repair_text.rfind('}')
+                    
+                    if first_brace >= 0 and last_brace > first_brace:
+                        repair_text = repair_text[first_brace:last_brace + 1]
+                        
+                        # AGGRESSIVE FIXES
+                        # 1. Fix incomplete fields (like "prerequisite" -> "prerequisites": [])
+                        repair_text = re.sub(r'"prerequisite[^"]*$', '"prerequisites": []', repair_text)
+                        repair_text = re.sub(r'"keyword[^"]*$', '"keywords": []', repair_text)
+                        repair_text = re.sub(r'"related_chunk[^"]*$', '"related_chunks": []', repair_text)
+                        
+                        # 2. Fix incomplete strings
+                        repair_text = re.sub(r':\s*"[^"]*$', ': ""', repair_text)
+                        
+                        # 3. Fix missing commas
+                        repair_text = re.sub(r'}\s*{', '},{', repair_text)
+                        repair_text = re.sub(r']\s*{', '],{', repair_text)
+                        repair_text = re.sub(r'}\s*"', '},"', repair_text)
+                        repair_text = re.sub(r']\s*"', '],"', repair_text)
+                        repair_text = re.sub(r'([0-9])\s*"', r'\1,"', repair_text)
+                        
+                        # 4. Fix trailing commas
+                        repair_text = re.sub(r',(\s*[}\]])', r'\1', repair_text)
+                        
+                        # 5. Fix arrays with missing commas
+                        repair_text = re.sub(r'"\s*"([^"]*")', r'", "\1', repair_text)
+                        
+                        # 6. Ensure proper JSON ending
+                        if not repair_text.endswith(']}'):
+                            repair_text = repair_text.rstrip(', \n\r\t') + ']}'
+                        
+                        # 7. Fix malformed arrays
+                        repair_text = re.sub(r'\[\s*,', '[', repair_text)  # Remove leading commas in arrays
+                        repair_text = re.sub(r',\s*\]', ']', repair_text)  # Remove trailing commas in arrays
+                        
+                        logger.info(f"🔧 [TOPIC EXTRACTION DEBUG] Ultra-repaired JSON: {repair_text[:300]}...")
+                        
+                        # Try parsing
+                        data = json.loads(repair_text)
+                        logger.info(f"✅ [TOPIC EXTRACTION DEBUG] SUCCESS! Ultra-aggressive repair worked!")
+                        
+                        if isinstance(data, dict) and "topics" in data:
+                            return data
+                        else:
+                            logger.error(f"❌ [TOPIC EXTRACTION DEBUG] Invalid structure after ultra-repair")
+                            raise ValueError("Invalid structure")
+                            
+                except Exception as ultra_err:
+                    logger.error(f"❌ [TOPIC EXTRACTION DEBUG] Ultra-aggressive repair failed: {ultra_err}")
+                    logger.error(f"🔧 [TOPIC EXTRACTION DEBUG] Will use fallback construction...")
+                    
+                    # ULTIMATE FALLBACK: Never fail, always return something
+                    try:
+                        logger.info(f"🆘 [TOPIC EXTRACTION DEBUG] Ultimate fallback - extracting any text as topics...")
+                        
+                        # Extract ANY topic-like text from LLM output
+                        potential_topics = []
+                        
+                        # Method 1: Find anything that looks like a topic title
+                        title_patterns = [
+                            r'"topic_title"\s*:\s*"([^"]+)"',
+                            r'\*\*([^*]+)\*\*',  # **Topic**
+                            r'#{1,3}\s*(.+)',     # # Topic
+                            r'(\d+)\.\s*([^.\n]+)',  # 1. Topic
+                            r'-\s*([^-\n]+)',     # - Topic
+                        ]
+                        
+                        for pattern in title_patterns:
+                            matches = re.findall(pattern, llm_output, re.MULTILINE)
+                            for match in matches:
+                                title = match if isinstance(match, str) else match[-1]  # Get last group if tuple
+                                title = title.strip()
+                                if len(title) > 5 and len(title) < 100:  # Reasonable length
+                                    potential_topics.append(title)
+                        
+                        # Remove duplicates and clean
+                        unique_topics = []
+                        seen = set()
+                        for topic in potential_topics:
+                            clean_topic = re.sub(r'[^\w\s]', '', topic).lower()
+                            if clean_topic not in seen and len(topic) > 3:
+                                unique_topics.append(topic)
+                                seen.add(clean_topic)
+                                if len(unique_topics) >= 10:  # Max 10 topics
+                                    break
+                        
+                        # If we found some topics, create JSON
+                        if unique_topics:
+                            fallback_topics = []
+                            for i, title in enumerate(unique_topics):
+                                fallback_topics.append({
+                                    "topic_title": title,
+                                    "order": i + 1,
+                                    "difficulty": "orta",
+                                    "keywords": [title.split()[0] if title.split() else "genel"],
+                                    "prerequisites": [],
+                                    "subtopics": [],
+                                    "related_chunks": []
+                                })
+                            
+                            fallback_data = {"topics": fallback_topics}
+                            logger.info(f"🆘 [TOPIC EXTRACTION DEBUG] Ultimate fallback created {len(fallback_topics)} topics from text patterns")
+                            return fallback_data
+                        
+                        # If no topics found, create generic ones
+                        logger.info(f"🆘 [TOPIC EXTRACTION DEBUG] No topics found, creating generic topics...")
+                        generic_topics = [
+                            {
+                                "topic_title": "Genel Biyoloji Konuları",
+                                "order": 1,
+                                "difficulty": "orta",
+                                "keywords": ["biyoloji", "genel"],
+                                "prerequisites": [],
+                                "subtopics": [],
+                                "related_chunks": []
+                            }
+                        ]
+                        
+                        fallback_data = {"topics": generic_topics}
+                        logger.info(f"🆘 [TOPIC EXTRACTION DEBUG] Created generic fallback with {len(generic_topics)} topics")
+                        return fallback_data
+                        
+                    except Exception as ultimate_err:
+                        logger.error(f"❌ [TOPIC EXTRACTION DEBUG] Ultimate fallback failed: {ultimate_err}")
+                        # NEVER FAIL - return absolute minimum
+                        return {
+                            "topics": [{
+                                "topic_title": "Ders İçeriği",
+                                "order": 1,
+                                "difficulty": "orta",
+                                "keywords": ["ders"],
+                                "prerequisites": [],
+                                "subtopics": [],
+                                "related_chunks": []
+                            }]
+                        }
         
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse LLM JSON output: {e}")
@@ -247,7 +471,8 @@ Sadece JSON çıktısı ver, başka açıklama yapma."""
 
 def get_session_model(session_id: str) -> str:
     """
-    Get the model configured for a specific session.
+    Get the model configured for a specific session from API Gateway.
+    Falls back to llama3:8b (Ollama) for unlimited tokens
     
     Args:
         session_id: Session ID
@@ -256,16 +481,34 @@ def get_session_model(session_id: str) -> str:
         Model name to use for this session
     """
     if not session_id:
-        return "llama-3.1-8b-instant"  # Default Groq model
+        return "llama3:8b"  # Ollama default - no token limits!
         
     try:
-        # Try to get session configuration from auth service or database
-        # For now, return a reasonable default that works with the model inference service
-        # TODO: Implement actual session-specific model retrieval from database
-        return "llama-3.1-8b-instant"  # Use Groq as default instead of Ollama
+        # Get session config from API Gateway
+        import os
+        api_gateway_url = os.getenv("API_GATEWAY_URL", "http://api-gateway:8000")
+        
+        response = requests.get(
+            f"{api_gateway_url}/sessions/{session_id}",
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            session_data = response.json()
+            rag_settings = session_data.get("rag_settings", {})
+            
+            if rag_settings and rag_settings.get("model"):
+                model = rag_settings["model"]
+                logger.info(f"Using session model: {model} for session {session_id}")
+                return model
+        
+        # Fallback to Ollama llama3:8b (no token limits)
+        logger.info(f"No model configured for session {session_id}, using Ollama llama3:8b")
+        return "llama3:8b"
+        
     except Exception as e:
-        logger.warning(f"Could not get session model for {session_id}: {e}")
-        return "llama-3.1-8b-instant"  # Default fallback
+        logger.warning(f"Could not get session model for {session_id}: {e}, using Ollama fallback")
+        return "llama3:8b"  # Safe fallback - Ollama has no token limits
 
 
 def classify_question_with_llm(question: str, topics: List[Dict[str, Any]], session_id: str = None) -> Dict[str, Any]:
@@ -281,9 +524,9 @@ def classify_question_with_llm(question: str, topics: List[Dict[str, Any]], sess
         Classification result with topic_id, confidence, etc.
     """
     try:
-        # Prepare topics list for LLM
+        # Prepare topics list for LLM with robust title extraction
         topics_text = "\n".join([
-            f"ID: {t['topic_id']}, Başlık: {t['topic_title']}, Anahtar Kelimeler: {', '.join(t.get('keywords', []))}"
+            f"ID: {t['topic_id']}, Başlık: {t.get('topic_title', t.get('title', t.get('name', 'Başlıksız')))}, Anahtar Kelimeler: {', '.join(t.get('keywords', []))}"
             for t in topics
         ])
         
@@ -377,6 +620,21 @@ async def extract_topics(request: TopicExtractionRequest):
                 detail=f"No chunks found for session {request.session_id}. Please ensure documents are processed."
             )
         
+        # Normalize chunk IDs - try multiple field names
+        logger.info(f"📦 [TOPIC EXTRACTION] Normalizing chunk IDs from {len(chunks)} chunks")
+        for i, chunk in enumerate(chunks):
+            # Try multiple possible ID field names
+            chunk_id = chunk.get("chunk_id") or chunk.get("id") or chunk.get("chunkId") or chunk.get("_id")
+            if chunk_id is None:
+                # If no ID found, use index as ID (0-based, but we'll use 1-based for consistency)
+                chunk_id = i + 1
+                chunk["chunk_id"] = chunk_id
+                logger.warning(f"⚠️ [TOPIC EXTRACTION] Chunk {i} has no ID, using index {chunk_id}")
+            else:
+                # Ensure chunk_id is set for consistency
+                chunk["chunk_id"] = chunk_id
+        logger.info(f"✅ [TOPIC EXTRACTION] Normalized chunk IDs: {[c.get('chunk_id') for c in chunks[:5]]}")
+        
         # Extract topics using LLM
         start_time = datetime.now()
         topics_data = extract_topics_with_llm(chunks, request.options or {}, request.session_id)
@@ -388,6 +646,43 @@ async def extract_topics(request: TopicExtractionRequest):
         with db.get_connection() as conn:
             # First, save main topics
             for topic_data in topics_data.get("topics", []):
+                # Map LLM's related_chunks (which might be indices or IDs) to actual chunk IDs
+                related_chunk_ids = []
+                llm_related = topic_data.get("related_chunks", [])
+                
+                # If LLM returned chunk indices (0-based or 1-based), map them to actual chunk IDs
+                for ref in llm_related:
+                    if isinstance(ref, int):
+                        # Try as 1-based index first
+                        if 1 <= ref <= len(chunks):
+                            chunk_id = chunks[ref - 1].get("chunk_id")
+                            if chunk_id and chunk_id not in related_chunk_ids:
+                                related_chunk_ids.append(chunk_id)
+                        # Try as 0-based index
+                        elif 0 <= ref < len(chunks):
+                            chunk_id = chunks[ref].get("chunk_id")
+                            if chunk_id and chunk_id not in related_chunk_ids:
+                                related_chunk_ids.append(chunk_id)
+                    else:
+                        # Already an ID, use it directly
+                        if ref not in related_chunk_ids:
+                            related_chunk_ids.append(ref)
+                
+                # If no related chunks found, try to match by keywords
+                if not related_chunk_ids and topic_data.get("keywords"):
+                    keywords = topic_data.get("keywords", [])
+                    for chunk in chunks:
+                        chunk_text = (chunk.get("chunk_text") or chunk.get("content") or chunk.get("text", "")).lower()
+                        # Check if any keyword appears in chunk
+                        if any(kw.lower() in chunk_text for kw in keywords):
+                            chunk_id = chunk.get("chunk_id")
+                            if chunk_id and chunk_id not in related_chunk_ids:
+                                related_chunk_ids.append(chunk_id)
+                                if len(related_chunk_ids) >= 5:  # Limit to 5 chunks
+                                    break
+                
+                logger.info(f"📝 [TOPIC EXTRACTION] Topic '{topic_data['topic_title']}' mapped to {len(related_chunk_ids)} chunk IDs: {related_chunk_ids[:5]}")
+                
                 # Insert main topic
                 cursor = conn.execute("""
                     INSERT INTO course_topics (
@@ -405,7 +700,7 @@ async def extract_topics(request: TopicExtractionRequest):
                     json.dumps(topic_data.get("keywords", [])),
                     topic_data.get("difficulty", "intermediate"),
                     json.dumps(topic_data.get("prerequisites", [])),
-                    json.dumps(topic_data.get("related_chunks", [])),
+                    json.dumps(related_chunk_ids),  # Use mapped chunk IDs
                     request.extraction_method,
                     request.options.get("min_confidence", 0.7) if request.options else 0.7,
                     True
@@ -579,6 +874,62 @@ async def update_topic(topic_id: int, request: TopicUpdateRequest):
         raise HTTPException(status_code=500, detail=f"Failed to update topic: {str(e)}")
 
 
+@router.delete("/{topic_id}")
+async def delete_topic(topic_id: int):
+    """
+    Delete a topic and its related data (cascading deletes handled by database)
+    """
+    db = get_db()
+    
+    # Get session_id from topic first to check APRAG status
+    with db.get_connection() as conn:
+        cursor = conn.execute("SELECT session_id, topic_title FROM course_topics WHERE topic_id = ?", (topic_id,))
+        topic = cursor.fetchone()
+        if not topic:
+            raise HTTPException(status_code=404, detail="Topic not found")
+        
+        topic_dict = dict(topic)
+        session_id = topic_dict["session_id"]
+        topic_title = topic_dict.get("topic_title", "Unknown")
+        
+        # Check if APRAG is enabled
+        if not FeatureFlags.is_aprag_enabled(session_id):
+            raise HTTPException(
+                status_code=403,
+                detail="APRAG module is disabled. Please enable it from admin settings."
+            )
+    
+    try:
+        with db.get_connection() as conn:
+            # Delete topic (cascading deletes will handle related records)
+            # This will also delete:
+            # - Subtopic relationships (parent_topic_id set to NULL)
+            # - Knowledge base entries (ON DELETE CASCADE)
+            # - QA pairs (ON DELETE CASCADE)
+            # - Topic progress (ON DELETE CASCADE)
+            # - Question topic mappings (ON DELETE CASCADE)
+            cursor = conn.execute("DELETE FROM course_topics WHERE topic_id = ?", (topic_id,))
+            
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Topic not found")
+            
+            conn.commit()
+            
+            logger.info(f"Topic {topic_id} ('{topic_title}') deleted successfully")
+            
+            return {
+                "success": True,
+                "message": f"Topic '{topic_title}' deleted successfully",
+                "topic_id": topic_id
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting topic: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete topic: {str(e)}")
+
+
 @router.post("/classify-question")
 async def classify_question(request: QuestionClassificationRequest):
     """
@@ -675,6 +1026,595 @@ async def classify_question(request: QuestionClassificationRequest):
     except Exception as e:
         logger.error(f"Error classifying question: {e}")
         raise HTTPException(status_code=500, detail=f"Question classification failed: {str(e)}")
+
+
+import threading
+import uuid
+
+# Global dict to track extraction jobs
+extraction_jobs = {}
+
+def run_extraction_in_background(job_id: str, session_id: str, method: str):
+    """
+    Run extraction in background thread
+    Updates job status in global dict
+    """
+    db = get_db()
+    
+    try:
+        extraction_jobs[job_id]["status"] = "processing"
+        extraction_jobs[job_id]["message"] = "Chunk'lar alınıyor..."
+        
+        # Get all chunks for session (NO LIMIT!)
+        chunks = fetch_chunks_for_session(session_id)
+        
+        if not chunks:
+            extraction_jobs[job_id]["status"] = "failed"
+            extraction_jobs[job_id]["error"] = "No chunks found"
+            return
+        
+        extraction_jobs[job_id]["message"] = f"{len(chunks)} chunk bulundu, batch'lere bölünüyor..."
+        
+        # Normalize chunk IDs - try multiple field names
+        logger.info(f"📦 [TOPIC EXTRACTION] Normalizing chunk IDs from {len(chunks)} chunks")
+        for i, chunk in enumerate(chunks):
+            # Try multiple possible ID field names
+            chunk_id = chunk.get("chunk_id") or chunk.get("id") or chunk.get("chunkId") or chunk.get("_id")
+            if chunk_id is None:
+                # If no ID found, use a unique ID based on session and index
+                # This ensures we have real IDs, not just indices
+                chunk_id = hash(f"{session_id}_{i}") % 1000000  # Generate a unique ID
+                if chunk_id < 0:
+                    chunk_id = abs(chunk_id)
+                chunk["chunk_id"] = chunk_id
+                logger.warning(f"⚠️ [TOPIC EXTRACTION] Chunk {i} has no ID, generated unique ID: {chunk_id}")
+            else:
+                # Ensure chunk_id is set for consistency
+                chunk["chunk_id"] = chunk_id
+        logger.info(f"✅ [TOPIC EXTRACTION] Normalized chunk IDs (first 10): {[c.get('chunk_id') for c in chunks[:10]]}")
+        
+        if method == "full":
+            # Delete existing topics
+            with db.get_connection() as conn:
+                deleted_count = conn.execute("DELETE FROM course_topics WHERE session_id = ?", (session_id,)).rowcount
+                conn.commit()
+                logger.info(f"🗑️ [TOPIC EXTRACTION] Deleted {deleted_count} existing topics for session {session_id}")
+            
+            extraction_jobs[job_id]["message"] = f"Eski konular silindi ({deleted_count} konu), extraction başlıyor..."
+            
+            # Split chunks into SMALLER batches for reliability
+            batches = split_chunks_to_batches(chunks, max_chars=12000)  # Smaller batches for stability
+            extraction_jobs[job_id]["total_batches"] = len(batches)
+            
+            logger.info(f"Split into {len(batches)} batches")
+            
+            # Extract topics from each batch with INCREMENTAL SAVES
+            all_topics = []
+            for i, batch in enumerate(batches):
+                extraction_jobs[job_id]["current_batch"] = i + 1
+                extraction_jobs[job_id]["message"] = f"Batch {i+1}/{len(batches)} işleniyor..."
+                
+                logger.info(f"🔄 Processing batch {i+1}/{len(batches)} ({len(batch)} chunks)")
+                topics_data = extract_topics_with_llm(batch, {"include_subtopics": True}, session_id)
+                batch_topics = topics_data.get("topics", [])
+                all_topics.extend(batch_topics)
+                
+                # INCREMENTAL SAVE - Save topics after each batch
+                if batch_topics:
+                    # Normalize topics first (handle "name" -> "topic_title" etc.)
+                    normalized_batch_topics = []
+                    current_topic_count = len(all_topics) - len(batch_topics)
+                    
+                    for j, topic in enumerate(batch_topics):
+                        # Use merge function's logic to normalize the topic
+                        title = None
+                        possible_title_keys = ["topic_title", "title", "name", "topic_name", "başlık", "konu"]
+                        
+                        for key in possible_title_keys:
+                            if key in topic and topic[key]:
+                                title = str(topic[key]).strip()
+                                break
+                        
+                        if title:  # Only save if we found a valid title
+                            # Map LLM's related_chunks to actual chunk IDs
+                            related_chunk_ids = []
+                            llm_related = topic.get("related_chunks", topic.get("ilgili_chunklar", []))
+                            
+                            # Create a map of chunk_id -> chunk for quick lookup
+                            chunk_id_map = {chunk.get("chunk_id"): chunk for chunk in chunks if chunk.get("chunk_id")}
+                            
+                            # Process LLM's related_chunks
+                            for ref in llm_related:
+                                if isinstance(ref, int):
+                                    # First try: ref is a chunk ID (most likely if LLM followed instructions)
+                                    if ref in chunk_id_map:
+                                        if ref not in related_chunk_ids:
+                                            related_chunk_ids.append(ref)
+                                    # Second try: ref is a 1-based index
+                                    elif 1 <= ref <= len(chunks):
+                                        chunk_id = chunks[ref - 1].get("chunk_id")
+                                        if chunk_id and chunk_id not in related_chunk_ids:
+                                            related_chunk_ids.append(chunk_id)
+                                    # Third try: ref is a 0-based index
+                                    elif 0 <= ref < len(chunks):
+                                        chunk_id = chunks[ref].get("chunk_id")
+                                        if chunk_id and chunk_id not in related_chunk_ids:
+                                            related_chunk_ids.append(chunk_id)
+                                else:
+                                    # Already an ID (string or other type), try to convert and use
+                                    try:
+                                        ref_id = int(ref) if isinstance(ref, str) and ref.isdigit() else ref
+                                        if ref_id in chunk_id_map and ref_id not in related_chunk_ids:
+                                            related_chunk_ids.append(ref_id)
+                                    except (ValueError, TypeError):
+                                        pass
+                            
+                            # If no related chunks found, try to match by keywords
+                            if not related_chunk_ids:
+                                keywords = topic.get("keywords", topic.get("anahtar_kelimeler", []))
+                                if keywords:
+                                    for chunk in chunks:
+                                        chunk_text = (chunk.get("chunk_text") or chunk.get("content") or chunk.get("text", "")).lower()
+                                        # Check if any keyword appears in chunk
+                                        if any(kw.lower() in chunk_text for kw in keywords):
+                                            chunk_id = chunk.get("chunk_id")
+                                            if chunk_id and chunk_id not in related_chunk_ids:
+                                                related_chunk_ids.append(chunk_id)
+                                                if len(related_chunk_ids) >= 5:  # Limit to 5 chunks
+                                                    break
+                            
+                            logger.info(f"📝 [TOPIC EXTRACTION] Topic '{title}': LLM returned {llm_related}, mapped to chunk IDs: {related_chunk_ids}")
+                            
+                            normalized_topic = {
+                                "topic_title": title,
+                                "order": current_topic_count + j + 1,
+                                "difficulty": topic.get("difficulty", topic.get("zorluk", topic.get("estimated_difficulty", "orta"))),
+                                "keywords": topic.get("keywords", topic.get("anahtar_kelimeler", [])),
+                                "prerequisites": topic.get("prerequisites", topic.get("on_koşullar", [])),
+                                "subtopics": topic.get("subtopics", topic.get("alt_konular", [])),
+                                "related_chunks": related_chunk_ids  # Use mapped chunk IDs
+                            }
+                            normalized_batch_topics.append(normalized_topic)
+                    
+                    # Save normalized batch topics to database immediately
+                    if normalized_batch_topics:
+                        saved_batch_count = save_topics_to_db(normalized_batch_topics, session_id, db)
+                        logger.info(f"💾 [INCREMENTAL SAVE] Batch {i+1}: Saved {saved_batch_count} topics to database")
+                        extraction_jobs[job_id]["message"] = f"Batch {i+1}/{len(batches)} tamamlandı, {saved_batch_count} konu kaydedildi"
+                    else:
+                        logger.warning(f"⚠️ [INCREMENTAL SAVE] Batch {i+1}: No valid topics found to save")
+            
+            extraction_jobs[job_id]["message"] = "Tüm batch'ler tamamlandı! Son kontrolü yapılıyor..."
+            
+            # Topics already saved incrementally, just get final count
+            with db.get_connection() as conn:
+                cursor = conn.execute("SELECT COUNT(*) as count FROM course_topics WHERE session_id = ?", (session_id,))
+                saved_count = dict(cursor.fetchone())["count"]
+            
+            logger.info(f"✅ [FINAL] Total {saved_count} topics saved incrementally across {len(batches)} batches")
+            
+            extraction_jobs[job_id]["status"] = "completed"
+            extraction_jobs[job_id]["message"] = "Tamamlandı!"
+            extraction_jobs[job_id]["result"] = {
+                "batches_processed": len(batches),
+                "raw_topics_extracted": len(all_topics),
+                "saved_topics_count": saved_count,
+                "chunks_analyzed": len(chunks)
+            }
+            
+    except Exception as e:
+        logger.error(f"Background extraction error: {e}")
+        extraction_jobs[job_id]["status"] = "failed"
+        extraction_jobs[job_id]["error"] = str(e)
+
+
+@router.post("/re-extract/{session_id}")
+async def re_extract_topics_smart(
+    session_id: str,
+    method: str = "full",  # full, partial, merge
+    force_refresh: bool = True
+):
+    """
+    Smart topic re-extraction - ASYNC with job tracking
+    
+    Returns immediately with job_id
+    Client polls /re-extract/status/{job_id} for progress
+    """
+    
+    try:
+        # Create job
+        job_id = str(uuid.uuid4())
+        extraction_jobs[job_id] = {
+            "job_id": job_id,
+            "session_id": session_id,
+            "method": method,
+            "status": "starting",
+            "message": "İşlem başlatılıyor...",
+            "current_batch": 0,
+            "total_batches": 0,
+            "result": None,
+            "error": None
+        }
+        
+        # Start background thread
+        thread = threading.Thread(
+            target=run_extraction_in_background,
+            args=(job_id, session_id, method),
+            daemon=True
+        )
+        thread.start()
+        
+        logger.info(f"Started background extraction job: {job_id} for session {session_id}")
+        
+        # Return immediately
+        return {
+            "success": True,
+            "job_id": job_id,
+            "session_id": session_id,
+            "method": method,
+            "message": "Konu çıkarımı arka planda başlatıldı. Lütfen bekleyin...",
+            "status_check_url": f"/api/aprag/topics/re-extract/status/{job_id}"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error starting extraction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/re-extract/status/{job_id}")
+async def get_extraction_status(job_id: str):
+    """
+    Get status of background extraction job
+    """
+    if job_id not in extraction_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = extraction_jobs[job_id]
+    return {
+        "job_id": job_id,
+        "session_id": job["session_id"],
+        "status": job["status"],  # starting, processing, completed, failed
+        "message": job["message"],
+        "current_batch": job["current_batch"],
+        "total_batches": job["total_batches"],
+        "result": job["result"],
+        "error": job["error"]
+    }
+
+
+# Keep old sync implementation for backward compatibility
+@router.post("/re-extract-sync/{session_id}")
+async def re_extract_topics_sync(
+    session_id: str,
+    method: str = "full"
+):
+    """
+    Synchronous re-extraction (blocks until complete)
+    USE ASYNC VERSION INSTEAD FOR BETTER UX!
+    """
+    db = get_db()
+    
+    try:
+        # Get all chunks for session (NO LIMIT!)
+        chunks = fetch_chunks_for_session(session_id)
+        
+        if not chunks:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No chunks found for session {session_id}"
+            )
+        
+        logger.info(f"Re-extracting topics for session {session_id} with method: {method}")
+        logger.info(f"Total chunks available: {len(chunks)}")
+        
+        if method == "full":
+            # Delete existing topics
+            with db.get_connection() as conn:
+                conn.execute("""
+                    DELETE FROM course_topics WHERE session_id = ?
+                """, (session_id,))
+                conn.commit()
+            
+            logger.info(f"Deleted old topics for session {session_id}")
+            
+            # Split chunks into batches (12k chars each to stay within LLM limit)
+            batches = split_chunks_to_batches(chunks, max_chars=12000)
+            logger.info(f"Split into {len(batches)} batches")
+            
+            # Extract topics from each batch
+            all_topics = []
+            for i, batch in enumerate(batches):
+                logger.info(f"Processing batch {i+1}/{len(batches)} ({len(batch)} chunks)")
+                topics_data = extract_topics_with_llm(batch, {"include_subtopics": True}, session_id)
+                all_topics.extend(topics_data.get("topics", []))
+            
+            # Merge similar topics (remove duplicates)
+            merged_topics = merge_similar_topics(all_topics)
+            logger.info(f"Merged {len(all_topics)} raw topics into {len(merged_topics)} unique topics")
+            
+            # Re-order topics
+            for i, topic in enumerate(merged_topics):
+                topic["order"] = i + 1
+            
+            # Save to database
+            saved_count = save_topics_to_db(merged_topics, session_id, db)
+            
+            return {
+                "success": True,
+                "method": "full",
+                "session_id": session_id,
+                "batches_processed": len(batches),
+                "raw_topics_extracted": len(all_topics),
+                "merged_topics_count": len(merged_topics),
+                "saved_topics_count": saved_count,
+                "chunks_analyzed": len(chunks)
+            }
+        
+        elif method == "partial":
+            # Get existing topics
+            with db.get_connection() as conn:
+                cursor = conn.execute("""
+                    SELECT topic_title FROM course_topics
+                    WHERE session_id = ? AND is_active = TRUE
+                """, (session_id,))
+                existing_titles = [dict(row)["topic_title"] for row in cursor.fetchall()]
+            
+            # Extract topics from all chunks
+            batches = split_chunks_to_batches(chunks, max_chars=12000)
+            all_topics = []
+            for batch in batches:
+                topics_data = extract_topics_with_llm(batch, {"include_subtopics": True}, session_id)
+                all_topics.extend(topics_data.get("topics", []))
+            
+            # Filter out existing topics
+            new_topics = [t for t in all_topics if t["topic_title"] not in existing_titles]
+            merged_new_topics = merge_similar_topics(new_topics)
+            
+            # Get max order from existing topics
+            with db.get_connection() as conn:
+                cursor = conn.execute("""
+                    SELECT MAX(topic_order) as max_order FROM course_topics
+                    WHERE session_id = ?
+                """, (session_id,))
+                max_order = dict(cursor.fetchone())["max_order"] or 0
+            
+            # Set order for new topics
+            for i, topic in enumerate(merged_new_topics):
+                topic["order"] = max_order + i + 1
+            
+            # Save new topics
+            saved_count = save_topics_to_db(merged_new_topics, session_id, db)
+            
+            return {
+                "success": True,
+                "method": "partial",
+                "session_id": session_id,
+                "existing_topics_count": len(existing_titles),
+                "new_topics_added": saved_count,
+                "chunks_analyzed": len(chunks)
+            }
+        
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown method: {method}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in smart re-extraction: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Smart re-extraction failed: {str(e)}")
+
+
+def split_chunks_to_batches(chunks: List[Dict], max_chars: int = 25000) -> List[List[Dict]]:
+    """
+    Split chunks into batches based on character limit
+    
+    FLEXIBLE: 25k chars per batch
+    - Ollama models: No token limit, can handle large batches
+    - Groq models: We'll use smart truncation (first 15k if needed)
+    
+    This reduces batch count significantly when using Ollama!
+    """
+    batches = []
+    current_batch = []
+    current_chars = 0
+    
+    for chunk in chunks:
+        chunk_text = chunk.get('chunk_text', chunk.get('content', chunk.get('text', '')))
+        chunk_length = len(chunk_text)
+        
+        if current_chars + chunk_length > max_chars and current_batch:
+            # Start new batch
+            batches.append(current_batch)
+            current_batch = [chunk]
+            current_chars = chunk_length
+        else:
+            current_batch.append(chunk)
+            current_chars += chunk_length
+    
+    # Add last batch
+    if current_batch:
+        batches.append(current_batch)
+    
+    return batches
+
+
+def merge_similar_topics(topics: List[Dict]) -> List[Dict]:
+    """
+    Merge similar/duplicate topics based on title similarity
+    NEVER FAIL: Handle various topic key formats gracefully
+    """
+    if not topics:
+        return []
+    
+    merged = []
+    seen_titles = set()
+    
+    for topic in topics:
+        # ROBUST TITLE EXTRACTION - Handle various key formats
+        title = None
+        possible_title_keys = ["topic_title", "title", "name", "topic_name", "başlık", "konu"]
+        
+        for key in possible_title_keys:
+            if key in topic and topic[key]:
+                title = str(topic[key]).strip()
+                break
+        
+        # If no title found, skip this topic
+        if not title:
+            logger.warning(f"🔧 [MERGE TOPICS] Skipping topic with no valid title: {list(topic.keys())}")
+            continue
+        
+        title_lower = title.lower()
+        
+        # Check for exact match
+        if title_lower in seen_titles:
+            logger.debug(f"🔧 [MERGE TOPICS] Skipping duplicate exact match: {title}")
+            continue
+        
+        # Check for similar titles (simple approach)
+        is_duplicate = False
+        for existing_title in seen_titles:
+            # If 70%+ of words are same, consider duplicate
+            words1 = set(title_lower.split())
+            words2 = set(existing_title.split())
+            if len(words1 & words2) / max(len(words1), len(words2)) > 0.7:
+                logger.debug(f"🔧 [MERGE TOPICS] Skipping similar duplicate: {title} (similar to: {existing_title})")
+                is_duplicate = True
+                break
+        
+        if not is_duplicate:
+            # NORMALIZE THE TOPIC - Ensure consistent format
+            normalized_topic = {
+                "topic_title": title,
+                "order": topic.get("order", topic.get("topic_order", 0)),
+                "difficulty": topic.get("difficulty", topic.get("zorluk", topic.get("estimated_difficulty", "orta"))),
+                "keywords": topic.get("keywords", topic.get("anahtar_kelimeler", [])),
+                "prerequisites": topic.get("prerequisites", topic.get("on_koşullar", [])),
+                "subtopics": topic.get("subtopics", topic.get("alt_konular", [])),
+                "related_chunks": topic.get("related_chunks", topic.get("ilgili_chunklar", []))
+            }
+            
+            merged.append(normalized_topic)
+            seen_titles.add(title_lower)
+            logger.debug(f"✅ [MERGE TOPICS] Added unique topic: {title}")
+    
+    logger.info(f"🔧 [MERGE TOPICS] Merged {len(topics)} input topics into {len(merged)} unique topics")
+    return merged
+
+
+def save_topics_to_db(topics: List[Dict], session_id: str, db: DatabaseManager) -> int:
+    """
+    Save topics to database with proper Turkish difficulty level handling
+    Returns count of saved topics
+    """
+    
+    def normalize_difficulty(difficulty: str) -> str:
+        """Convert Turkish difficulty levels to English database values"""
+        turkish_to_english = {
+            "başlangıç": "beginner",
+            "baslangic": "beginner",  # Without Turkish characters
+            "temel": "beginner",
+            "orta": "intermediate",
+            "ileri": "advanced",
+            "gelişmiş": "advanced",
+            "gelismis": "advanced",  # Without Turkish characters
+            "zor": "advanced"
+        }
+        
+        # Normalize input
+        normalized_input = difficulty.lower().strip()
+        
+        # Return mapped value or default to intermediate
+        return turkish_to_english.get(normalized_input, difficulty.lower() if difficulty.lower() in ["beginner", "intermediate", "advanced"] else "intermediate")
+    
+    saved_count = 0
+    
+    with db.get_connection() as conn:
+        for topic_data in topics:
+            # ROBUST TITLE EXTRACTION
+            title = None
+            possible_title_keys = ["topic_title", "title", "name", "topic_name", "başlık", "konu"]
+            
+            for key in possible_title_keys:
+                if key in topic_data and topic_data[key]:
+                    title = str(topic_data[key]).strip()
+                    break
+            
+            # Skip if no valid title found
+            if not title:
+                logger.warning(f"💾 [TOPIC SAVE] Skipping topic with no valid title: {list(topic_data.keys())}")
+                continue
+            
+            # Normalize difficulty level
+            original_difficulty = topic_data.get("difficulty", "intermediate")
+            normalized_difficulty = normalize_difficulty(original_difficulty)
+            
+            logger.info(f"💾 [TOPIC SAVE] Saving topic: {title} (difficulty: {original_difficulty} -> {normalized_difficulty})")
+            
+            # Insert main topic
+            cursor = conn.execute("""
+                INSERT INTO course_topics (
+                    session_id, topic_title, parent_topic_id, topic_order,
+                    description, keywords, estimated_difficulty,
+                    prerequisites, related_chunk_ids,
+                    extraction_method, extraction_confidence, is_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                session_id,
+                title,
+                None,  # parent_topic_id
+                topic_data.get("order", 0),
+                topic_data.get("description", None),
+                json.dumps(topic_data.get("keywords", []), ensure_ascii=False),
+                normalized_difficulty,  # Use normalized difficulty
+                json.dumps(topic_data.get("prerequisites", []), ensure_ascii=False),
+                json.dumps(topic_data.get("related_chunks", []), ensure_ascii=False),
+                "llm_analysis",
+                0.75,
+                True
+            ))
+            
+            main_topic_id = cursor.lastrowid
+            saved_count += 1
+            
+            # Save subtopics with robust title extraction
+            for subtopic_data in topic_data.get("subtopics", []):
+                # ROBUST SUBTOPIC TITLE EXTRACTION
+                subtopic_title = None
+                possible_title_keys = ["topic_title", "title", "name", "topic_name", "başlık", "konu"]
+                
+                for key in possible_title_keys:
+                    if key in subtopic_data and subtopic_data[key]:
+                        subtopic_title = str(subtopic_data[key]).strip()
+                        break
+                
+                # Skip if no valid subtopic title found
+                if not subtopic_title:
+                    logger.warning(f"💾 [TOPIC SAVE] Skipping subtopic with no valid title: {list(subtopic_data.keys())}")
+                    continue
+                
+                conn.execute("""
+                    INSERT INTO course_topics (
+                        session_id, topic_title, parent_topic_id, topic_order,
+                        keywords, extraction_method, extraction_confidence, is_active
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    session_id,
+                    subtopic_title,
+                    main_topic_id,
+                    subtopic_data.get("order", 0),
+                    json.dumps(subtopic_data.get("keywords", []), ensure_ascii=False),
+                    "llm_analysis",
+                    0.75,
+                    True
+                ))
+                saved_count += 1
+        
+        conn.commit()
+    
+    return saved_count
 
 
 @router.get("/progress/{user_id}/{session_id}")

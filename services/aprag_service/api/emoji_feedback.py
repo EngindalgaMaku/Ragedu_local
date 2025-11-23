@@ -56,6 +56,59 @@ class EmojiFeedbackCreate(BaseModel):
     comment: Optional[str] = Field(None, max_length=500, description="Optional comment")
 
 
+class MultiFeedbackCreate(BaseModel):
+    """Request model for multi-dimensional feedback"""
+    interaction_id: int = Field(..., description="Interaction ID to provide feedback for")
+    user_id: str = Field(..., description="User ID")
+    session_id: str = Field(..., description="Session ID")
+    
+    # Multi-dimensional scores (1-5 scale)
+    understanding: int = Field(..., ge=1, le=5, description="Understanding level (1-5)")
+    relevance: int = Field(..., ge=1, le=5, description="Relevance level (1-5)")
+    clarity: int = Field(..., ge=1, le=5, description="Clarity level (1-5)")
+    
+    # Optional emoji and comment
+    emoji: Optional[str] = Field(None, description="Optional emoji feedback")
+    comment: Optional[str] = Field(None, max_length=1000, description="Optional comment")
+
+
+class MultiFeedbackResponse(BaseModel):
+    """Response model for multi-dimensional feedback"""
+    message: str
+    interaction_id: int
+    feedback_entry_id: int
+    dimensions: Dict[str, int]
+    overall_score: float
+    profile_updated: bool = False
+
+
+class MultiDimensionalStats(BaseModel):
+    """Response model for multi-dimensional feedback statistics"""
+    user_id: str
+    session_id: str
+    
+    # Dimension averages
+    avg_understanding: Optional[float] = None
+    avg_relevance: Optional[float] = None
+    avg_clarity: Optional[float] = None
+    avg_overall: Optional[float] = None
+    
+    # Feedback counts
+    total_feedback_count: int
+    dimension_feedback_count: int
+    emoji_only_count: int
+    
+    # Distributions
+    understanding_distribution: Dict[str, int]
+    relevance_distribution: Dict[str, int]
+    clarity_distribution: Dict[str, int]
+    
+    # Trend analysis
+    improvement_trend: str = "insufficient_data"
+    weak_dimensions: List[str] = []
+    strong_dimensions: List[str] = []
+
+
 class EmojiFeedbackResponse(BaseModel):
     """Response model for emoji feedback"""
     message: str
@@ -348,6 +401,309 @@ async def get_emoji_stats(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get emoji stats: {str(e)}"
         )
+
+
+@router.post("/detailed-feedback", response_model=MultiFeedbackResponse, status_code=201)
+async def create_detailed_feedback(
+    feedback: MultiFeedbackCreate,
+    db: DatabaseManager = Depends(get_db)
+):
+    """
+    Submit multi-dimensional feedback for an interaction
+    
+    **Multi-Dimensional Assessment System**
+    
+    This endpoint allows students to provide detailed feedback across three dimensions:
+    - Understanding: How well did you understand the explanation? (1-5)
+    - Relevance: How relevant was the answer to your question? (1-5)
+    - Clarity: How clear and well-explained was the answer? (1-5)
+    
+    **Effects:**
+    - Updates interaction with detailed feedback dimensions
+    - Updates student profile with multi-dimensional data
+    - Updates analytics tables for detailed reporting
+    """
+    
+    # Check if emoji feedback is enabled (multi-dimensional is part of emoji feedback system)
+    if not FeatureFlags.is_emoji_feedback_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Feedback system is not enabled"
+        )
+    
+    try:
+        logger.info(f"Multi-dimensional feedback for interaction {feedback.interaction_id} "
+                   f"by user {feedback.user_id}: U={feedback.understanding}, "
+                   f"R={feedback.relevance}, C={feedback.clarity}")
+        
+        # Check if interaction exists
+        interaction = db.execute_query(
+            "SELECT * FROM student_interactions WHERE interaction_id = ?",
+            (feedback.interaction_id,)
+        )
+        
+        if not interaction:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Interaction {feedback.interaction_id} not found"
+            )
+        
+        # Calculate overall score (average of three dimensions)
+        overall_score = (feedback.understanding + feedback.relevance + feedback.clarity) / 3.0
+        
+        # Validate emoji if provided
+        emoji_score = None
+        if feedback.emoji and feedback.emoji not in EMOJI_SCORE_MAP:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid emoji. Must be one of: {list(EMOJI_SCORE_MAP.keys())}"
+            )
+        elif feedback.emoji:
+            emoji_score = EMOJI_SCORE_MAP[feedback.emoji]
+        
+        # Create detailed feedback entry
+        entry_id = db.execute_insert(
+            """
+            INSERT INTO detailed_feedback_entries
+            (interaction_id, user_id, session_id, understanding_score, relevance_score,
+             clarity_score, overall_score, emoji_feedback, emoji_score, comment, feedback_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'multi_dimensional')
+            """,
+            (
+                feedback.interaction_id, feedback.user_id, feedback.session_id,
+                feedback.understanding, feedback.relevance, feedback.clarity,
+                overall_score, feedback.emoji, emoji_score, feedback.comment
+            )
+        )
+        
+        # Update interaction with feedback dimensions JSON
+        feedback_dimensions = {
+            "understanding": feedback.understanding,
+            "relevance": feedback.relevance,
+            "clarity": feedback.clarity,
+            "overall_score": overall_score,
+            "emoji": feedback.emoji,
+            "emoji_score": emoji_score,
+            "feedback_type": "multi_dimensional"
+        }
+        
+        db.execute_update(
+            """
+            UPDATE student_interactions
+            SET feedback_dimensions = ?,
+                feedback_score = ?,
+                emoji_feedback = ?,
+                emoji_feedback_timestamp = CURRENT_TIMESTAMP
+            WHERE interaction_id = ?
+            """,
+            (json.dumps(feedback_dimensions), overall_score/5.0, feedback.emoji, feedback.interaction_id)
+        )
+        
+        logger.info(f"Updated interaction {feedback.interaction_id} with multi-dimensional feedback")
+        
+        # Update multi-dimensional profile
+        profile_updated = _update_profile_from_multi_feedback(
+            db,
+            feedback.user_id,
+            feedback.session_id,
+            feedback.understanding,
+            feedback.relevance,
+            feedback.clarity,
+            overall_score
+        )
+        
+        logger.info(f"Multi-dimensional feedback successfully recorded (entry_id: {entry_id})")
+        
+        return MultiFeedbackResponse(
+            message="Detaylı geri bildiriminiz kaydedildi. Teşekkürler!",
+            interaction_id=feedback.interaction_id,
+            feedback_entry_id=entry_id,
+            dimensions={
+                "understanding": feedback.understanding,
+                "relevance": feedback.relevance,
+                "clarity": feedback.clarity
+            },
+            overall_score=overall_score,
+            profile_updated=profile_updated
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create multi-dimensional feedback: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to record detailed feedback: {str(e)}"
+        )
+
+
+@router.get("/multi-stats/{user_id}/{session_id}", response_model=MultiDimensionalStats)
+async def get_multi_dimensional_stats(
+    user_id: str,
+    session_id: str,
+    db: DatabaseManager = Depends(get_db)
+):
+    """
+    Get multi-dimensional feedback statistics for a user/session
+    
+    Returns detailed analytics across Understanding, Relevance, and Clarity dimensions.
+    """
+    
+    if not FeatureFlags.is_emoji_feedback_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Feedback system is not enabled"
+        )
+    
+    try:
+        # Get multi-dimensional summary
+        summary = db.execute_query(
+            """
+            SELECT * FROM multi_feedback_summary
+            WHERE user_id = ? AND session_id = ?
+            """,
+            (user_id, session_id)
+        )
+        
+        if not summary:
+            # No feedback yet
+            return MultiDimensionalStats(
+                user_id=user_id,
+                session_id=session_id,
+                total_feedback_count=0,
+                dimension_feedback_count=0,
+                emoji_only_count=0,
+                understanding_distribution={},
+                relevance_distribution={},
+                clarity_distribution={}
+            )
+        
+        row = summary[0]
+        
+        # Parse JSON distributions
+        understanding_dist = {}
+        relevance_dist = {}
+        clarity_dist = {}
+        
+        try:
+            if row.get('understanding_distribution'):
+                understanding_dist = json.loads(row['understanding_distribution'])
+            if row.get('relevance_distribution'):
+                relevance_dist = json.loads(row['relevance_distribution'])
+            if row.get('clarity_distribution'):
+                clarity_dist = json.loads(row['clarity_distribution'])
+        except:
+            pass
+        
+        # Parse weak/strong dimensions
+        weak_dims = []
+        strong_dims = []
+        
+        try:
+            if row.get('weak_dimensions'):
+                weak_dims = json.loads(row['weak_dimensions'])
+            if row.get('strong_dimensions'):
+                strong_dims = json.loads(row['strong_dimensions'])
+        except:
+            pass
+        
+        logger.info(f"Multi-dimensional stats for user {user_id}: "
+                   f"{row.get('dimension_feedback_count', 0)} detailed feedbacks")
+        
+        return MultiDimensionalStats(
+            user_id=user_id,
+            session_id=session_id,
+            avg_understanding=row.get('avg_understanding'),
+            avg_relevance=row.get('avg_relevance'),
+            avg_clarity=row.get('avg_clarity'),
+            avg_overall=row.get('avg_overall'),
+            total_feedback_count=row.get('total_feedback_count', 0),
+            dimension_feedback_count=row.get('dimension_feedback_count', 0),
+            emoji_only_count=row.get('emoji_only_count', 0),
+            understanding_distribution=understanding_dist,
+            relevance_distribution=relevance_dist,
+            clarity_distribution=clarity_dist,
+            improvement_trend=row.get('improvement_trend', 'insufficient_data'),
+            weak_dimensions=weak_dims,
+            strong_dimensions=strong_dims
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to get multi-dimensional stats: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get multi-dimensional stats: {str(e)}"
+        )
+
+
+def _update_profile_from_multi_feedback(
+    db: DatabaseManager,
+    user_id: str,
+    session_id: str,
+    understanding: int,
+    relevance: int,
+    clarity: int,
+    overall_score: float
+) -> bool:
+    """Update student profile based on multi-dimensional feedback"""
+    try:
+        # Get current profile
+        profile = db.execute_query(
+            "SELECT * FROM student_profiles WHERE user_id = ? AND session_id = ?",
+            (user_id, session_id)
+        )
+        
+        if profile:
+            # Update existing profile with weighted averages
+            row = profile[0]
+            
+            current_understanding = row.get('average_understanding', 3.0)
+            current_satisfaction = row.get('average_satisfaction', 3.0)
+            feedback_count = row.get('total_feedback_count', 0)
+            
+            # Update understanding (direct from understanding score)
+            new_understanding = (current_understanding * feedback_count + understanding) / (feedback_count + 1)
+            
+            # Update satisfaction (average of relevance and clarity)
+            satisfaction_score = (relevance + clarity) / 2.0
+            new_satisfaction = (current_satisfaction * feedback_count + satisfaction_score) / (feedback_count + 1)
+            
+            db.execute_update(
+                """
+                UPDATE student_profiles
+                SET average_understanding = ?,
+                    average_satisfaction = ?,
+                    total_feedback_count = ?,
+                    last_updated = CURRENT_TIMESTAMP
+                WHERE user_id = ? AND session_id = ?
+                """,
+                (new_understanding, new_satisfaction, feedback_count + 1, user_id, session_id)
+            )
+            
+            logger.debug(f"Updated profile for user {user_id}: understanding={new_understanding:.2f}, "
+                        f"satisfaction={new_satisfaction:.2f}")
+            return True
+            
+        else:
+            # Create new profile
+            satisfaction_score = (relevance + clarity) / 2.0
+            
+            db.execute_insert(
+                """
+                INSERT INTO student_profiles
+                (user_id, session_id, average_understanding, average_satisfaction,
+                 total_interactions, total_feedback_count, last_updated)
+                VALUES (?, ?, ?, ?, 1, 1, CURRENT_TIMESTAMP)
+                """,
+                (user_id, session_id, understanding, satisfaction_score)
+            )
+            
+            logger.debug(f"Created profile for user {user_id} with multi-dimensional data")
+            return True
+            
+    except Exception as e:
+        logger.warning(f"Failed to update profile from multi-dimensional feedback: {e}")
+        return False
 
 
 def _update_global_score(db: DatabaseManager, doc_id: str, emoji_score: float, emoji: str):

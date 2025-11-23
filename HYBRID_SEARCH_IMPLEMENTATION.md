@@ -348,3 +348,8 @@ query = "5 temel ilke"
 
 
 
+
+
+
+
+

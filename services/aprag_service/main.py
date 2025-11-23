@@ -34,7 +34,7 @@ except ImportError:
 
 # Import database and API modules
 from database.database import DatabaseManager
-from api import interactions, feedback, profiles, personalization, recommendations, analytics, settings, topics
+from api import interactions, feedback, profiles, personalization, recommendations, analytics, settings, topics, knowledge_extraction, hybrid_rag_query, session_settings
 
 # Import CACS scoring (Faz 2 - Eğitsel-KBRAG)
 try:
@@ -51,6 +51,14 @@ try:
 except ImportError as e:
     logger.warning(f"Emoji feedback module not available: {e}")
     EMOJI_FEEDBACK_AVAILABLE = False
+
+# Import Progressive Assessment (ADIM 3 - Progressive Assessment Flow)
+try:
+    from api import progressive_assessment
+    PROGRESSIVE_ASSESSMENT_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Progressive assessment module not available: {e}")
+    PROGRESSIVE_ASSESSMENT_AVAILABLE = False
 
 # Import Adaptive Query (Faz 5 - Eğitsel-KBRAG Full Pipeline)
 try:
@@ -171,7 +179,8 @@ async def health_check():
             "zpd": FeatureFlags.is_zpd_enabled(),
             "bloom": FeatureFlags.is_bloom_enabled(),
             "cognitive_load": FeatureFlags.is_cognitive_load_enabled(),
-            "emoji_feedback": FeatureFlags.is_emoji_feedback_enabled()
+            "emoji_feedback": FeatureFlags.is_emoji_feedback_enabled(),
+            "progressive_assessment": FeatureFlags.is_progressive_assessment_enabled()
         }
     }
 
@@ -185,6 +194,9 @@ app.include_router(recommendations.router, prefix="/api/aprag/recommendations", 
 app.include_router(analytics.router, prefix="/api/aprag/analytics", tags=["Analytics"])
 app.include_router(settings.router, prefix="/api/aprag/settings", tags=["Settings"])
 app.include_router(topics.router, prefix="/api/aprag/topics", tags=["Topics"])
+app.include_router(knowledge_extraction.router, prefix="/api/aprag/knowledge", tags=["Knowledge Extraction"])
+app.include_router(hybrid_rag_query.router, prefix="/api/aprag/hybrid-rag", tags=["Hybrid RAG"])
+app.include_router(session_settings.router, prefix="/api/aprag/session-settings", tags=["Session Settings"])
 
 # Include Eğitsel-KBRAG routers (use Depends(get_db) for db access)
 if SCORING_AVAILABLE and FeatureFlags.is_cacs_enabled():
@@ -194,6 +206,10 @@ if SCORING_AVAILABLE and FeatureFlags.is_cacs_enabled():
 if EMOJI_FEEDBACK_AVAILABLE and FeatureFlags.is_emoji_feedback_enabled():
     app.include_router(emoji_feedback.router, prefix="/api/aprag/emoji-feedback", tags=["Emoji Feedback"])
     logger.info("Emoji Feedback endpoints enabled")
+
+if PROGRESSIVE_ASSESSMENT_AVAILABLE and FeatureFlags.is_progressive_assessment_enabled():
+    app.include_router(progressive_assessment.router, prefix="/api/aprag/progressive-assessment", tags=["Progressive Assessment"])
+    logger.info("Progressive Assessment endpoints enabled")
 
 if ADAPTIVE_QUERY_AVAILABLE and FeatureFlags.is_egitsel_kbrag_enabled():
     app.include_router(adaptive_query.router, prefix="/api/aprag/adaptive-query", tags=["Adaptive Query"])

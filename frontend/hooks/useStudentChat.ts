@@ -16,6 +16,8 @@ import {
   createAPRAGInteraction,
   apragAdaptiveQuery,
   getAPRAGSettings,
+  classifyQuestion,
+  hybridRAGQuery,
 } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -126,12 +128,12 @@ export function useStudentChat({
           return history;
         });
 
-        // Prepare RAG query payload
+        // Prepare classic RAG payload (for metadata / APRAG logging)
         const payload: any = {
           session_id: sessionId,
           query,
           top_k: 5,
-          use_rerank: true,
+          use_rerank: sessionRagSettings?.use_rerank ?? false, // Use session settings
           min_score: sessionRagSettings?.min_score ?? 0.5,
           max_context_chars: 8000,
           use_direct_llm: false,
@@ -151,8 +153,24 @@ export function useStudentChat({
           payload.embedding_model = sessionRagSettings.embedding_model;
         }
 
-        // Get AI response from RAG
-        const result = await ragQuery(payload);
+        // KB-Enhanced RAG payload (Hybrid RAG)
+        const hybridPayload = {
+          session_id: sessionId,
+          query,
+          top_k: 5,
+          use_kb: true,
+          use_qa_pairs: true,
+          use_crag: true,
+          model: sessionRagSettings?.model,
+          max_tokens: 2048,
+          temperature: 0.7,
+          max_context_chars: 8000,
+          include_examples: true,
+          include_sources: true,
+        };
+
+        // Get AI response from KB-Enhanced Hybrid RAG
+        const result = await hybridRAGQuery(hybridPayload);
         const actualDurationMs = Date.now() - startTime;
 
         // Check if APRAG is enabled for adaptive learning
@@ -247,7 +265,6 @@ export function useStudentChat({
           session_id: sessionId,
           suggestions: [], // Will be filled asynchronously
           aprag_interaction_id: apragInteractionId || undefined,
-          correction: result.correction, // NEW: Pass correction details
         };
 
         // Update UI with response
@@ -262,6 +279,22 @@ export function useStudentChat({
 
         // Save to database
         await saveMessage(completeMessage);
+
+        // Update topic progress asynchronously (does not block UI)
+        if (apragInteractionId && sessionId) {
+          try {
+            await classifyQuestion({
+              question: query,
+              session_id: sessionId,
+              interaction_id: apragInteractionId,
+            });
+          } catch (classificationError) {
+            console.warn(
+              "Question classification for topic progress failed:",
+              classificationError
+            );
+          }
+        }
 
         // Generate suggestions asynchronously (non-blocking)
         // Note: We don't save suggestions separately to avoid duplicate entries

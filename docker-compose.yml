@@ -1,3 +1,5 @@
+name: rag-education-assistant
+
 services:
   api-gateway:
     build:
@@ -11,6 +13,8 @@ services:
       - PORT=${API_GATEWAY_PORT:-8000}
       - API_GATEWAY_PORT=${API_GATEWAY_PORT:-8000}
       - HOST=0.0.0.0
+      # API Keys
+      - ALIBABA_API_KEY=${ALIBABA_API_KEY}
       # Service URLs - Environment variable'lardan alınır
       - PDF_PROCESSOR_URL=${PDF_PROCESSOR_URL:-http://docstrange-service:80}
       - DOCUMENT_PROCESSOR_HOST=${DOCUMENT_PROCESSOR_HOST:-document-processing-service}
@@ -38,7 +42,7 @@ services:
       # JWT configuration for API Gateway
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
       # CORS configuration - API Gateway needs CORS too!
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://46.62.254.131:3000,http://46.62.254.131:8000}
       - CORS_CREDENTIALS=true
     volumes:
       - session_data:/app/sessions
@@ -54,6 +58,8 @@ services:
       document-processing-service:
         condition: service_started
       model-inference-service:
+        condition: service_started
+      reranker-service:
         condition: service_started
       chromadb-service:
         condition: service_started
@@ -80,6 +86,10 @@ services:
       - MODEL_INFERENCE_PORT=${MODEL_INFERENCE_PORT:-8002}
       - MODEL_INFERENCE_URL=${MODEL_INFERENCE_URL:-http://${MODEL_INFERENCE_HOST:-model-inference-service}:${MODEL_INFERENCE_PORT:-8002}}
       - MODEL_INFERENCER_URL=${MODEL_INFERENCER_URL:-http://${MODEL_INFERENCE_HOST:-model-inference-service}:${MODEL_INFERENCE_PORT:-8002}}
+      - RERANKER_SERVICE_HOST=${RERANKER_SERVICE_HOST:-reranker-service}
+      - RERANKER_SERVICE_PORT=${RERANKER_SERVICE_PORT:-8008}
+      - RERANKER_SERVICE_URL=${RERANKER_SERVICE_URL:-http://${RERANKER_SERVICE_HOST:-reranker-service}:${RERANKER_SERVICE_PORT:-8008}}
+      - USE_RERANKER_SERVICE=${USE_RERANKER_SERVICE:-false} # Set to "true" to use new reranker service
       - CHROMADB_HOST=${CHROMADB_HOST:-chromadb-service}
       - CHROMADB_PORT=${CHROMADB_PORT:-8000}
       - CHROMADB_URL=${CHROMADB_URL:-http://${CHROMADB_HOST:-chromadb-service}:${CHROMADB_PORT:-8000}}
@@ -91,7 +101,7 @@ services:
       - DATABASE_PATH=/app/data/rag_assistant.db
       - APRAG_DB_PATH=/app/data/rag_assistant.db
       # CORS configuration - Add external server IP for browser access
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://auth-service:8006}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://auth-service:8006,http://46.62.254.131:3000,http://46.62.254.131:8000,http://46.62.254.131:8006,http://46.62.254.131:8007}
       - CORS_CREDENTIALS=true
       # Feature Flags
       - APRAG_ENABLED=${APRAG_ENABLED:-true}
@@ -146,7 +156,7 @@ services:
       # Database configuration
       - DATABASE_PATH=/app/data/rag_assistant.db
       # CORS configuration - Add external server IP for browser access
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://auth-service:8006}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://auth-service:8006,http://46.62.254.131:3000,http://46.62.254.131:8000,http://46.62.254.131:8006,http://46.62.254.131:8007}
       - CORS_CREDENTIALS=true
       # Rate limiting - Geliştirme için gevşetildi
       - RATE_LIMIT_RPM=300
@@ -220,6 +230,10 @@ services:
       - MODEL_INFERENCER_HOST=${MODEL_INFERENCE_HOST:-model-inference-service}
       - MODEL_INFERENCER_PORT=${MODEL_INFERENCE_PORT:-8002}
       - MODEL_INFERENCER_URL=${MODEL_INFERENCER_URL:-http://${MODEL_INFERENCE_HOST:-model-inference-service}:${MODEL_INFERENCE_PORT:-8002}}
+      - RERANKER_SERVICE_HOST=${RERANKER_SERVICE_HOST:-reranker-service}
+      - RERANKER_SERVICE_PORT=${RERANKER_SERVICE_PORT:-8008}
+      - RERANKER_SERVICE_URL=${RERANKER_SERVICE_URL:-http://${RERANKER_SERVICE_HOST:-reranker-service}:${RERANKER_SERVICE_PORT:-8008}}
+      - USE_RERANKER_SERVICE=${USE_RERANKER_SERVICE:-false} # Set to "true" to use new reranker service
       - CHROMADB_HOST=${CHROMADB_HOST:-chromadb-service}
       - CHROMADB_PORT=${CHROMADB_PORT:-8000}
       - CHROMADB_URL=${CHROMADB_URL:-http://${CHROMADB_HOST:-chromadb-service}:${CHROMADB_PORT:-8000}}
@@ -244,6 +258,8 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY:-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}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - ALIBABA_API_KEY=${ALIBABA_API_KEY}
       # FIX: Use host.docker.internal to access Ollama running on Windows host
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - OLLAMA_SKIP_VERIFY=true
@@ -258,23 +274,36 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G  # Model inference doesn't need much RAM when Ollama is external
+          memory: 2G # Model inference doesn't need much RAM when Ollama is external
     restart: unless-stopped
     networks:
       - rag-network
 
-  evaluation-service:
+  reranker-service:
     build:
-      context: ./services/evaluation_service
+      context: ./services/reranker_service
       dockerfile: Dockerfile
-    container_name: evaluation-service
+    container_name: reranker-service
     ports:
-      - "${EVALUATION_SERVICE_PORT:-8010}:${EVALUATION_SERVICE_PORT:-8010}"
+      - "${RERANKER_SERVICE_PORT:-8008}:8008"
     environment:
-      - PORT=${EVALUATION_SERVICE_PORT:-8010}
-      - EVALUATION_SERVICE_PORT=${EVALUATION_SERVICE_PORT:-8010}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ALIBABA_API_KEY=${ALIBABA_API_KEY}
+      - DASHSCOPE_API_KEY=${ALIBABA_API_KEY}
+      - PORT=8008
+      - RERANKER_TYPE=${RERANKER_TYPE:-bge} # "bge" or "ms-marco"
+      - BGE_MODEL_NAME=${BGE_MODEL_NAME:-BAAI/bge-reranker-v2-m3}
+      - MS_MARCO_MODEL_NAME=${MS_MARCO_MODEL_NAME:-cross-encoder/ms-marco-MiniLM-L-6-v2}
+      # HuggingFace cache directory for persistent model storage
+      - HF_HOME=/app/models
+      - TRANSFORMERS_CACHE=/app/models
+    volumes:
+      - reranker_models:/app/models # Persistent storage for downloaded models
+    deploy:
+      resources:
+        limits:
+          memory: 4G # BGE model needs more RAM
+        reservations:
+          memory: 2G
     restart: unless-stopped
     networks:
       - rag-network
@@ -332,9 +361,12 @@ services:
       - API_GATEWAY_HOST=${API_GATEWAY_HOST:-api-gateway}
       - API_GATEWAY_PORT=${API_GATEWAY_PORT:-8000}
       - API_GATEWAY_INTERNAL_PORT=${API_GATEWAY_PORT:-8000}
-      # Frontend URLs - Environment variable'lardan alınır
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-      - NEXT_PUBLIC_AUTH_URL=${NEXT_PUBLIC_AUTH_URL:-http://localhost:8006}
+      # Frontend URLs - Browser için external IP, server için internal services
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://46.62.254.131:8000}
+      - NEXT_PUBLIC_AUTH_URL=${NEXT_PUBLIC_AUTH_URL:-http://46.62.254.131:8006}
+      # Server-side (Docker) için internal service names
+      - API_GATEWAY_INTERNAL_URL=http://api-gateway:8000
+      - AUTH_SERVICE_INTERNAL_URL=http://auth-service:8006
       # Environment
       - NODE_ENV=${NODE_ENV:-production}
       - DOCKER_ENV=${DOCKER_ENV:-true}
@@ -361,7 +393,9 @@ volumes:
   session_data:
   markdown_data:
   database_data:
+  reranker_models: # Persistent storage for reranker models
 
 networks:
   rag-network:
-    driver: bridge
+    name: rag-education-assistant_rag-network
+    external: true
