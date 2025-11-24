@@ -8,6 +8,7 @@ interface EnhancedDocumentUploadModalProps {
   onSuccess: (message: string) => void;
   onError: (error: string) => void;
   onMarkdownFilesUpdate: () => void;
+  selectedSessionId?: string; // Optional session ID for file naming
 }
 
 const CloseIcon = () => (
@@ -54,6 +55,7 @@ export default function EnhancedDocumentUploadModal({
   onSuccess,
   onError,
   onMarkdownFilesUpdate,
+  selectedSessionId,
 }: EnhancedDocumentUploadModalProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -107,7 +109,7 @@ export default function EnhancedDocumentUploadModal({
           }
         }, 2000);
 
-        const result = await convertPdfToMarkdown(selectedFile);
+        const result = await convertPdfToMarkdown(selectedFile, false, selectedSessionId);
         clearInterval(stepInterval);
 
         if (result.success) {

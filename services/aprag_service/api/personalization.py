@@ -191,6 +191,7 @@ LÜTFEN CEVABI ŞU ŞEKİLDE KİŞİSELLEŞTİR:
         prompt += "- İleri seviye detaylar ekle\n"
     
     prompt += "\nKişiselleştirilmiş cevabı sadece Türkçe olarak ver. Orijinal cevabın içeriğini koru, sadece sunumunu ve detay seviyesini öğrenci profiline göre ayarla."
+    prompt += "\n\nMARKDOWN FORMATI KULLAN: Önemli kavramları **kalın** yaz, listeler için `-` veya `*` kullan, kod için `backtick` kullan, başlıklar için `##` kullan. Formatlı ve okunabilir bir cevap ver."
     
     return prompt
 

@@ -116,9 +116,9 @@ YANIT KURALLARI (ÇOK ÖNEMLİ):
 3. Yanıtın toplam uzunluğunu en fazla 3 paragraf ve yaklaşık 5–8 cümle ile sınırla.
 4. Gerekirse en fazla 1 tane kısa gerçek hayat örneği ver; uzun anlatımlardan kaçın.
 5. Bilgiyi mutlaka yukarıdaki ders materyali ve bilgi tabanından al; emin olmadığın şeyleri yazma, uydurma.
-6. Önemli kavramları gerektiğinde **kalın** yazarak vurgulayabilirsin ama liste/rapor formatına dönüştürme.
+6. MARKDOWN FORMATI KULLAN: Önemli kavramları **kalın** yaz, listeler için `-` veya `*` kullan, kod için `backtick` kullan, başlıklar için `##` kullan. Formatlı ve okunabilir bir cevap ver.
 
-✍️ YANIT (sadece cevabı yaz, başlık veya madde listesi ekleme):"""
+✍️ YANIT (markdown formatında, formatlı ve okunabilir şekilde yaz):"""
 
     try:
         response = requests.post(
@@ -353,14 +353,73 @@ async def hybrid_rag_query(request: HybridRAGQueryRequest):
         
         processing_time = int((datetime.now() - start_time).total_seconds() * 1000)
         
-        # Prepare detailed sources
+        # Get the primary matched topic ID (highest confidence)
+        primary_topic_id = matched_topics[0]["topic_id"] if matched_topics else None
+        primary_topic_title = matched_topics[0]["topic_title"] if matched_topics else None
+        
+        logger.info(
+            f"📊 Preparing sources - Primary topic: {primary_topic_title} (ID: {primary_topic_id}), "
+            f"Total merged results: {len(merged_results)}"
+        )
+        
+        # Prepare detailed sources - prioritize KB sources that match the primary topic
         detailed_sources = []
-        for result in merged_results[:5]:  # Top 5 sources
+        
+        # First, collect KB sources that match the primary topic
+        kb_sources_matching_topic = []
+        kb_sources_other_topics = []
+        other_sources = []
+        
+        # Check ALL merged results, not just top 10, to find matching KB
+        for result in merged_results:
+            if result.get("source") == "knowledge_base":
+                result_topic_id = result.get("topic_id")
+                result_topic_title = result.get("topic_title", "Unknown")
+                # If this KB matches the primary topic, prioritize it
+                if primary_topic_id and result_topic_id == primary_topic_id:
+                    logger.info(
+                        f"✅ KB source matches primary topic: {result_topic_title} (ID: {result_topic_id})"
+                    )
+                    kb_sources_matching_topic.append(result)
+                else:
+                    logger.info(
+                        f"⚠️ KB source doesn't match primary topic: {result_topic_title} (ID: {result_topic_id}) "
+                        f"vs primary {primary_topic_title} (ID: {primary_topic_id})"
+                    )
+                    kb_sources_other_topics.append(result)
+            else:
+                other_sources.append(result)
+        
+        # Combine: matching KB sources first (highest priority), then chunks/QA, then other KB sources
+        # This ensures the correct topic's KB is always shown first
+        prioritized_results = kb_sources_matching_topic + other_sources + kb_sources_other_topics
+        
+        # Take top 5 from prioritized list
+        for result in prioritized_results[:5]:
+            metadata = result.get("metadata", {}).copy()
+            
+            # For knowledge base sources, include topic_id and topic_title in metadata
+            if result.get("source") == "knowledge_base":
+                if "topic_id" in result:
+                    metadata["topic_id"] = result["topic_id"]
+                if "topic_title" in result:
+                    metadata["topic_title"] = result["topic_title"]
+            
+            # For QA pair sources, include qa_id in metadata
+            if result.get("source") == "qa_pair" and "qa_id" in result:
+                metadata["qa_id"] = result["qa_id"]
+            
+            # Don't truncate content - show full content for better context
+            # Only truncate if it's extremely long (over 5000 chars) to avoid performance issues
+            content = result.get("content", "")
+            if len(content) > 5000:
+                content = content[:5000] + "..."
+            
             detailed_sources.append({
                 "type": result["source"],
-                "content": result["content"][:200] + "..." if len(result["content"]) > 200 else result["content"],
+                "content": content,
                 "score": result["final_score"],
-                "metadata": result.get("metadata", {})
+                "metadata": metadata
             })
         
         return HybridRAGQueryResponse(

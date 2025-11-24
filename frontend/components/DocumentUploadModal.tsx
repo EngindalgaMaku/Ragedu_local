@@ -9,6 +9,7 @@ interface DocumentUploadModalProps {
   onError: (error: string) => void;
   onMarkdownFilesUpdate: () => void;
   conversionMethod?: "nanonets" | "pdfplumber" | "marker"; // Pre-selected method
+  selectedSessionId?: string; // Optional session ID for file naming
 }
 
 const CloseIcon = () => (
@@ -82,11 +83,13 @@ export default function DocumentUploadModal({
   onError,
   onMarkdownFilesUpdate,
   conversionMethod, // Pre-selected: "nanonets" or "pdfplumber"
+  selectedSessionId,
 }: DocumentUploadModalProps) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isConverting, setIsConverting] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [processingStep, setProcessingStep] = useState("");
+  const [errorMessage, setErrorMessage] = useState<string>("");
   const stepIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
   // Use conversionMethod if provided, otherwise default to nanonets
@@ -132,9 +135,10 @@ export default function DocumentUploadModal({
       }, useMarker ? 8000 : 5000); // Slower for Marker (8s vs 5s)
 
       const result = useMarker 
-        ? await convertMarker(selectedFile)
-        : await convertPdfToMarkdown(selectedFile, useFallback);
+        ? await convertMarker(selectedFile, selectedSessionId)
+        : await convertPdfToMarkdown(selectedFile, useFallback, selectedSessionId);
 
+      // Clear interval immediately after request completes
       if (stepIntervalRef.current) {
         clearInterval(stepIntervalRef.current);
         stepIntervalRef.current = null;
@@ -142,6 +146,8 @@ export default function DocumentUploadModal({
 
       if (result.success) {
         setProcessingStep("İşlem tamamlandı!");
+        setErrorMessage(""); // Clear any errors
+        setIsConverting(false); // Stop converting state
         onSuccess(
           `Belge başarıyla Markdown formatına dönüştürüldü: ${result.markdown_filename}`
         );
@@ -153,14 +159,56 @@ export default function DocumentUploadModal({
           setProcessingStep("");
         }, 2000);
       } else {
-        onError(result.message || "Dönüştürme işlemi başarısız");
-        setIsConverting(false);
-        setProcessingStep("");
+        const errorMsg = result.message || "Dönüştürme işlemi başarısız";
+        console.error("Conversion failed:", errorMsg, result);
+        setIsConverting(false); // Stop converting state
+        setProcessingStep(""); // Clear processing step
+        setErrorMessage(errorMsg);
+        onError(errorMsg);
       }
     } catch (e: any) {
-      onError(e.message || "Belge dönüştürme işlemi başarısız");
-      setIsConverting(false);
-      setProcessingStep("");
+      // Clear interval immediately on error
+      if (stepIntervalRef.current) {
+        clearInterval(stepIntervalRef.current);
+        stepIntervalRef.current = null;
+      }
+      
+      console.error("Document conversion error:", e);
+      console.error("Error type:", typeof e);
+      console.error("Error keys:", Object.keys(e || {}));
+      
+      let errorMsg = "Belge dönüştürme işlemi başarısız";
+      
+      // Try to extract error message from various sources
+      if (e?.message) {
+        errorMsg = e.message;
+      } else if (e?.response?.data?.detail) {
+        errorMsg = e.response.data.detail;
+      } else if (e?.response?.data?.message) {
+        errorMsg = e.response.data.message;
+      } else if (typeof e === 'string') {
+        errorMsg = e;
+      } else if (e?.toString && e.toString() !== '[object Object]') {
+        errorMsg = e.toString();
+      } else if (e?.detail) {
+        errorMsg = e.detail;
+      }
+      
+      // If it's a network error, provide more context
+      if (errorMsg.includes("Failed to fetch") || errorMsg.includes("NetworkError")) {
+        errorMsg = "Sunucuya bağlanılamadı. Lütfen internet bağlantınızı kontrol edin veya daha sonra tekrar deneyin.";
+      }
+      
+      // If it's an Internal Server Error, provide helpful message
+      if (errorMsg.includes("Internal Server Error") || errorMsg.includes("500")) {
+        errorMsg = "Sunucu hatası oluştu. Büyük/karmaşık PDF'ler için 'Hızlı Dönüştür' yöntemini deneyin veya daha küçük bir dosya kullanın.";
+      }
+      
+      console.error("Final extracted error message:", errorMsg);
+      setIsConverting(false); // CRITICAL: Stop converting state
+      setProcessingStep(""); // Clear processing step
+      setErrorMessage(errorMsg);
+      onError(errorMsg);
     }
   };
 
@@ -172,6 +220,7 @@ export default function DocumentUploadModal({
       setIsConverting(false);
       setProcessingStep("");
       setIsDragOver(false);
+      setErrorMessage(""); // Clear errors when opening
     } else {
       // Closed: clear any running interval
       if (stepIntervalRef.current) {
@@ -225,9 +274,12 @@ export default function DocumentUploadModal({
 
     if (supportedTypes.includes(file.type)) {
       setSelectedFile(file);
+      setErrorMessage(""); // Clear any previous errors
       onError(""); // Clear any previous errors
     } else {
-      onError("Lütfen sadece PDF, DOCX, PPTX veya XLSX dosyası seçin");
+      const errorMsg = "Lütfen sadece PDF, DOCX, PPTX veya XLSX dosyası seçin";
+      setErrorMessage(errorMsg);
+      onError(errorMsg);
     }
   };
 
@@ -273,6 +325,37 @@ export default function DocumentUploadModal({
 
         {/* Modal Content */}
         <div className="p-3 sm:p-4 md:p-6">
+          {/* Error Message Display - Always visible when there's an error */}
+          {errorMessage && (
+            <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border-2 border-red-300 dark:border-red-700 rounded-lg shadow-lg">
+              <div className="flex items-start gap-3">
+                <svg className="w-6 h-6 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-base font-bold text-red-800 dark:text-red-300 mb-2">
+                    ⚠️ Hata Oluştu
+                  </h4>
+                  <p className="text-sm text-red-700 dark:text-red-400 whitespace-pre-wrap break-words">
+                    {errorMessage}
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    setErrorMessage("");
+                    onError(""); // Also clear parent error
+                  }}
+                  className="text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 flex-shrink-0 p-1"
+                  title="Kapat"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          )}
+          
           {isConverting ? (
             // Processing State
             <div className="text-center py-4 sm:py-6 md:py-8">

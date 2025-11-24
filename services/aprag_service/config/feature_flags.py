@@ -52,11 +52,11 @@ class FeatureFlags:
             try:
                 # Session-specific feature flag kontrolü
                 result = FeatureFlags._db_manager.execute_query(
-                    "SELECT feature_enabled FROM feature_flags WHERE feature_name = ? AND session_id = ?",
-                    ("aprag", session_id)
+                    "SELECT is_enabled FROM feature_flags WHERE feature_name = ? AND session_id = ?",
+                    ("aprag_enabled", session_id)
                 )
                 if result:
-                    return bool(result[0].get("feature_enabled", True))
+                    return bool(result[0].get("is_enabled", True))
             except Exception as e:
                 logger.warning(f"Failed to check session-specific APRAG flag: {e}")
         

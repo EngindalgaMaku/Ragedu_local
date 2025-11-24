@@ -1,0 +1,35 @@
+{
+  "timestamp": "2025-11-24T01:52:26.396982",
+  "summary": {
+    "cacs": {
+      "total_documents": 5,
+      "avg_final_score": 0.736,
+      "avg_improvement": 0.03599999999999999
+    },
+    "zpd": {
+      "total_scenarios": 5,
+      "level_distribution": {
+        "beginner": 2,
+        "elementary": 1,
+        "intermediate": 1,
+        "advanced": 1
+      }
+    },
+    "bloom": {
+      "total_queries": 10,
+      "level_distribution": {
+        "remember": 3,
+        "understand": 3,
+        "apply": 2,
+        "analyze": 1,
+        "create": 1
+      },
+      "avg_confidence": 0.775
+    },
+    "cognitive_load": {
+      "total_responses": 5,
+      "avg_load": 0.23325147186147183,
+      "simplification_rate": 0.0
+    }
+  }
+}

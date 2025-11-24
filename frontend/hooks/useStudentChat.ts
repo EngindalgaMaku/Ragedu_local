@@ -256,6 +256,31 @@ export function useStudentChat({
           }
         }
 
+        // Get topic classification first (if available)
+        let topicInfo: { topic_id: number; topic_title: string; confidence_score: number } | undefined;
+        if (apragInteractionId && sessionId) {
+          try {
+            const classificationResult = await classifyQuestion({
+              question: query,
+              session_id: sessionId,
+              interaction_id: apragInteractionId,
+            });
+            
+            if (classificationResult.success && classificationResult.topic_id) {
+              topicInfo = {
+                topic_id: classificationResult.topic_id,
+                topic_title: classificationResult.topic_title,
+                confidence_score: classificationResult.confidence_score,
+              };
+            }
+          } catch (classificationError) {
+            console.warn(
+              "Question classification for topic progress failed:",
+              classificationError
+            );
+          }
+        }
+
         // Create complete message object with personalized response
         const completeMessage: Omit<StudentChatMessage, "id" | "timestamp"> = {
           user: query,
@@ -265,6 +290,7 @@ export function useStudentChat({
           session_id: sessionId,
           suggestions: [], // Will be filled asynchronously
           aprag_interaction_id: apragInteractionId || undefined,
+          topic: topicInfo, // Include topic information
         };
 
         // Update UI with response
@@ -280,48 +306,71 @@ export function useStudentChat({
         // Save to database
         await saveMessage(completeMessage);
 
-        // Update topic progress asynchronously (does not block UI)
-        if (apragInteractionId && sessionId) {
-          try {
-            await classifyQuestion({
-              question: query,
-              session_id: sessionId,
-              interaction_id: apragInteractionId,
-            });
-          } catch (classificationError) {
-            console.warn(
-              "Question classification for topic progress failed:",
-              classificationError
-            );
-          }
-        }
-
         // Generate suggestions asynchronously (non-blocking)
-        // Note: We don't save suggestions separately to avoid duplicate entries
-        // Suggestions will be generated and displayed, but not saved to DB
-        if (result.sources && result.sources.length > 0) {
+        // CRITICAL: Save suggestions to database after generation
+        (async () => {
           try {
             const suggestions = await generateSuggestions({
               question: query,
-              answer: result.answer,
-              sources: result.sources,
+              answer: finalResponse, // Use personalized response for better context
+              sources: result.sources || [],
             });
 
             if (Array.isArray(suggestions) && suggestions.length > 0) {
+              // Update UI immediately
               setMessages((prev) => {
                 const updated = [...prev];
-                if (updated[updated.length - 1]) {
-                  updated[updated.length - 1].suggestions = suggestions;
-                  // ✅ BUG FIX: Don't save again to avoid duplicate entries
-                  // Suggestions are ephemeral and will be regenerated if needed
+                const lastIndex = updated.length - 1;
+                if (lastIndex >= 0 && updated[lastIndex]) {
+                  updated[lastIndex] = {
+                    ...updated[lastIndex],
+                    suggestions: suggestions,
+                  };
                 }
                 return updated;
               });
+              
+              // CRITICAL: Save suggestions to database by updating existing message
+              try {
+                // Get current message from database to preserve all fields
+                const { getStudentChatHistory, saveStudentChatMessage } = await import("@/lib/api");
+                const chatHistory = await getStudentChatHistory(sessionId);
+                const messageToUpdate = chatHistory.find(
+                  (msg) => msg.aprag_interaction_id === apragInteractionId
+                );
+                
+                if (messageToUpdate) {
+                  // Update with suggestions, preserve all other fields
+                  // CRITICAL: Use topicInfo if available, otherwise keep existing topic
+                  const finalTopic = topicInfo || messageToUpdate.topic;
+                  await saveStudentChatMessage({
+                    user: messageToUpdate.user,
+                    bot: messageToUpdate.bot,
+                    sources: messageToUpdate.sources || [],
+                    durationMs: messageToUpdate.durationMs || 0,
+                    session_id: messageToUpdate.session_id,
+                    suggestions: suggestions, // Save suggestions
+                    aprag_interaction_id: messageToUpdate.aprag_interaction_id,
+                    topic: finalTopic, // Use topicInfo if available, otherwise keep existing
+                    emoji_feedback: messageToUpdate.emoji_feedback, // Keep existing emoji
+                  });
+                  console.log("✅ Suggestions saved to database", { 
+                    suggestionsCount: suggestions.length,
+                    topic: finalTopic,
+                    emoji: messageToUpdate.emoji_feedback 
+                  });
+                } else {
+                  console.warn("⚠️ Message not found for suggestions update", { apragInteractionId });
+                }
+              } catch (saveErr) {
+                console.error("❌ Failed to save suggestions to database:", saveErr);
+              }
             }
           } catch (suggErr) {
             console.error("Failed to generate suggestions:", suggErr);
+            // Don't show error to user - suggestions are optional
           }
-        }
+        })();
       } catch (err: any) {
         const errorMessage = err.message || "Sorgu başarısız oldu";
         setError(errorMessage);

@@ -84,6 +84,9 @@ def classify_question_to_topic(
     if not is_aprag_enabled(session_id):
         return None
     
+    # CRITICAL DEBUG: Log the middleware call
+    logger.info(f"🔥 [MIDDLEWARE DEBUG] classify_question_to_topic called: session_id={session_id}, query='{query[:50]}...', interaction_id={interaction_id}")
+    
     try:
         payload = {
             "question": query,
@@ -91,6 +94,8 @@ def classify_question_to_topic(
         }
         if interaction_id:
             payload["interaction_id"] = interaction_id
+        
+        logger.info(f"🔥 [MIDDLEWARE DEBUG] Sending payload to classify-question endpoint: {payload}")
         
         # Non-blocking request with timeout
         response = requests.post(
@@ -100,17 +105,19 @@ def classify_question_to_topic(
             headers={"Content-Type": "application/json"}
         )
         
+        logger.info(f"🔥 [MIDDLEWARE DEBUG] classify-question response: status={response.status_code}")
+        
         if response.status_code == 200:
             return response.json()
         else:
-            logger.warning(f"Failed to classify question: {response.status_code} - {response.text}")
+            logger.warning(f"🔥 [MIDDLEWARE DEBUG] Failed to classify question: {response.status_code} - {response.text}")
             return None
             
     except requests.exceptions.RequestException as e:
-        logger.warning(f"APRAG service unavailable for question classification: {e}")
+        logger.warning(f"🔥 [MIDDLEWARE DEBUG] APRAG service unavailable for question classification: {e}")
         return None
     except Exception as e:
-        logger.error(f"Error classifying question: {e}")
+        logger.error(f"🔥 [MIDDLEWARE DEBUG] Error classifying question: {e}")
         return None
 
 

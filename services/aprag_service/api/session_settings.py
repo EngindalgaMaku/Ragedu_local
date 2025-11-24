@@ -7,6 +7,8 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
 import logging
+import requests
+import os
 from datetime import datetime
 
 # Import database and dependencies
@@ -21,6 +23,9 @@ except ImportError:
 db_manager = None
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# API Gateway URL for fetching session metadata
+API_GATEWAY_URL = os.getenv("API_GATEWAY_URL", "http://api-gateway:8001")
 
 
 class SessionSettings(BaseModel):
@@ -117,13 +122,52 @@ async def get_session_settings(
             )
         else:
             # Create default settings for session
-            # Try to get user_id from student_interactions
-            interaction_result = db.execute_query(
-                "SELECT DISTINCT user_id FROM student_interactions WHERE session_id = ? LIMIT 1",
-                (session_id,)
-            )
+            # Get the session owner (teacher) from API Gateway
+            # Do NOT use student_interactions user_id as that would be a student, not the teacher
+            default_user_id = None
+            candidate_user_id = None
             
-            default_user_id = interaction_result[0]['user_id'] if interaction_result else "system"
+            try:
+                # Fetch session metadata from API Gateway to get the teacher (created_by)
+                session_response = requests.get(
+                    f"{API_GATEWAY_URL}/sessions/{session_id}",
+                    timeout=5
+                )
+                if session_response.status_code == 200:
+                    session_data = session_response.json()
+                    created_by = session_data.get('created_by')
+                    if created_by:
+                        candidate_user_id = created_by
+                        logger.info(f"Found session owner (teacher) from API Gateway: {created_by}")
+            except Exception as e:
+                logger.warning(f"Could not fetch session metadata from API Gateway: {e}")
+            
+            # Verify that the candidate user_id exists in users table (FOREIGN KEY constraint)
+            if candidate_user_id:
+                try:
+                    user_check = db.execute_query(
+                        "SELECT username FROM users WHERE username = ? LIMIT 1",
+                        (candidate_user_id,)
+                    )
+                    if user_check and len(user_check) > 0:
+                        default_user_id = candidate_user_id
+                        logger.info(f"Verified user exists in users table: {default_user_id}")
+                    else:
+                        logger.warning(f"User '{candidate_user_id}' from session not found in users table, will use admin")
+                except Exception as e:
+                    logger.warning(f"Could not verify user in users table: {e}")
+            
+            # Fallback: Use admin username
+            # Note: We don't check users table because it's in auth-service, not aprag-service
+            # The user_id is just stored as a string identifier for the teacher who manages the settings
+            if not default_user_id:
+                default_user_id = "admin"
+                logger.info(f"Using 'admin' as fallback for session {session_id}")
+            
+            # Note: We don't verify user_id in users table anymore because:
+            # 1. users table is in auth-service, not aprag-service
+            # 2. FOREIGN KEY constraint has been removed from session_settings table
+            # 3. We still try to get valid user_id from session metadata or use admin
             
             # Create default settings
             db.execute_insert(

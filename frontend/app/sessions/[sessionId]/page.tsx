@@ -20,14 +20,20 @@ import FileUploadModal from "@/components/FileUploadModal";
 import DocumentUploadModal from "@/components/DocumentUploadModal";
 import TeacherLayout from "@/app/components/TeacherLayout";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+  CardContent,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { 
-  ArrowLeft, 
-  FileText, 
-  Settings, 
-  Target, 
-  BookOpen, 
+import {
+  ArrowLeft,
+  FileText,
+  Settings,
+  Target,
+  BookOpen,
   MessageSquare,
   Upload,
   RefreshCw,
@@ -35,7 +41,7 @@ import {
   Brain,
   Zap,
   Layers,
-  ChevronRight
+  ChevronRight,
 } from "lucide-react";
 
 export default function SessionPage() {
@@ -61,7 +67,8 @@ export default function SessionPage() {
   const [chunkPage, setChunkPage] = useState(1);
   const [showModal, setShowModal] = useState(false);
   const [showChunkModal, setShowChunkModal] = useState(false);
-  const [selectedChunkForModal, setSelectedChunkForModal] = useState<Chunk | null>(null);
+  const [selectedChunkForModal, setSelectedChunkForModal] =
+    useState<Chunk | null>(null);
   const [selectedEmbeddingModel, setSelectedEmbeddingModel] =
     useState<string>("nomic-embed-text");
   const [availableEmbeddingModels, setAvailableEmbeddingModels] = useState<{
@@ -89,8 +96,13 @@ export default function SessionPage() {
   const [showInteractions, setShowInteractions] = useState(false);
   const [apragEnabled, setApragEnabled] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<
-    "chunks" | "topics" | "interactions" | "rag-settings" | "session-settings"
-  >("chunks");
+    | "documents"
+    | "chunks"
+    | "topics"
+    | "interactions"
+    | "rag-settings"
+    | "session-settings"
+  >("documents");
 
   // RAG Settings states
   const [availableModels, setAvailableModels] = useState<any[]>([]);
@@ -339,6 +351,17 @@ export default function SessionPage() {
     }
   }, [sessionId, apragEnabled]);
 
+  // Fetch interactions when interactions tab becomes active
+  useEffect(() => {
+    if (
+      activeTab === "interactions" &&
+      apragEnabled &&
+      interactions.length === 0
+    ) {
+      fetchInteractions();
+    }
+  }, [activeTab, apragEnabled]);
+
   // Clear messages after some time
   useEffect(() => {
     if (error) {
@@ -405,52 +428,24 @@ export default function SessionPage() {
           </div>
         )}
 
-        {/* RAG Configuration Section - Minimal */}
-        <div className="bg-card border border-border rounded-lg p-3 sm:p-4 lg:p-5">
-          <div className="flex flex-col items-start justify-between gap-4 mb-4">
-            <div className="w-full">
-              <h2 className="text-base font-semibold text-foreground mb-1">
-                Döküman Yönetimi
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                Markdown yükleyin veya mevcut dökümanları yeniden işleyin
-              </p>
-            </div>
-            <div className="flex flex-col sm:flex-row w-full sm:w-auto gap-2">
-              <Button
-                onClick={() => setShowModal(true)}
-                disabled={processing}
-                className="gap-2"
-              >
-                <Upload className="w-4 h-4" />
-                Markdown Yükle
-              </Button>
-            </div>
-          </div>
-
-          {/* Processing Status */}
-          {processing && (
-            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-3">
-              <div className="flex items-center gap-2 text-sm text-blue-800 dark:text-blue-200">
-                <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-600 border-t-transparent"></div>
-                <span>Markdown işlemi devam ediyor...</span>
-              </div>
-            </div>
-          )}
-
-        </div>
-
         {/* Modern Tab Navigation with shadcn/ui */}
         <Card className="overflow-hidden">
-          <Tabs 
-            value={activeTab} 
+          <Tabs
+            value={activeTab}
             onValueChange={(value) => setActiveTab(value as typeof activeTab)}
             className="w-full"
           >
             <div className="border-b bg-muted/30">
               <TabsList className="h-auto w-full justify-start rounded-none bg-transparent p-2 gap-1">
-                <TabsTrigger 
-                  value="chunks" 
+                <TabsTrigger
+                  value="documents"
+                  className="data-[state=active]:bg-background data-[state=active]:shadow-sm gap-2"
+                >
+                  <Upload className="w-4 h-4" />
+                  <span className="hidden sm:inline">Döküman </span>Yönetimi
+                </TabsTrigger>
+                <TabsTrigger
+                  value="chunks"
                   className="data-[state=active]:bg-background data-[state=active]:shadow-sm gap-2"
                 >
                   <FileText className="w-4 h-4" />
@@ -459,14 +454,14 @@ export default function SessionPage() {
                     {chunks.length}
                   </span>
                 </TabsTrigger>
-                <TabsTrigger 
+                <TabsTrigger
                   value="rag-settings"
                   className="data-[state=active]:bg-background data-[state=active]:shadow-sm gap-2"
                 >
                   <Settings className="w-4 h-4" />
                   <span className="hidden sm:inline">RAG </span>Ayarları
                 </TabsTrigger>
-                <TabsTrigger 
+                <TabsTrigger
                   value="session-settings"
                   className="data-[state=active]:bg-background data-[state=active]:shadow-sm gap-2"
                 >
@@ -475,20 +470,15 @@ export default function SessionPage() {
                 </TabsTrigger>
                 {apragEnabled && (
                   <>
-                    <TabsTrigger 
+                    <TabsTrigger
                       value="topics"
                       className="data-[state=active]:bg-background data-[state=active]:shadow-sm gap-2"
                     >
                       <BookOpen className="w-4 h-4" />
                       <span className="hidden sm:inline">Konu </span>Yönetimi
                     </TabsTrigger>
-                    <TabsTrigger 
+                    <TabsTrigger
                       value="interactions"
-                      onClick={() => {
-                        if (interactions.length === 0) {
-                          fetchInteractions();
-                        }
-                      }}
                       className="data-[state=active]:bg-background data-[state=active]:shadow-sm gap-2"
                     >
                       <MessageSquare className="w-4 h-4" />
@@ -501,6 +491,39 @@ export default function SessionPage() {
                 )}
               </TabsList>
             </div>
+
+            <TabsContent value="documents" className="mt-0">
+              <div className="p-6 space-y-4">
+                <div>
+                  <h2 className="text-base font-semibold text-foreground mb-1">
+                    Döküman Yönetimi
+                  </h2>
+                  <p className="text-sm text-muted-foreground">
+                    Markdown yükleyin
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <Button
+                    onClick={() => setShowModal(true)}
+                    disabled={processing}
+                    className="gap-2"
+                  >
+                    <Upload className="w-4 h-4" />
+                    Markdown Yükle
+                  </Button>
+                </div>
+
+                {/* Processing Status */}
+                {processing && (
+                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-3">
+                    <div className="flex items-center gap-2 text-sm text-blue-800 dark:text-blue-200">
+                      <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-600 border-t-transparent"></div>
+                      <span>Markdown işlemi devam ediyor...</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </TabsContent>
 
             <TabsContent value="chunks" className="mt-0">
               <div className="p-6 space-y-4">
@@ -762,176 +785,182 @@ export default function SessionPage() {
                   })()}
 
                 {loading ? (
-                <div className="text-center py-16">
-                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent mb-3"></div>
-                  <p className="text-sm text-muted-foreground">Yükleniyor...</p>
-                </div>
-              ) : chunks.length === 0 ? (
-                <div className="text-center py-16">
-                  <p className="text-sm text-muted-foreground mb-1">
-                    Henüz parça bulunmuyor
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Markdown yükleyerek başlayın
-                  </p>
-                </div>
-              ) : (
-                (() => {
-                  // Apply document filter
-                  const filteredChunks = selectedDocumentFilter
-                    ? chunks.filter(
-                        (c) => c.document_name === selectedDocumentFilter
-                      )
-                    : chunks;
+                  <div className="text-center py-16">
+                    <div className="inline-block animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent mb-3"></div>
+                    <p className="text-sm text-muted-foreground">
+                      Yükleniyor...
+                    </p>
+                  </div>
+                ) : chunks.length === 0 ? (
+                  <div className="text-center py-16">
+                    <p className="text-sm text-muted-foreground mb-1">
+                      Henüz parça bulunmuyor
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Markdown yükleyerek başlayın
+                    </p>
+                  </div>
+                ) : (
+                  (() => {
+                    // Apply document filter
+                    const filteredChunks = selectedDocumentFilter
+                      ? chunks.filter(
+                          (c) => c.document_name === selectedDocumentFilter
+                        )
+                      : chunks;
 
-                  return (
-                    <>
-                      {/* Table - Mobile Card View for Small Screens */}
-                      <div className="block sm:hidden space-y-3 p-3">
-                        {filteredChunks
-                          .slice(
-                            (chunkPage - 1) * CHUNKS_PER_PAGE,
-                            chunkPage * CHUNKS_PER_PAGE
-                          )
-                          .map((chunk, idx) => {
-                            return (
-                              <div
-                                key={
-                                  chunk.chunk_metadata?.chunk_id ||
-                                  `${chunk.document_name}-${chunk.chunk_index}-${idx}`
-                                }
-                                className="rounded-lg p-3 space-y-2 bg-muted/30"
-                              >
-                                <div className="flex justify-between items-center">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-medium">
-                                      #{chunk.chunk_index}
+                    return (
+                      <>
+                        {/* Table - Mobile Card View for Small Screens */}
+                        <div className="block sm:hidden space-y-3 p-3">
+                          {filteredChunks
+                            .slice(
+                              (chunkPage - 1) * CHUNKS_PER_PAGE,
+                              chunkPage * CHUNKS_PER_PAGE
+                            )
+                            .map((chunk, idx) => {
+                              return (
+                                <div
+                                  key={
+                                    chunk.chunk_metadata?.chunk_id ||
+                                    `${chunk.document_name}-${chunk.chunk_index}-${idx}`
+                                  }
+                                  className="rounded-lg p-3 space-y-2 bg-muted/30"
+                                >
+                                  <div className="flex justify-between items-center">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-sm font-medium">
+                                        #{chunk.chunk_index}
+                                      </span>
+                                    </div>
+                                    <span className="text-xs text-muted-foreground">
+                                      {chunk.chunk_text.length} karakter
                                     </span>
                                   </div>
-                                  <span className="text-xs text-muted-foreground">
-                                    {chunk.chunk_text.length} karakter
-                                  </span>
-                                </div>
-                                <div className="text-sm text-foreground font-medium truncate">
-                                  {chunk.document_name}
-                                </div>
-                                <button
-                                  onClick={() => {
-                                    setSelectedChunkForModal(chunk);
-                                    setShowChunkModal(true);
-                                  }}
-                                  className="w-full text-sm text-primary cursor-pointer hover:underline text-left py-2"
-                                >
-                                  İçeriği Göster
-                                </button>
-                              </div>
-                            );
-                          })}
-                      </div>
-
-                      {/* Table - Desktop View */}
-                      <div className="hidden sm:block overflow-x-auto">
-                        <table className="w-full">
-                          <thead className="bg-muted/50">
-                            <tr>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                                #
-                              </th>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                                Döküman
-                              </th>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                                Karakter
-                              </th>
-                              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                                İçerik
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-border">
-                            {filteredChunks
-                              .slice(
-                                (chunkPage - 1) * CHUNKS_PER_PAGE,
-                                chunkPage * CHUNKS_PER_PAGE
-                              )
-                              .map((chunk, idx) => {
-                                return (
-                                  <tr
-                                    key={
-                                      chunk.chunk_metadata?.chunk_id ||
-                                      `${chunk.document_name}-${chunk.chunk_index}-${idx}`
-                                    }
-                                    className="hover:bg-muted/30 transition-colors"
+                                  <div className="text-sm text-foreground font-medium truncate">
+                                    {chunk.document_name}
+                                  </div>
+                                  <button
+                                    onClick={() => {
+                                      setSelectedChunkForModal(chunk);
+                                      setShowChunkModal(true);
+                                    }}
+                                    className="w-full text-sm text-primary cursor-pointer hover:underline text-left py-2"
                                   >
-                                    <td className="px-4 py-3 text-sm text-foreground font-medium">
-                                      {chunk.chunk_index}
-                                    </td>
-                                    <td className="px-4 py-3 text-sm text-foreground">
-                                      {chunk.document_name}
-                                    </td>
-                                    <td className="px-4 py-3 text-sm text-muted-foreground">
-                                      {chunk.chunk_text.length}
-                                    </td>
-                                    <td className="px-4 py-3">
-                                      <button
-                                        onClick={() => {
-                                          setSelectedChunkForModal(chunk);
-                                          setShowChunkModal(true);
-                                        }}
-                                        className="text-sm text-primary cursor-pointer hover:underline"
-                                      >
-                                        Göster
-                                      </button>
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                          </tbody>
-                        </table>
-                      </div>
-
-                      {/* Pagination */}
-                      {filteredChunks.length > CHUNKS_PER_PAGE && (
-                        <div className="flex items-center justify-between px-3 sm:px-5 py-3 border-t border-border">
-                          <button
-                            onClick={() =>
-                              setChunkPage((p) => Math.max(1, p - 1))
-                            }
-                            disabled={chunkPage === 1}
-                            className="py-3 px-4 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[44px]"
-                          >
-                            Önceki
-                          </button>
-                          <span className="text-sm text-muted-foreground">
-                            <span className="hidden sm:inline">Sayfa </span>
-                            {chunkPage} /{" "}
-                            {Math.ceil(filteredChunks.length / CHUNKS_PER_PAGE)}
-                          </span>
-                          <button
-                            onClick={() =>
-                              setChunkPage((p) =>
-                                Math.min(
-                                  Math.ceil(
-                                    filteredChunks.length / CHUNKS_PER_PAGE
-                                  ),
-                                  p + 1
-                                )
-                              )
-                            }
-                            disabled={
-                              chunkPage >=
-                              Math.ceil(filteredChunks.length / CHUNKS_PER_PAGE)
-                            }
-                            className="py-3 px-4 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[44px]"
-                          >
-                            Sonraki
-                          </button>
+                                    İçeriği Göster
+                                  </button>
+                                </div>
+                              );
+                            })}
                         </div>
-                      )}
-                    </>
-                  );
-                })()
-              )}
+
+                        {/* Table - Desktop View */}
+                        <div className="hidden sm:block overflow-x-auto">
+                          <table className="w-full">
+                            <thead className="bg-muted/50">
+                              <tr>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                                  #
+                                </th>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                                  Döküman
+                                </th>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                                  Karakter
+                                </th>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                                  İçerik
+                                </th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border">
+                              {filteredChunks
+                                .slice(
+                                  (chunkPage - 1) * CHUNKS_PER_PAGE,
+                                  chunkPage * CHUNKS_PER_PAGE
+                                )
+                                .map((chunk, idx) => {
+                                  return (
+                                    <tr
+                                      key={
+                                        chunk.chunk_metadata?.chunk_id ||
+                                        `${chunk.document_name}-${chunk.chunk_index}-${idx}`
+                                      }
+                                      className="hover:bg-muted/30 transition-colors"
+                                    >
+                                      <td className="px-4 py-3 text-sm text-foreground font-medium">
+                                        {chunk.chunk_index}
+                                      </td>
+                                      <td className="px-4 py-3 text-sm text-foreground">
+                                        {chunk.document_name}
+                                      </td>
+                                      <td className="px-4 py-3 text-sm text-muted-foreground">
+                                        {chunk.chunk_text.length}
+                                      </td>
+                                      <td className="px-4 py-3">
+                                        <button
+                                          onClick={() => {
+                                            setSelectedChunkForModal(chunk);
+                                            setShowChunkModal(true);
+                                          }}
+                                          className="text-sm text-primary cursor-pointer hover:underline"
+                                        >
+                                          Göster
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        {/* Pagination */}
+                        {filteredChunks.length > CHUNKS_PER_PAGE && (
+                          <div className="flex items-center justify-between px-3 sm:px-5 py-3 border-t border-border">
+                            <button
+                              onClick={() =>
+                                setChunkPage((p) => Math.max(1, p - 1))
+                              }
+                              disabled={chunkPage === 1}
+                              className="py-3 px-4 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[44px]"
+                            >
+                              Önceki
+                            </button>
+                            <span className="text-sm text-muted-foreground">
+                              <span className="hidden sm:inline">Sayfa </span>
+                              {chunkPage} /{" "}
+                              {Math.ceil(
+                                filteredChunks.length / CHUNKS_PER_PAGE
+                              )}
+                            </span>
+                            <button
+                              onClick={() =>
+                                setChunkPage((p) =>
+                                  Math.min(
+                                    Math.ceil(
+                                      filteredChunks.length / CHUNKS_PER_PAGE
+                                    ),
+                                    p + 1
+                                  )
+                                )
+                              }
+                              disabled={
+                                chunkPage >=
+                                Math.ceil(
+                                  filteredChunks.length / CHUNKS_PER_PAGE
+                                )
+                              }
+                              className="py-3 px-4 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[44px]"
+                            >
+                              Sonraki
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()
+                )}
               </div>
             </TabsContent>
 
@@ -945,480 +974,15 @@ export default function SessionPage() {
                     />
                   </div>
                 </TabsContent>
-              </>
-            )}
 
-            <TabsContent value="rag-settings" className="mt-0">
-              <div className="p-6 space-y-6">
-                <div>
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="p-2 rounded-lg bg-primary/10">
-                      <Settings className="w-5 h-5 text-primary" />
-                    </div>
-                    <div>
-                      <h2 className="text-xl font-semibold text-foreground">
-                        RAG Ayarları
-                      </h2>
-                      <p className="text-sm text-muted-foreground mt-0.5">
-                        Bu ders oturumu için RAG (Retrieval-Augmented Generation) ayarlarını yapılandırın
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Model Selection */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base flex items-center gap-2">
-                        <Zap className="w-4 h-4 text-primary" />
-                        AI Provider
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                  <select
-                    value={selectedProvider}
-                    onChange={(e) => {
-                      setSelectedProvider(e.target.value);
-                      // Reset model when provider changes
-                      setSelectedQueryModel("");
-                    }}
-                      className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
-                      disabled={modelsLoading}
-                    >
-                      <option value="groq">🌐 Groq (Cloud - Hızlı)</option>
-                      <option value="alibaba">🛒 Alibaba (Cloud - Qwen)</option>
-                      <option value="deepseek">
-                        🔮 DeepSeek (Cloud - Premium)
-                      </option>
-                      <option value="openrouter">
-                        🚀 OpenRouter (Cloud - Güçlü)
-                      </option>
-                      <option value="huggingface">
-                        🤗 HuggingFace (Ücretsiz)
-                      </option>
-                      <option value="ollama">🏠 Ollama (Yerel)</option>
-                    </select>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base flex items-center gap-2">
-                        <Brain className="w-4 h-4 text-primary" />
-                        AI Modeli
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                  <select
-                    value={selectedQueryModel}
-                    onChange={(e) => setSelectedQueryModel(e.target.value)}
-                    className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
-                    disabled={modelsLoading || availableModels.length === 0}
-                  >
-                    <option value="">
-                      {modelsLoading
-                        ? "Modeller yükleniyor..."
-                        : availableModels.length === 0
-                        ? "Bu provider için model bulunamadı"
-                        : "Model seçin..."}
-                    </option>
-                    {availableModels.map((model: any) => (
-                      <option key={model.id || model} value={model.id || model}>
-                        {typeof model === "string"
-                          ? model
-                          : model.name || model.id}
-                      </option>
-                      ))}
-                    </select>
-                    {availableModels.length === 0 && !modelsLoading && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={async () => {
-                          setModelsLoading(true);
-                          try {
-                            const response = await listAvailableModels();
-                            // listAvailableModels returns { models: ModelInfo[], providers: ... }
-                            const models = Array.isArray(response)
-                              ? response
-                              : response.models || [];
-                            setAvailableModels(models);
-                            setModelProviders(
-                              models.reduce((acc: any, m: any) => {
-                                const provider = m.provider || "unknown";
-                                if (!acc[provider]) acc[provider] = [];
-                                acc[provider].push(m);
-                                return acc;
-                              }, {})
-                            );
-                          } catch (e: any) {
-                            setError(e.message || "Modeller yüklenemedi");
-                          } finally {
-                            setModelsLoading(false);
-                          }
-                        }}
-                        className="mt-2"
-                      >
-                        <RefreshCw className="w-3 h-3 mr-1" />
-                        Modelleri Yükle
-                      </Button>
-                    )}
-                    </CardContent>
-                  </Card>
-
-                  {/* Embedding Model Selection */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base flex items-center gap-2">
-                        <Layers className="w-4 h-4 text-primary" />
-                        Embedding Modeli
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="mb-2">
-                    <select
-                      value={selectedEmbeddingProvider}
-                      onChange={(e) => {
-                        setSelectedEmbeddingProvider(e.target.value);
-                        const providerModels =
-                          e.target.value === "ollama"
-                            ? availableEmbeddingModels.ollama
-                            : e.target.value === "alibaba"
-                            ? (availableEmbeddingModels.alibaba || []).map(
-                                (m) => m.id
-                              )
-                            : availableEmbeddingModels.huggingface.map(
-                                (m) => m.id
-                              );
-                        // Only reset model if current model is not in the new provider's list
-                        const currentModelInNewProvider =
-                          providerModels.includes(selectedEmbeddingModel);
-                        if (
-                          providerModels.length > 0 &&
-                          !currentModelInNewProvider
-                        ) {
-                          setSelectedEmbeddingModel(providerModels[0]);
-                        }
-                      }}
-                      className="w-full px-4 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm text-sm mb-2"
-                    >
-                      <option value="ollama">Ollama (Yerel)</option>
-                      <option value="huggingface">
-                        HuggingFace (Ücretsiz)
-                      </option>
-                      <option value="alibaba">
-                        🛒 Alibaba (Cloud - Qwen)
-                      </option>
-                    </select>
-                      </div>
-                      <select
-                    value={selectedEmbeddingModel}
-                    onChange={(e) => setSelectedEmbeddingModel(e.target.value)}
-                    className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
-                    disabled={embeddingModelsLoading}
-                  >
-                    {embeddingModelsLoading ? (
-                      <option value="">Modeller yükleniyor...</option>
-                    ) : selectedEmbeddingProvider === "ollama" ? (
-                      availableEmbeddingModels.ollama.length > 0 ? (
-                        <>
-                          {/* Show current selected model even if not in list (for saved settings) */}
-                          {selectedEmbeddingModel &&
-                            !availableEmbeddingModels.ollama.includes(
-                              selectedEmbeddingModel
-                            ) && (
-                              <option
-                                key={selectedEmbeddingModel}
-                                value={selectedEmbeddingModel}
-                              >
-                                {selectedEmbeddingModel.replace(":latest", "")}{" "}
-                                (Kayıtlı)
-                              </option>
-                            )}
-                          {availableEmbeddingModels.ollama.map((model) => (
-                            <option key={model} value={model}>
-                              {model.replace(":latest", "")}
-                            </option>
-                          ))}
-                        </>
-                      ) : (
-                        <>
-                          {/* Show current selected model even if list is empty */}
-                          {selectedEmbeddingModel && (
-                            <option
-                              key={selectedEmbeddingModel}
-                              value={selectedEmbeddingModel}
-                            >
-                              {selectedEmbeddingModel.replace(":latest", "")}{" "}
-                              (Kayıtlı)
-                            </option>
-                          )}
-                          <option value="">Ollama model bulunamadı</option>
-                        </>
-                      )
-                    ) : selectedEmbeddingProvider === "alibaba" ? (
-                      (availableEmbeddingModels.alibaba || []).length > 0 ? (
-                        <>
-                          {/* Show current selected model even if not in list (for saved settings) */}
-                          {selectedEmbeddingModel &&
-                            !(availableEmbeddingModels.alibaba || []).some(
-                              (m) => m.id === selectedEmbeddingModel
-                            ) && (
-                              <option
-                                key={selectedEmbeddingModel}
-                                value={selectedEmbeddingModel}
-                              >
-                                {selectedEmbeddingModel} (Kayıtlı)
-                              </option>
-                            )}
-                          {(availableEmbeddingModels.alibaba || []).map((model) => (
-                            <option key={model.id} value={model.id}>
-                              {model.name}{" "}
-                              {model.description ? `- ${model.description}` : ""}{" "}
-                              {model.dimensions ? `(${model.dimensions}D)` : ""}
-                            </option>
-                          ))}
-                        </>
-                      ) : (
-                        <>
-                          {/* Show current selected model even if list is empty */}
-                          {selectedEmbeddingModel && (
-                            <option
-                              key={selectedEmbeddingModel}
-                              value={selectedEmbeddingModel}
-                            >
-                              {selectedEmbeddingModel} (Kayıtlı)
-                            </option>
-                          )}
-                          <option value="">Bu provider için model bulunamadı</option>
-                        </>
-                      )
-                    ) : availableEmbeddingModels.huggingface.length > 0 ? (
-                      <>
-                        {/* Show current selected model even if not in list (for saved settings) */}
-                        {selectedEmbeddingModel &&
-                          !availableEmbeddingModels.huggingface.some(
-                            (m) => m.id === selectedEmbeddingModel
-                          ) && (
-                            <option
-                              key={selectedEmbeddingModel}
-                              value={selectedEmbeddingModel}
-                            >
-                              {selectedEmbeddingModel} (Kayıtlı)
-                            </option>
-                          )}
-                        {availableEmbeddingModels.huggingface.map((model) => (
-                          <option key={model.id} value={model.id}>
-                            {model.name}{" "}
-                            {model.description ? `- ${model.description}` : ""}{" "}
-                            {model.dimensions ? `(${model.dimensions}D)` : ""}
-                          </option>
-                        ))}
-                      </>
-                    ) : (
-                      <>
-                        {/* Show current selected model even if list is empty */}
-                        {selectedEmbeddingModel && (
-                          <option
-                            key={selectedEmbeddingModel}
-                            value={selectedEmbeddingModel}
-                          >
-                            {selectedEmbeddingModel} (Kayıtlı)
-                          </option>
-                        )}
-                        <option value="">HuggingFace model bulunamadı</option>
-                      </>
-                    )}
-                      </select>
-                    </CardContent>
-                  </Card>
-
-                  {/* Reranker Selection */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base flex items-center gap-2">
-                        <Sparkles className="w-4 h-4 text-primary" />
-                        Reranker Seçimi
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={useRerankerService}
-                        onChange={(e) =>
-                          setUseRerankerService(e.target.checked)
-                        }
-                        className="w-4 h-4 text-primary border-border rounded focus:ring-primary"
-                      />
-                      <span className="text-sm text-foreground">
-                        Yeni Reranker Servisi Kullan (Ayrı Container)
-                      </span>
-                    </div>
-                    {useRerankerService && (
-                      <select
-                        value={selectedRerankerType}
-                        onChange={(e) =>
-                          setSelectedRerankerType(e.target.value)
-                        }
-                        className="w-full px-4 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm text-sm"
-                      >
-                        <option value="bge-reranker-v2-m3">
-                          🔮 BGE-Reranker-V2-M3 (Türkçe Optimize)
-                        </option>
-                        <option value="ms-marco-minilm-l6">
-                          ⚡ MS-MARCO MiniLM-L6 (Hafif, Hızlı)
-                        </option>
-                        <option value="gte-rerank-v2">
-                          🛒 GTE-Rerank-V2 (Alibaba - 50+ Dil)
-                        </option>
-                      </select>
-                    )}
-                      </div>
-                    </CardContent>
-                  </Card>
-
-                </div>
-
-                {/* Save Button */}
-                <div className="flex items-center gap-3 pt-4 border-t border-border">
-                  <Button
-                    type="button"
-                    onClick={async () => {
-                    try {
-                      setSavingSettings(true);
-                      setSavedSettingsInfo(null);
-                      // Prepare settings object - only include non-empty values
-                      const settingsToSave: any = {
-                        top_k: 5,
-                        use_rerank: session?.rag_settings?.use_rerank ?? false,
-                        min_score: 0.5,
-                        max_context_chars: 8000,
-                        use_reranker_service: useRerankerService,
-                      };
-
-                      // Only include model if selected
-                      if (selectedQueryModel && selectedQueryModel.trim()) {
-                        settingsToSave.model = selectedQueryModel;
-                      }
-
-                      // Only include provider if selected
-                      if (selectedProvider && selectedProvider.trim()) {
-                        settingsToSave.provider = selectedProvider;
-                      }
-
-                      // Only include embedding model if selected
-                      if (
-                        selectedEmbeddingModel &&
-                        selectedEmbeddingModel.trim()
-                      ) {
-                        settingsToSave.embedding_model = selectedEmbeddingModel;
-                      }
-
-                      // Only include embedding provider if selected
-                      if (
-                        selectedEmbeddingProvider &&
-                        selectedEmbeddingProvider.trim()
-                      ) {
-                        settingsToSave.embedding_provider =
-                          selectedEmbeddingProvider;
-                      }
-
-                      // Only include reranker_type if reranker service is enabled
-                      if (useRerankerService && selectedRerankerType) {
-                        settingsToSave.reranker_type = selectedRerankerType as
-                          | "bge"
-                          | "ms-marco";
-                      }
-
-                      console.log("Saving RAG settings:", settingsToSave);
-                      const resp = await saveSessionRagSettings(
-                        sessionId,
-                        settingsToSave
-                      );
-                      console.log("Save response:", resp);
-                      setSavedSettingsInfo("✅ Ders ayarları kaydedildi.");
-
-                      // Force refresh session data to get updated settings
-                      await fetchSessionDetails();
-
-                      // Also update local state from response if available
-                      if (resp.rag_settings) {
-                        if (resp.rag_settings.provider)
-                          setSelectedProvider(resp.rag_settings.provider);
-                        if (resp.rag_settings.model)
-                          setSelectedQueryModel(resp.rag_settings.model);
-                        if (resp.rag_settings.embedding_provider)
-                          setSelectedEmbeddingProvider(
-                            resp.rag_settings.embedding_provider
-                          );
-                        if (resp.rag_settings.embedding_model)
-                          setSelectedEmbeddingModel(
-                            resp.rag_settings.embedding_model
-                          );
-                        if (
-                          resp.rag_settings.use_reranker_service !== undefined
-                        )
-                          setUseRerankerService(
-                            resp.rag_settings.use_reranker_service
-                          );
-                        if (resp.rag_settings.reranker_type)
-                          setSelectedRerankerType(
-                            resp.rag_settings.reranker_type
-                          );
-                      }
-                    } catch (e: any) {
-                      setError(e.message || "Ayarlar kaydedilemedi");
-                    } finally {
-                      setSavingSettings(false);
-                    }
-                  }}
-                    disabled={savingSettings}
-                    className="gap-2"
-                  >
-                    {savingSettings ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        Kaydediliyor...
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="w-4 h-4" />
-                        Ayarları Kaydet
-                      </>
-                    )}
-                  </Button>
-                  {savedSettingsInfo && (
-                    <span className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
-                      <ChevronRight className="w-4 h-4" />
-                      {savedSettingsInfo}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </TabsContent>
-
-            <TabsContent value="session-settings" className="mt-0">
-              <div className="p-6">
-                <SessionSettingsPanel sessionId={sessionId} />
-              </div>
-            </TabsContent>
-
-            {apragEnabled && (
-              <>
-                <TabsContent value="topics" className="mt-0">
-                  <div className="p-6">
-                    <TopicManagementPanel sessionId={sessionId} apragEnabled={apragEnabled} />
-                  </div>
-                </TabsContent>
                 <TabsContent value="interactions" className="mt-0">
                   <div className="p-6">
                     {interactionsLoading ? (
                       <div className="text-center py-12">
                         <div className="inline-block animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent mb-3"></div>
-                        <p className="text-sm text-muted-foreground">Yükleniyor...</p>
+                        <p className="text-sm text-muted-foreground">
+                          Yükleniyor...
+                        </p>
                       </div>
                     ) : interactions.length === 0 ? (
                       <div className="text-center py-12">
@@ -1446,11 +1010,13 @@ export default function SessionPage() {
                                       {interaction.topic_info && (
                                         <span className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded-full">
                                           📚 {interaction.topic_info.title}
-                                          {interaction.topic_info.confidence && (
+                                          {interaction.topic_info
+                                            .confidence && (
                                             <span className="ml-1 opacity-70">
                                               (
                                               {Math.round(
-                                                interaction.topic_info.confidence * 100
+                                                interaction.topic_info
+                                                  .confidence * 100
                                               )}
                                               %)
                                             </span>
@@ -1460,9 +1026,9 @@ export default function SessionPage() {
                                     </div>
                                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                                       <span>
-                                        {new Date(interaction.timestamp).toLocaleString(
-                                          "tr-TR"
-                                        )}
+                                        {new Date(
+                                          interaction.timestamp
+                                        ).toLocaleString("tr-TR")}
                                       </span>
                                       {interaction.processing_time_ms && (
                                         <span>
@@ -1498,16 +1064,20 @@ export default function SessionPage() {
                                         Kaynaklar
                                       </p>
                                       <div className="flex flex-wrap gap-1.5">
-                                        {interaction.sources.map((source, idx) => (
-                                          <span
-                                            key={idx}
-                                            className="text-xs bg-muted text-muted-foreground px-2 py-1 rounded"
-                                          >
-                                            {source.source}
-                                            {source.score !== undefined &&
-                                              ` (${(source.score * 100).toFixed(1)}%)`}
-                                          </span>
-                                        ))}
+                                        {interaction.sources.map(
+                                          (source, idx) => (
+                                            <span
+                                              key={idx}
+                                              className="text-xs bg-muted text-muted-foreground px-2 py-1 rounded"
+                                            >
+                                              {source.source}
+                                              {source.score !== undefined &&
+                                                ` (${(
+                                                  source.score * 100
+                                                ).toFixed(1)}%)`}
+                                            </span>
+                                          )
+                                        )}
                                       </div>
                                     </div>
                                   )}
@@ -1521,6 +1091,495 @@ export default function SessionPage() {
                 </TabsContent>
               </>
             )}
+
+            <TabsContent value="rag-settings" className="mt-0">
+              <div className="p-6 space-y-6">
+                <div>
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="p-2 rounded-lg bg-primary/10">
+                      <Settings className="w-5 h-5 text-primary" />
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-semibold text-foreground">
+                        RAG Ayarları
+                      </h2>
+                      <p className="text-sm text-muted-foreground mt-0.5">
+                        Bu ders oturumu için RAG (Retrieval-Augmented
+                        Generation) ayarlarını yapılandırın
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Model Selection */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Zap className="w-4 h-4 text-primary" />
+                        AI Provider
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <select
+                        value={selectedProvider}
+                        onChange={(e) => {
+                          setSelectedProvider(e.target.value);
+                          // Reset model when provider changes
+                          setSelectedQueryModel("");
+                        }}
+                        className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
+                        disabled={modelsLoading}
+                      >
+                        <option value="groq">🌐 Groq (Cloud - Hızlı)</option>
+                        <option value="alibaba">
+                          🛒 Alibaba (Cloud - Qwen)
+                        </option>
+                        <option value="deepseek">
+                          🔮 DeepSeek (Cloud - Premium)
+                        </option>
+                        <option value="openrouter">
+                          🚀 OpenRouter (Cloud - Güçlü)
+                        </option>
+                        <option value="huggingface">
+                          🤗 HuggingFace (Ücretsiz)
+                        </option>
+                        <option value="ollama">🏠 Ollama (Yerel)</option>
+                      </select>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Brain className="w-4 h-4 text-primary" />
+                        AI Modeli
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <select
+                        value={selectedQueryModel}
+                        onChange={(e) => setSelectedQueryModel(e.target.value)}
+                        className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
+                        disabled={modelsLoading || availableModels.length === 0}
+                      >
+                        <option value="">
+                          {modelsLoading
+                            ? "Modeller yükleniyor..."
+                            : availableModels.length === 0
+                            ? "Bu provider için model bulunamadı"
+                            : "Model seçin..."}
+                        </option>
+                        {availableModels.map((model: any) => (
+                          <option
+                            key={model.id || model}
+                            value={model.id || model}
+                          >
+                            {typeof model === "string"
+                              ? model
+                              : model.name || model.id}
+                          </option>
+                        ))}
+                      </select>
+                      {availableModels.length === 0 && !modelsLoading && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={async () => {
+                            setModelsLoading(true);
+                            try {
+                              const response = await listAvailableModels();
+                              // listAvailableModels returns { models: ModelInfo[], providers: ... }
+                              const models = Array.isArray(response)
+                                ? response
+                                : response.models || [];
+                              setAvailableModels(models);
+                              setModelProviders(
+                                models.reduce((acc: any, m: any) => {
+                                  const provider = m.provider || "unknown";
+                                  if (!acc[provider]) acc[provider] = [];
+                                  acc[provider].push(m);
+                                  return acc;
+                                }, {})
+                              );
+                            } catch (e: any) {
+                              setError(e.message || "Modeller yüklenemedi");
+                            } finally {
+                              setModelsLoading(false);
+                            }
+                          }}
+                          className="mt-2"
+                        >
+                          <RefreshCw className="w-3 h-3 mr-1" />
+                          Modelleri Yükle
+                        </Button>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Embedding Model Selection */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-primary" />
+                        Embedding Modeli
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="mb-2">
+                        <select
+                          value={selectedEmbeddingProvider}
+                          onChange={(e) => {
+                            setSelectedEmbeddingProvider(e.target.value);
+                            const providerModels =
+                              e.target.value === "ollama"
+                                ? availableEmbeddingModels.ollama
+                                : e.target.value === "alibaba"
+                                ? (availableEmbeddingModels.alibaba || []).map(
+                                    (m) => m.id
+                                  )
+                                : availableEmbeddingModels.huggingface.map(
+                                    (m) => m.id
+                                  );
+                            // Only reset model if current model is not in the new provider's list
+                            const currentModelInNewProvider =
+                              providerModels.includes(selectedEmbeddingModel);
+                            if (
+                              providerModels.length > 0 &&
+                              !currentModelInNewProvider
+                            ) {
+                              setSelectedEmbeddingModel(providerModels[0]);
+                            }
+                          }}
+                          className="w-full px-4 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm text-sm mb-2"
+                        >
+                          <option value="ollama">Ollama (Yerel)</option>
+                          <option value="huggingface">
+                            HuggingFace (Ücretsiz)
+                          </option>
+                          <option value="alibaba">
+                            🛒 Alibaba (Cloud - Qwen)
+                          </option>
+                        </select>
+                      </div>
+                      <select
+                        value={selectedEmbeddingModel}
+                        onChange={(e) =>
+                          setSelectedEmbeddingModel(e.target.value)
+                        }
+                        className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
+                        disabled={embeddingModelsLoading}
+                      >
+                        {embeddingModelsLoading ? (
+                          <option value="">Modeller yükleniyor...</option>
+                        ) : selectedEmbeddingProvider === "ollama" ? (
+                          availableEmbeddingModels.ollama.length > 0 ? (
+                            <>
+                              {/* Show current selected model even if not in list (for saved settings) */}
+                              {selectedEmbeddingModel &&
+                                !availableEmbeddingModels.ollama.includes(
+                                  selectedEmbeddingModel
+                                ) && (
+                                  <option
+                                    key={selectedEmbeddingModel}
+                                    value={selectedEmbeddingModel}
+                                  >
+                                    {selectedEmbeddingModel.replace(
+                                      ":latest",
+                                      ""
+                                    )}{" "}
+                                    (Kayıtlı)
+                                  </option>
+                                )}
+                              {availableEmbeddingModels.ollama.map((model) => (
+                                <option key={model} value={model}>
+                                  {model.replace(":latest", "")}
+                                </option>
+                              ))}
+                            </>
+                          ) : (
+                            <>
+                              {/* Show current selected model even if list is empty */}
+                              {selectedEmbeddingModel && (
+                                <option
+                                  key={selectedEmbeddingModel}
+                                  value={selectedEmbeddingModel}
+                                >
+                                  {selectedEmbeddingModel.replace(
+                                    ":latest",
+                                    ""
+                                  )}{" "}
+                                  (Kayıtlı)
+                                </option>
+                              )}
+                              <option value="">Ollama model bulunamadı</option>
+                            </>
+                          )
+                        ) : selectedEmbeddingProvider === "alibaba" ? (
+                          (availableEmbeddingModels.alibaba || []).length >
+                          0 ? (
+                            <>
+                              {/* Show current selected model even if not in list (for saved settings) */}
+                              {selectedEmbeddingModel &&
+                                !(availableEmbeddingModels.alibaba || []).some(
+                                  (m) => m.id === selectedEmbeddingModel
+                                ) && (
+                                  <option
+                                    key={selectedEmbeddingModel}
+                                    value={selectedEmbeddingModel}
+                                  >
+                                    {selectedEmbeddingModel} (Kayıtlı)
+                                  </option>
+                                )}
+                              {(availableEmbeddingModels.alibaba || []).map(
+                                (model) => (
+                                  <option key={model.id} value={model.id}>
+                                    {model.name}{" "}
+                                    {model.description
+                                      ? `- ${model.description}`
+                                      : ""}{" "}
+                                    {model.dimensions
+                                      ? `(${model.dimensions}D)`
+                                      : ""}
+                                  </option>
+                                )
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              {/* Show current selected model even if list is empty */}
+                              {selectedEmbeddingModel && (
+                                <option
+                                  key={selectedEmbeddingModel}
+                                  value={selectedEmbeddingModel}
+                                >
+                                  {selectedEmbeddingModel} (Kayıtlı)
+                                </option>
+                              )}
+                              <option value="">
+                                Bu provider için model bulunamadı
+                              </option>
+                            </>
+                          )
+                        ) : availableEmbeddingModels.huggingface.length > 0 ? (
+                          <>
+                            {/* Show current selected model even if not in list (for saved settings) */}
+                            {selectedEmbeddingModel &&
+                              !availableEmbeddingModels.huggingface.some(
+                                (m) => m.id === selectedEmbeddingModel
+                              ) && (
+                                <option
+                                  key={selectedEmbeddingModel}
+                                  value={selectedEmbeddingModel}
+                                >
+                                  {selectedEmbeddingModel} (Kayıtlı)
+                                </option>
+                              )}
+                            {availableEmbeddingModels.huggingface.map(
+                              (model) => (
+                                <option key={model.id} value={model.id}>
+                                  {model.name}{" "}
+                                  {model.description
+                                    ? `- ${model.description}`
+                                    : ""}{" "}
+                                  {model.dimensions
+                                    ? `(${model.dimensions}D)`
+                                    : ""}
+                                </option>
+                              )
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            {/* Show current selected model even if list is empty */}
+                            {selectedEmbeddingModel && (
+                              <option
+                                key={selectedEmbeddingModel}
+                                value={selectedEmbeddingModel}
+                              >
+                                {selectedEmbeddingModel} (Kayıtlı)
+                              </option>
+                            )}
+                            <option value="">
+                              HuggingFace model bulunamadı
+                            </option>
+                          </>
+                        )}
+                      </select>
+                    </CardContent>
+                  </Card>
+
+                  {/* Reranker Selection */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Sparkles className="w-4 h-4 text-primary" />
+                        Reranker Seçimi
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={useRerankerService}
+                            onChange={(e) =>
+                              setUseRerankerService(e.target.checked)
+                            }
+                            className="w-4 h-4 text-primary border-border rounded focus:ring-primary"
+                          />
+                          <span className="text-sm text-foreground">
+                            Yeni Reranker Servisi Kullan (Ayrı Container)
+                          </span>
+                        </div>
+                        {useRerankerService && (
+                          <select
+                            value={selectedRerankerType}
+                            onChange={(e) =>
+                              setSelectedRerankerType(e.target.value)
+                            }
+                            className="w-full px-4 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm text-sm"
+                          >
+                            <option value="bge-reranker-v2-m3">
+                              🔮 BGE-Reranker-V2-M3 (Türkçe Optimize)
+                            </option>
+                            <option value="ms-marco-minilm-l6">
+                              ⚡ MS-MARCO MiniLM-L6 (Hafif, Hızlı)
+                            </option>
+                            <option value="gte-rerank-v2">
+                              🛒 GTE-Rerank-V2 (Alibaba - 50+ Dil)
+                            </option>
+                          </select>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* Save Button */}
+                <div className="flex items-center gap-3 pt-4 border-t border-border">
+                  <Button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        setSavingSettings(true);
+                        setSavedSettingsInfo(null);
+                        // Prepare settings object - only include non-empty values
+                        const settingsToSave: any = {
+                          top_k: 5,
+                          use_rerank:
+                            session?.rag_settings?.use_rerank ?? false,
+                          min_score: 0.5,
+                          max_context_chars: 8000,
+                          use_reranker_service: useRerankerService,
+                        };
+
+                        // Only include model if selected
+                        if (selectedQueryModel && selectedQueryModel.trim()) {
+                          settingsToSave.model = selectedQueryModel;
+                        }
+
+                        // Only include provider if selected
+                        if (selectedProvider && selectedProvider.trim()) {
+                          settingsToSave.provider = selectedProvider;
+                        }
+
+                        // Only include embedding model if selected
+                        if (
+                          selectedEmbeddingModel &&
+                          selectedEmbeddingModel.trim()
+                        ) {
+                          settingsToSave.embedding_model =
+                            selectedEmbeddingModel;
+                        }
+
+                        // Only include embedding provider if selected
+                        if (
+                          selectedEmbeddingProvider &&
+                          selectedEmbeddingProvider.trim()
+                        ) {
+                          settingsToSave.embedding_provider =
+                            selectedEmbeddingProvider;
+                        }
+
+                        // Only include reranker_type if reranker service is enabled
+                        if (useRerankerService && selectedRerankerType) {
+                          settingsToSave.reranker_type =
+                            selectedRerankerType as "bge" | "ms-marco";
+                        }
+
+                        console.log("Saving RAG settings:", settingsToSave);
+                        const resp = await saveSessionRagSettings(
+                          sessionId,
+                          settingsToSave
+                        );
+                        console.log("Save response:", resp);
+                        setSavedSettingsInfo("✅ Ders ayarları kaydedildi.");
+
+                        // Force refresh session data to get updated settings
+                        await fetchSessionDetails();
+
+                        // Also update local state from response if available
+                        if (resp.rag_settings) {
+                          if (resp.rag_settings.provider)
+                            setSelectedProvider(resp.rag_settings.provider);
+                          if (resp.rag_settings.model)
+                            setSelectedQueryModel(resp.rag_settings.model);
+                          if (resp.rag_settings.embedding_provider)
+                            setSelectedEmbeddingProvider(
+                              resp.rag_settings.embedding_provider
+                            );
+                          if (resp.rag_settings.embedding_model)
+                            setSelectedEmbeddingModel(
+                              resp.rag_settings.embedding_model
+                            );
+                          if (
+                            resp.rag_settings.use_reranker_service !== undefined
+                          )
+                            setUseRerankerService(
+                              resp.rag_settings.use_reranker_service
+                            );
+                          if (resp.rag_settings.reranker_type)
+                            setSelectedRerankerType(
+                              resp.rag_settings.reranker_type
+                            );
+                        }
+                      } catch (e: any) {
+                        setError(e.message || "Ayarlar kaydedilemedi");
+                      } finally {
+                        setSavingSettings(false);
+                      }
+                    }}
+                    disabled={savingSettings}
+                    className="gap-2"
+                  >
+                    {savingSettings ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        Kaydediliyor...
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-4 h-4" />
+                        Ayarları Kaydet
+                      </>
+                    )}
+                  </Button>
+                  {savedSettingsInfo && (
+                    <span className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                      <ChevronRight className="w-4 h-4" />
+                      {savedSettingsInfo}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="session-settings" className="mt-0">
+              <div className="p-6">
+                <SessionSettingsPanel sessionId={sessionId} />
+              </div>
+            </TabsContent>
           </Tabs>
         </Card>
 
@@ -1598,7 +1657,6 @@ export default function SessionPage() {
             </div>
           </div>
         )}
-
       </div>
     </TeacherLayout>
   );

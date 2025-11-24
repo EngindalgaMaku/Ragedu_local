@@ -256,16 +256,23 @@ else:
 alibaba_client = None
 if ALIBABA_API_KEY:
     try:
+        # Debug: Log API key format (masked for security)
+        api_key_preview = f"{ALIBABA_API_KEY[:8]}***{ALIBABA_API_KEY[-4:]}" if len(ALIBABA_API_KEY) > 12 else "***"
+        print(f"🔍 [ALIBABA DEBUG] API Key found: {api_key_preview}")
+        print(f"🔍 [ALIBABA DEBUG] API Key length: {len(ALIBABA_API_KEY)}")
+        print(f"🔍 [ALIBABA DEBUG] Using INTERNATIONAL endpoint: https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+        
         alibaba_client = OpenAIClient(
             api_key=ALIBABA_API_KEY,
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+            base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
         )
-        print("✅ Alibaba DashScope API client initialized.")
+        print("✅ Alibaba DashScope International API client initialized.")
     except Exception as e:
         print(f"⚠️ Warning: Failed to initialize Alibaba client: {e}")
         alibaba_client = None
 else:
     print("⚠️ Warning: ALIBABA_API_KEY not set. Alibaba models will not be available.")
+    print("🔍 [ALIBABA DEBUG] Checked environment variables: ALIBABA_API_KEY and DASHSCOPE_API_KEY")
 
 # --- Cross-Encoder Model for Reranking ---
 rerank_model = None
@@ -454,6 +461,9 @@ async def generate_response(request: GenerationRequest):
                 raise HTTPException(status_code=503, detail="Alibaba client is not available. Check ALIBABA_API_KEY.")
 
             try:
+                print(f"🔍 [ALIBABA DEBUG] Attempting to call model: {model_name}")
+                print(f"🔍 [ALIBABA DEBUG] Request params - Temperature: {request.temperature}, Max tokens: {request.max_tokens}")
+                
                 chat_completion = alibaba_client.chat.completions.create(
                     model=model_name,
                     messages=[
@@ -464,18 +474,34 @@ async def generate_response(request: GenerationRequest):
                     max_tokens=request.max_tokens,
                     stream=False
                 )
+                print(f"✅ [ALIBABA DEBUG] API call successful for model: {model_name}")
                 response_content = chat_completion.choices[0].message.content or ""
                 return GenerationResponse(response=response_content, model_used=model_name)
             except Exception as e:
                 error_str = str(e)
-                # Check for authentication errors specifically
-                if "401" in error_str or "authentication" in error_str.lower() or "invalid" in error_str.lower():
+                print(f"🔍 [ALIBABA DEBUG] Full error: {error_str}")
+                print(f"🔍 [ALIBABA DEBUG] Error type: {type(e)}")
+                
+                # Check for specific Alibaba Cloud errors
+                if "403" in error_str and "AccessDenied.Unpurchased" in error_str:
+                    error_detail = (
+                        "Alibaba Cloud 403-AccessDenied.Unpurchased error. This indicates:\n"
+                        "1. The DashScope service may not be activated in your Alibaba Cloud account\n"
+                        "2. The API key may not have permissions for the requested model\n"
+                        "3. You may need to activate the DashScope service first\n"
+                        "4. The model might require a paid subscription\n\n"
+                        f"Please check: https://dashscope.console.aliyun.com/\n"
+                        f"Full error: {error_str}"
+                    )
+                    print(f"❌ [ALIBABA ERROR] {error_detail}")
+                    raise HTTPException(status_code=403, detail=error_detail)
+                elif "401" in error_str or "authentication" in error_str.lower() or "invalid" in error_str.lower():
                     error_detail = f"Alibaba API authentication failed. Please check your ALIBABA_API_KEY environment variable. Error: {error_str}"
-                    print(f"❌ {error_detail}")
+                    print(f"❌ [ALIBABA ERROR] {error_detail}")
                     raise HTTPException(status_code=401, detail=error_detail)
                 else:
                     error_detail = f"Alibaba API error: {error_str}"
-                    print(f"❌ {error_detail}")
+                    print(f"❌ [ALIBABA ERROR] {error_detail}")
                     raise HTTPException(status_code=500, detail=error_detail)
 
         elif is_deepseek_model(model_name):
@@ -1137,6 +1163,15 @@ async def pull_model(request: PullModelRequest):
         print(f"❌ Error during model pull: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred while pulling the model: {str(e)}")
 
+def is_alibaba_embedding_model(model_name: str) -> bool:
+    """Check if the model is an Alibaba DashScope embedding model."""
+    alibaba_embedding_models = [
+        "text-embedding-v4",
+        "text-embedding-v3",
+        "text-embedding-v2"
+    ]
+    return model_name in alibaba_embedding_models
+
 def is_huggingface_embedding_model(model_name: str) -> bool:
     """Check if the model is a HuggingFace embedding model."""
     # HuggingFace models typically have format: "organization/model-name" or contain "/"
@@ -1179,6 +1214,50 @@ async def generate_embeddings(request: EmbedRequest):
         
         embeddings = []
         
+        # 🎯 CRITICAL FIX: Check provider-specific models first
+        if is_alibaba_embedding_model(model_name):
+            print(f"🔍 [EMBEDDING DEBUG] Detected Alibaba embedding model: {model_name}")
+            
+            if not alibaba_client or not ALIBABA_API_KEY:
+                error_detail = (
+                    f"❌ [EMBEDDING ERROR] Alibaba embedding model '{model_name}' requested but Alibaba client not available.\n"
+                    f"   - Please check ALIBABA_API_KEY environment variable\n"
+                    f"   - Ensure identity verification is completed in Alibaba Cloud\n"
+                    f"   - NO FALLBACK will be attempted to preserve research integrity"
+                )
+                print(error_detail)
+                raise HTTPException(status_code=503, detail=error_detail)
+            
+            try:
+                print(f"🔍 [EMBEDDING DEBUG] Calling Alibaba DashScope embedding API for {len(texts)} texts")
+                
+                # Use OpenAI-compatible embedding API for Alibaba DashScope
+                # Reference: https://help.aliyun.com/zh/dashscope/developer-reference/text-embedding-quick-start
+                api_response = alibaba_client.embeddings.create(
+                    model=model_name,
+                    input=texts
+                )
+                
+                # Extract embeddings from response
+                for embedding_data in api_response.data:
+                    embeddings.append(embedding_data.embedding)
+                
+                end_time = time.time()
+                processing_time = end_time - start_time
+                print(f"✅ [EMBEDDING SUCCESS] Generated {len(embeddings)} embeddings using Alibaba '{model_name}' in {processing_time:.2f} seconds")
+                
+                return EmbedResponse(embeddings=embeddings, model_used=model_name)
+                
+            except Exception as alibaba_error:
+                error_detail = (
+                    f"❌ [EMBEDDING ERROR] Alibaba embedding failed for model '{model_name}':\n"
+                    f"   Error: {str(alibaba_error)}\n"
+                    f"   - Check if identity verification is completed in Alibaba Cloud\n"
+                    f"   - NO FALLBACK attempted to preserve research integrity"
+                )
+                print(error_detail)
+                raise HTTPException(status_code=500, detail=error_detail)
+        
         # Skip Ollama if a HuggingFace model is explicitly requested
         # Check if it's a HuggingFace model by format (contains / and starts with known orgs)
         hf_orgs = ["sentence-transformers/", "intfloat/", "BAAI/"]
@@ -1186,7 +1265,7 @@ async def generate_embeddings(request: EmbedRequest):
         skip_ollama = is_huggingface_embedding_model(model_name) or is_hf_model
         
         if skip_ollama:
-            print(f"Detected HuggingFace model '{model_name}', skipping Ollama")
+            print(f"🔍 [EMBEDDING DEBUG] Detected HuggingFace model '{model_name}', skipping Ollama")
         else:
             # Try Ollama first if available and not a HuggingFace model
             client = get_ollama_client()
@@ -1478,6 +1557,7 @@ async def generate_answer_from_docs(request: GenerateAnswerRequest):
             "• Ders materyalinde bilgi varsa: Madde madde, net ve anlaşılır şekilde açıkla\n"
             "• Ders materyalinde bilgi yoksa: 'Bu konu, verilen ders materyallerinde bulunmuyor' de\n"
             "• Kısa ve öğretici ol, gereksiz açıklama yapma\n"
+            "• MARKDOWN FORMATI KULLAN: Önemli kavramları **kalın** yaz, listeler için `-` veya `*` kullan, kod için `backtick` kullan, başlıklar için `##` kullan\n"
         )
         
         full_prompt = f"""DERS MATERYALİ:

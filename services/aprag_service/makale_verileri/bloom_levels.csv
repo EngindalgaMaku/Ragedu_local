@@ -1,0 +1,11 @@
+query,level,level_index,confidence,matched_keywords
+Makine öğrenimi nedir?,remember,1,1.0,nedir
+Neural network nasıl çalışır?,understand,2,1.0,nasıl
+Linear regression modelini uygula,apply,3,0.5,uygula
+Bu iki modeli analiz et ve karşılaştır,analyze,4,0.5,"analiz et, karşılaştır"
+Hangisi daha iyi: SVM mi yoksa Random Forest mi?,remember,1,0.5,hangi
+Yeni bir deep learning modeli tasarla,create,6,1.0,"tasarla, yeni, model"
+Python'da liste nasıl tanımlanır?,remember,1,0.75,"tanımla, tanım, list"
+Gradient descent algoritmasını açıkla,understand,2,1.0,açıkla
+Overfitting problemi nasıl çözülür?,understand,2,0.5,nasıl
+Cross-validation yöntemini uygula,apply,3,1.0,uygula

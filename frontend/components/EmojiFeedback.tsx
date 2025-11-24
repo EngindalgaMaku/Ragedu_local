@@ -306,6 +306,7 @@ interface QuickEmojiFeedbackProps {
   interactionId: number;
   userId: string;
   sessionId: string;
+  initialEmoji?: string; // Emoji feedback from chat message
   onFeedbackSubmitted?: () => void;
 }
 
@@ -313,14 +314,22 @@ export function QuickEmojiFeedback({
   interactionId,
   userId,
   sessionId,
+  initialEmoji,
   onFeedbackSubmitted,
 }: QuickEmojiFeedbackProps) {
-  const [selectedEmoji, setSelectedEmoji] = useState<string | null>(null);
+  const [selectedEmoji, setSelectedEmoji] = useState<string | null>(initialEmoji || null);
   const [submitting, setSubmitting] = useState(false);
   const [showDetailedModal, setShowDetailedModal] = useState(false);
   const [pendingEmoji, setPendingEmoji] = useState<
     "😊" | "👍" | "😐" | "❌" | null
   >(null);
+
+  // Update selectedEmoji when initialEmoji changes (from chat history)
+  React.useEffect(() => {
+    if (initialEmoji) {
+      setSelectedEmoji(initialEmoji);
+    }
+  }, [initialEmoji]);
 
   const handleEmojiClick = async (emoji: "😊" | "👍" | "😐" | "❌") => {
     if (submitting || selectedEmoji) return;
@@ -328,18 +337,56 @@ export function QuickEmojiFeedback({
     setSubmitting(true);
 
     try {
-      await submitEmojiFeedback({
+      const result = await submitEmojiFeedback({
         interaction_id: interactionId,
         user_id: userId,
         session_id: sessionId,
         emoji,
       });
+      console.log("✅ Emoji feedback submitted:", result);
       setSelectedEmoji(emoji);
+      
+      // Update chat message with emoji feedback
+      try {
+        const { getStudentChatHistory, saveStudentChatMessage } = await import("@/lib/api");
+        const chatHistory = await getStudentChatHistory(sessionId);
+        const messageToUpdate = chatHistory.find(
+          (msg) => msg.aprag_interaction_id === interactionId
+        );
+        if (messageToUpdate) {
+          // CRITICAL: Preserve ALL fields including topic and suggestions
+          await saveStudentChatMessage({
+            user: messageToUpdate.user,
+            bot: messageToUpdate.bot,
+            sources: messageToUpdate.sources || [],
+            durationMs: messageToUpdate.durationMs || 0,
+            session_id: messageToUpdate.session_id,
+            suggestions: messageToUpdate.suggestions || [], // Preserve suggestions
+            aprag_interaction_id: messageToUpdate.aprag_interaction_id,
+            emoji_feedback: emoji, // Update emoji
+            topic: messageToUpdate.topic || undefined, // Preserve topic
+          });
+          console.log("✅ Chat message updated with emoji feedback", { 
+            emoji,
+            topic: messageToUpdate.topic,
+            hasSuggestions: !!messageToUpdate.suggestions 
+          });
+        } else {
+          console.warn("⚠️ Message not found for emoji update", { interactionId });
+        }
+      } catch (updateErr) {
+        console.error("❌ Failed to update chat message with emoji:", updateErr);
+        // Non-critical, don't fail the whole operation
+      }
+      
       if (onFeedbackSubmitted) {
         onFeedbackSubmitted();
       }
-    } catch (err) {
-      console.error("Failed to submit emoji feedback:", err);
+    } catch (err: any) {
+      console.error("❌ Failed to submit emoji feedback:", err);
+      alert(`Geri bildirim gönderilemedi: ${err.message || "Bilinmeyen hata"}`);
+      setSubmitting(false);
+      return;
     } finally {
       setSubmitting(false);
     }
@@ -367,33 +414,29 @@ export function QuickEmojiFeedback({
   }
 
   return (
-    <div className="inline-flex items-center gap-1">
-      {EMOJI_OPTIONS.map((option) => (
-        <button
-          key={option.emoji}
-          onClick={() => handleEmojiClick(option.emoji)}
-          disabled={submitting}
-          title={`${option.name}: ${option.description}`}
-          className="text-lg hover:scale-125 transition-all transform disabled:opacity-50
-                   hover:shadow-md rounded-full p-1 hover:bg-gray-100 relative group"
-        >
-          {option.emoji}
-          <div
-            className="absolute bottom-full mb-2 left-1/2 transform -translate-x-1/2
-                         bg-gray-800 text-white text-xs rounded-lg px-2 py-1
-                         opacity-0 group-hover:opacity-100 transition-opacity duration-200
-                         whitespace-nowrap z-50 pointer-events-none"
+    <div className="flex flex-col gap-2 w-full">
+      {/* Emoji buttons row with labels */}
+      <div className="flex items-center justify-between bg-white rounded-lg px-2 py-3 border border-gray-200">
+        {EMOJI_OPTIONS.map((option) => (
+          <button
+            key={option.emoji}
+            onClick={() => handleEmojiClick(option.emoji)}
+            disabled={submitting}
+            className="flex-1 flex flex-col items-center gap-1.5 p-2 rounded-lg 
+                     hover:bg-gray-50 transition-all transform hover:scale-110
+                     disabled:opacity-50 disabled:cursor-not-allowed
+                     focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1
+                     active:scale-95"
+            aria-label={option.name}
+            title={option.description}
           >
-            <div className="text-center">
-              <div className="font-semibold">{option.shortDescription}</div>
-            </div>
-            <div
-              className="absolute top-full left-1/2 transform -translate-x-1/2
-                           border-4 border-transparent border-t-gray-800"
-            ></div>
-          </div>
-        </button>
-      ))}
+            <span className="text-3xl leading-none">{option.emoji}</span>
+            <span className="text-[10px] font-medium text-gray-600 text-center leading-tight">
+              {option.shortDescription}
+            </span>
+          </button>
+        ))}
+      </div>
       {/* Detailed Feedback Modal */}
       <DetailedFeedbackModal
         isOpen={showDetailedModal}

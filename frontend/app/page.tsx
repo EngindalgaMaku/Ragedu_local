@@ -34,6 +34,7 @@ import {
   listAvailableEmbeddingModels,
   deleteSession,
   updateSessionStatus,
+  updateSessionName,
   SessionMeta,
   RAGSource,
   getRecentInteractions,
@@ -127,6 +128,7 @@ function SessionCard({
   onDelete,
   onToggleStatus,
   onOpenRecent,
+  onUpdateName,
   index = 0,
 }: {
   session: SessionMeta;
@@ -134,8 +136,11 @@ function SessionCard({
   onDelete: (id: string, name: string) => void;
   onToggleStatus: (id: string, currentStatus: string) => void;
   onOpenRecent: (id: string) => void;
+  onUpdateName: (id: string, newName: string) => void;
   index?: number;
 }) {
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editedName, setEditedName] = useState(session.name);
   const colorPalette = [
     { bg: "from-blue-500 to-indigo-600", text: "text-white" },
     { bg: "from-green-500 to-emerald-600", text: "text-white" },
@@ -146,6 +151,26 @@ function SessionCard({
   ];
   const c = colorPalette[index % colorPalette.length];
 
+  const handleNameEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsEditingName(true);
+    setEditedName(session.name);
+  };
+
+  const handleNameSave = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (editedName.trim() && editedName.trim() !== session.name) {
+      onUpdateName(session.session_id, editedName.trim());
+    }
+    setIsEditingName(false);
+  };
+
+  const handleNameCancel = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditedName(session.name);
+    setIsEditingName(false);
+  };
+
   return (
     <div
       className={`relative group bg-gradient-to-br ${c.bg} ${c.text} rounded-xl sm:rounded-2xl shadow-lg hover:shadow-2xl transition-all duration-300 transform hover:-translate-y-1 cursor-pointer p-4 sm:p-6 animate-slide-up`}
@@ -154,9 +179,56 @@ function SessionCard({
     >
       <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
-          <h3 className="text-base sm:text-lg font-bold mb-1 truncate">
-            {session.name}
-          </h3>
+          {isEditingName ? (
+            <div
+              className="flex items-center gap-2 mb-1"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <input
+                type="text"
+                value={editedName}
+                onChange={(e) => setEditedName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    handleNameSave(e as any);
+                  } else if (e.key === "Escape") {
+                    handleNameCancel(e as any);
+                  }
+                }}
+                className="flex-1 px-2 py-1 text-base sm:text-lg font-bold bg-white/20 border border-white/40 rounded text-white placeholder-white/70 focus:outline-none focus:ring-2 focus:ring-white/50"
+                placeholder="Oturum adı"
+                autoFocus
+                onClick={(e) => e.stopPropagation()}
+              />
+              <button
+                onClick={handleNameSave}
+                className="px-2 py-1 bg-green-500 hover:bg-green-600 text-white rounded text-sm font-semibold transition-colors"
+                title="Kaydet"
+              >
+                ✓
+              </button>
+              <button
+                onClick={handleNameCancel}
+                className="px-2 py-1 bg-red-500 hover:bg-red-600 text-white rounded text-sm font-semibold transition-colors"
+                title="İptal"
+              >
+                ✕
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 mb-1">
+              <h3 className="text-base sm:text-lg font-bold truncate flex-1">
+                {session.name}
+              </h3>
+              <button
+                onClick={handleNameEdit}
+                className="opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 text-xs bg-white/20 hover:bg-white/30 rounded text-white font-semibold"
+                title="İsmi değiştir"
+              >
+                ✏️
+              </button>
+            </div>
+          )}
           <p className="text-xs sm:text-sm opacity-80 mb-3 sm:mb-4 line-clamp-2">
             {session.description}
           </p>
@@ -543,6 +615,8 @@ export default function HomePage() {
   );
   const [markdownLoading, setMarkdownLoading] = useState(false);
   const [addingDocuments, setAddingDocuments] = useState(false);
+  const [markdownPage, setMarkdownPage] = useState(1);
+  const MARKDOWN_FILES_PER_PAGE = 20;
 
   // PDF to Markdown conversion states
   const [isDocumentUploadModalOpen, setIsDocumentUploadModalOpen] =
@@ -1347,6 +1421,58 @@ export default function HomePage() {
       await refreshSessions();
     } catch (e: any) {
       setError(e.message || "Oturum durumu güncellenirken hata oluştu");
+    }
+  };
+
+  const handleUpdateSessionName = async (
+    sessionId: string,
+    newName: string
+  ) => {
+    console.log(
+      "🔧 [SESSION NAME UPDATE] Starting session name update process"
+    );
+    console.log("🔧 [SESSION NAME UPDATE] Session ID:", sessionId);
+    console.log("🔧 [SESSION NAME UPDATE] New Name:", newName);
+    console.log(
+      "🔧 [SESSION NAME UPDATE] New Name (trimmed):",
+      newName?.trim()
+    );
+
+    if (!newName || !newName.trim()) {
+      console.error("❌ [SESSION NAME UPDATE] Validation failed: Empty name");
+      setError("Oturum adı boş olamaz");
+      return;
+    }
+
+    try {
+      console.log("🔧 [SESSION NAME UPDATE] Starting API call...");
+      setError(null);
+
+      // Call the API function
+      console.log("🔧 [SESSION NAME UPDATE] Calling updateSessionName API...");
+      const apiResult = await updateSessionName(sessionId, newName.trim());
+      console.log("✅ [SESSION NAME UPDATE] API call successful:", apiResult);
+
+      // Refresh sessions list
+      console.log("🔧 [SESSION NAME UPDATE] Refreshing sessions list...");
+      await refreshSessions();
+      console.log("✅ [SESSION NAME UPDATE] Sessions refreshed successfully");
+
+      // Show success message
+      console.log("🔧 [SESSION NAME UPDATE] Setting success message...");
+      setSuccess("Oturum adı başarıyla güncellendi");
+      setTimeout(() => setSuccess(null), 3000);
+      console.log("✅ [SESSION NAME UPDATE] Process completed successfully!");
+    } catch (e: any) {
+      console.error("❌ [SESSION NAME UPDATE] Error occurred:", e);
+      console.error("❌ [SESSION NAME UPDATE] Error message:", e.message);
+      console.error("❌ [SESSION NAME UPDATE] Error stack:", e.stack);
+      console.error(
+        "❌ [SESSION NAME UPDATE] Full error object:",
+        JSON.stringify(e, null, 2)
+      );
+
+      setError(e.message || "Oturum adı güncellenirken hata oluştu");
     }
   };
 
@@ -2387,6 +2513,7 @@ export default function HomePage() {
                         onDelete={handleDeleteSession}
                         onToggleStatus={handleToggleSessionStatus}
                         onOpenRecent={(id) => openRecentInteractions(id)}
+                        onUpdateName={handleUpdateSessionName}
                         index={index}
                       />
                     ))}
@@ -2497,6 +2624,7 @@ export default function HomePage() {
                         onDelete={handleDeleteSession}
                         onToggleStatus={handleToggleSessionStatus}
                         onOpenRecent={(id) => openRecentInteractions(id)}
+                        onUpdateName={handleUpdateSessionName}
                         index={index}
                       />
                     ))}
@@ -2787,177 +2915,164 @@ export default function HomePage() {
                           Henüz markdown dosyası bulunmuyor.
                         </div>
                       ) : (
-                        <div className="max-h-64 overflow-y-auto border border-gray-200 rounded-md">
-                          {markdownFiles.map((filename) => (
-                            <div
-                              key={filename}
-                              className="flex items-center p-3 hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={selectedMarkdownFiles.includes(
-                                  filename
-                                )}
-                                onChange={() =>
-                                  handleMarkdownFileToggle(filename)
-                                }
-                                className="mr-3 h-4 w-4 text-primary-600 rounded border-gray-300 focus:ring-primary-500"
-                              />
-                              <div className="flex-1">
-                                <div className="text-sm font-medium text-gray-900">
-                                  {filename.replace(".md", "")}
-                                </div>
-                                <div className="text-xs text-gray-500">
-                                  {filename}
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <button
-                                  onClick={() =>
-                                    handleViewMarkdownFile(filename)
-                                  }
-                                  className="px-3 py-1 text-xs bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-md transition-colors flex items-center gap-1"
-                                  title="Dosyayı görüntüle"
+                        <>
+                          <div className="max-h-[600px] overflow-y-auto border border-gray-200 rounded-md bg-white">
+                            {markdownFiles
+                              .slice(
+                                (markdownPage - 1) * MARKDOWN_FILES_PER_PAGE,
+                                markdownPage * MARKDOWN_FILES_PER_PAGE
+                              )
+                              .map((filename) => (
+                                <div
+                                  key={filename}
+                                  className="flex items-center p-3 hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
                                 >
-                                  <svg
-                                    className="w-3 h-3"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth="2"
-                                      d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                                    />
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth="2"
-                                      d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
-                                    />
-                                  </svg>
-                                  Görüntüle
-                                </button>
-                                <button
-                                  onClick={() =>
-                                    handleDownloadMarkdownFile(filename)
-                                  }
-                                  className="px-3 py-1 text-xs bg-green-100 text-green-700 hover:bg-green-200 rounded-md transition-colors flex items-center gap-1"
-                                  title="Dosyayı indir"
-                                >
-                                  <svg
-                                    className="w-3 h-3"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth="2"
-                                      d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                                    />
-                                  </svg>
-                                  İndir
-                                </button>
-                                <button
-                                  onClick={async () => {
-                                    if (
-                                      !confirm(
-                                        `'${filename}' dosyasını silmek istiyor musunuz?`
-                                      )
-                                    )
-                                      return;
-                                    try {
-                                      await deleteMarkdownFile(filename);
-                                      setSelectedMarkdownFiles((prev) =>
-                                        prev.filter((f) => f !== filename)
-                                      );
-                                      await fetchMarkdownFiles();
-                                    } catch (e: any) {
-                                      setError(e.message || "Silinemedi");
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedMarkdownFiles.includes(
+                                      filename
+                                    )}
+                                    onChange={() =>
+                                      handleMarkdownFileToggle(filename)
                                     }
-                                  }}
-                                  className="px-3 py-1 text-xs bg-red-100 text-red-700 hover:bg-red-200 rounded-md transition-colors"
-                                  title="Dosyayı sil"
-                                >
-                                  Sil
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                                    className="mr-3 h-4 w-4 text-primary-600 rounded border-gray-300 focus:ring-primary-500"
+                                  />
+                                  <div className="flex-1">
+                                    <div className="text-sm font-medium text-gray-900">
+                                      {filename.replace(".md", "")}
+                                    </div>
+                                    <div className="text-xs text-gray-500">
+                                      {filename}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      onClick={() =>
+                                        handleViewMarkdownFile(filename)
+                                      }
+                                      className="px-3 py-1 text-xs bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-md transition-colors flex items-center gap-1"
+                                      title="Dosyayı görüntüle"
+                                    >
+                                      <svg
+                                        className="w-3 h-3"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                      >
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth="2"
+                                          d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                                        />
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth="2"
+                                          d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+                                        />
+                                      </svg>
+                                      Görüntüle
+                                    </button>
+                                    <button
+                                      onClick={() =>
+                                        handleDownloadMarkdownFile(filename)
+                                      }
+                                      className="px-3 py-1 text-xs bg-green-100 text-green-700 hover:bg-green-200 rounded-md transition-colors flex items-center gap-1"
+                                      title="Dosyayı indir"
+                                    >
+                                      <svg
+                                        className="w-3 h-3"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        viewBox="0 0 24 24"
+                                      >
+                                        <path
+                                          strokeLinecap="round"
+                                          strokeLinejoin="round"
+                                          strokeWidth="2"
+                                          d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                                        />
+                                      </svg>
+                                      İndir
+                                    </button>
+                                    <button
+                                      onClick={async () => {
+                                        if (
+                                          !confirm(
+                                            `'${filename}' dosyasını silmek istiyor musunuz?`
+                                          )
+                                        )
+                                          return;
+                                        try {
+                                          await deleteMarkdownFile(filename);
+                                          setSelectedMarkdownFiles((prev) =>
+                                            prev.filter((f) => f !== filename)
+                                          );
+                                          await fetchMarkdownFiles();
+                                        } catch (e: any) {
+                                          setError(e.message || "Silinemedi");
+                                        }
+                                      }}
+                                      className="px-3 py-1 text-xs bg-red-100 text-red-700 hover:bg-red-200 rounded-md transition-colors"
+                                      title="Dosyayı sil"
+                                    >
+                                      Sil
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
 
-                    {selectedMarkdownFiles.length > 0 && (
-                      <div className="p-3 bg-gray-50 border border-gray-200 rounded-md">
-                        <p className="text-sm text-gray-700 mb-2">
-                          <strong>
-                            Seçili dosyalar ({selectedMarkdownFiles.length}):
-                          </strong>
-                        </p>
-                        <div className="flex flex-wrap gap-1">
-                          {selectedMarkdownFiles.map((filename) => (
-                            <span
-                              key={filename}
-                              className="inline-flex items-center px-2 py-1 bg-primary-100 text-primary-800 text-xs rounded-md"
-                            >
-                              {filename.replace(".md", "")}
+                          {/* Pagination */}
+                          {markdownFiles.length > MARKDOWN_FILES_PER_PAGE && (
+                            <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-200">
                               <button
                                 onClick={() =>
-                                  handleMarkdownFileToggle(filename)
+                                  setMarkdownPage((p) => Math.max(1, p - 1))
                                 }
-                                className="ml-1 text-primary-600 hover:text-primary-800"
+                                disabled={markdownPage === 1}
+                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
                               >
-                                ×
+                                Önceki
                               </button>
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    <button
-                      onClick={handleAddMarkdownDocuments}
-                      className="btn btn-primary w-full"
-                      disabled={
-                        !selectedSessionId ||
-                        selectedMarkdownFiles.length === 0 ||
-                        addingDocuments
-                      }
-                    >
-                      {addingDocuments ? (
-                        <div className="flex items-center justify-center">
-                          <div className="relative w-4 h-4 mr-2">
-                            <div className="absolute inset-0 rounded-full border-2 border-primary-foreground/30"></div>
-                            <div className="absolute inset-0 rounded-full border-2 border-primary-foreground border-t-transparent animate-spin"></div>
-                          </div>
-                          <span className="animate-pulse-soft">
-                            Dokümanlar Ekleniyor...
-                          </span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-center">
-                          <svg
-                            className="w-4 h-4 mr-2"
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth="2"
-                              d="M12 6v6m0 0v6m0-6h6m-6 0H6"
-                            />
-                          </svg>
-                          {`Seçili Dokümanları Ders Oturumuna Ekle (${selectedMarkdownFiles.length})`}
-                        </div>
+                              <span className="text-sm text-gray-700">
+                                Sayfa {markdownPage} /{" "}
+                                {Math.ceil(
+                                  markdownFiles.length / MARKDOWN_FILES_PER_PAGE
+                                )}{" "}
+                                <span className="text-gray-500">
+                                  (Toplam {markdownFiles.length} dosya)
+                                </span>
+                              </span>
+                              <button
+                                onClick={() =>
+                                  setMarkdownPage((p) =>
+                                    Math.min(
+                                      Math.ceil(
+                                        markdownFiles.length /
+                                          MARKDOWN_FILES_PER_PAGE
+                                      ),
+                                      p + 1
+                                    )
+                                  )
+                                }
+                                disabled={
+                                  markdownPage >=
+                                  Math.ceil(
+                                    markdownFiles.length /
+                                      MARKDOWN_FILES_PER_PAGE
+                                  )
+                                }
+                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                Sonraki
+                              </button>
+                            </div>
+                          )}
+                        </>
                       )}
-                    </button>
+                    </div>
                   </div>
                 </>
               )}

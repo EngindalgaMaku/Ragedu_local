@@ -11,24 +11,48 @@ const nextConfig = {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
     // Pass frontend CORS origins to backend
     FRONTEND_CORS_ORIGINS: (() => {
-      // Import ports config to get CORS_ORIGINS
-      try {
-        const path = require("path");
-        const configPath = path.join(__dirname, "config", "ports.ts");
-        delete require.cache[configPath]; // Clear cache for fresh computation
-        const { CORS_ORIGINS } = require("./config/ports.ts");
-        return CORS_ORIGINS.join(",");
-      } catch (e) {
-        console.warn("Could not load CORS_ORIGINS from ports.ts:", e.message);
-        // Fallback CORS origins for production server
-        return [
-          "http://localhost:3000",
-          "http://46.62.254.131:3000",
-          "http://46.62.254.131:8000",
-          "http://api-gateway:8000",
-          "http://auth-service:8006",
-        ].join(",");
+      // Build CORS origins from environment variables
+      // Cannot require TypeScript files in next.config.js, so build manually
+      const corsOrigins = [];
+      
+      // Add from CORS_ORIGINS env var
+      if (process.env.CORS_ORIGINS) {
+        corsOrigins.push(...process.env.CORS_ORIGINS.split(",").map(o => o.trim()));
       }
+      
+      // Add API Gateway URL
+      if (process.env.NEXT_PUBLIC_API_URL) {
+        corsOrigins.push(process.env.NEXT_PUBLIC_API_URL);
+      } else {
+        const apiPort = process.env.API_GATEWAY_PORT || "8000";
+        corsOrigins.push(`http://localhost:${apiPort}`);
+        corsOrigins.push(`http://api-gateway:${apiPort}`);
+      }
+      
+      // Add Auth Service URL
+      if (process.env.NEXT_PUBLIC_AUTH_URL) {
+        corsOrigins.push(process.env.NEXT_PUBLIC_AUTH_URL);
+      } else {
+        const authPort = process.env.AUTH_SERVICE_PORT || "8006";
+        corsOrigins.push(`http://localhost:${authPort}`);
+        corsOrigins.push(`http://auth-service:${authPort}`);
+      }
+      
+      // Add Frontend URL
+      const frontendPort = process.env.FRONTEND_PORT || process.env.PORT || "3000";
+      corsOrigins.push(`http://localhost:${frontendPort}`);
+      corsOrigins.push(`http://frontend:${frontendPort}`);
+      
+      // Add external server IPs if configured
+      if (process.env.NEXT_PUBLIC_API_URL && process.env.NEXT_PUBLIC_API_URL.includes("46.62.254.131")) {
+        corsOrigins.push("http://46.62.254.131:3000");
+        corsOrigins.push("http://46.62.254.131:8000");
+        corsOrigins.push("http://46.62.254.131:8006");
+        corsOrigins.push("http://46.62.254.131:8007");
+      }
+      
+      // Remove duplicates and return
+      return [...new Set(corsOrigins)].join(",");
     })(),
   },
   // Optimize for production builds

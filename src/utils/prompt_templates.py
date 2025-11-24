@@ -28,7 +28,8 @@ class PromptTemplates:
             "CEVAP FORMATI:\n"
             "- Basit ve net paragraflar\n"
             "- Öğrenci dostu açıklamalar\n"
-            "- Kısa ve öz cevaplar\n\n"
+            "- Kısa ve öz cevaplar\n"
+            "- MARKDOWN FORMATI KULLAN: Önemli kavramları **kalın** yaz, listeler için `-` veya `*` kullan, kod için `backtick` kullan, başlıklar için `##` kullan\n\n"
             "Kaynaklarda bilgi yoksa: 'Bu konuya dair kaynaklarda yeterli bilgi bulamadım' de ve dur."
         ),
         'en': (
@@ -60,8 +61,9 @@ CEVAP ŞEKLİ:
 • Detayları sırayla ver
 • Basit örnekler kullan
 • Kısa paragraflar yaz
+• MARKDOWN FORMATI KULLAN: Önemli kavramları **kalın** yaz, listeler için `-` veya `*` kullan, kod için `backtick` kullan, başlıklar için `##` kullan
 
-CEVAP:""",
+CEVAP (markdown formatında, formatlı ve okunabilir):""",
         'en': """
 Context:
 {context}

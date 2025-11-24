@@ -249,7 +249,24 @@ Sadece JSON çıktısı ver:
         )
         
         if response.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"LLM service error: {response.text}")
+            # Safely extract error message from response
+            error_detail = "Unknown error"
+            try:
+                if hasattr(response, 'text') and response.text:
+                    error_detail = response.text[:500]  # Limit to 500 chars
+                elif hasattr(response, 'content') and response.content:
+                    error_detail = response.content.decode('utf-8', errors='ignore')[:500]
+                else:
+                    error_detail = f"HTTP {response.status_code} - No response body"
+            except Exception as e:
+                error_detail = f"HTTP {response.status_code} - Error reading response: {str(e)}"
+            
+            logger.error(f"❌ [LLM SERVICE ERROR] Status: {response.status_code}, Model: {model_to_use}, URL: {MODEL_INFERENCER_URL}")
+            logger.error(f"❌ [LLM SERVICE ERROR] Response: {error_detail}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"LLM service error (HTTP {response.status_code}): {error_detail}"
+            )
         
         result = response.json()
         llm_output = result.get("response", "")
@@ -456,10 +473,30 @@ Sadece JSON çıktısı ver:
         logger.error(f"Failed to parse LLM JSON output: {e}")
         logger.error(f"LLM output was: {llm_output[:1000]}")  # Log first 1000 chars
         raise HTTPException(status_code=500, detail="LLM returned invalid JSON")
+    except requests.exceptions.Timeout as e:
+        logger.error(f"⏰ [TIMEOUT ERROR] Request to model service timed out after {timeout_seconds}s")
+        logger.error(f"⏰ [TIMEOUT ERROR] Model: {model_to_use}, URL: {MODEL_INFERENCER_URL}")
+        logger.error(f"⏰ [TIMEOUT ERROR] Error: {str(e)}")
+        raise HTTPException(
+            status_code=504, 
+            detail=f"Model service timeout after {timeout_seconds}s. The model ({model_to_use}) may be taking too long to respond. Try using a faster model or reducing the input size."
+        )
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"🔌 [CONNECTION ERROR] Failed to connect to model service")
+        logger.error(f"🔌 [CONNECTION ERROR] URL: {MODEL_INFERENCER_URL}, Model: {model_to_use}")
+        logger.error(f"🔌 [CONNECTION ERROR] Error: {str(e)}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not connect to model service at {MODEL_INFERENCER_URL}. Please check if the service is running."
+        )
     except requests.exceptions.RequestException as e:
-        logger.error(f"Request error in topic extraction: {e}")
-        logger.error(f"MODEL_INFERENCER_URL: {MODEL_INFERENCER_URL}")
-        raise HTTPException(status_code=500, detail=f"Failed to connect to model service: {str(e)}")
+        logger.error(f"❌ [REQUEST ERROR] Request error in topic extraction: {e}")
+        logger.error(f"❌ [REQUEST ERROR] Model: {model_to_use}, URL: {MODEL_INFERENCER_URL}")
+        logger.error(f"❌ [REQUEST ERROR] Error type: {type(e).__name__}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to connect to model service: {str(e)}"
+        )
     except Exception as e:
         logger.error(f"Unexpected error in topic extraction: {e}")
         logger.error(f"Exception type: {type(e).__name__}")
@@ -530,49 +567,72 @@ def classify_question_with_llm(question: str, topics: List[Dict[str, Any]], sess
             for t in topics
         ])
         
-        prompt = f"""Aşağıdaki öğrenci sorusunu, verilen konu listesine göre sınıflandır.
+        prompt = f"""Sen bir biyoloji uzmanısın. Aşağıdaki öğrenci sorusunu verilen konu listesine göre EN DOĞRU şekilde sınıflandır.
 
 ÖĞRENCİ SORUSU:
 {question}
 
-KONU LİSTESİ:
+MEVCUT KONULAR:
 {topics_text}
 
-LÜTFEN ŞUNLARI YAP:
-1. Sorunun hangi konuya ait olduğunu belirle
-2. Sorunun karmaşıklık seviyesini belirle (basic, intermediate, advanced)
-3. Sorunun türünü belirle (factual, conceptual, application, analysis)
-4. Güven skoru ver (0.0 - 1.0)
+SINIFLANDIRMA KURALLARI:
+1. Sorunun ANA konusunu belirle (ne hakkında?)
+2. Anahtar kelimeleri dikkatlice analiz et
+3. En uygun konu ID'sini seç
+4. Güven skorunu hesapla
+
+ÖRNEK SINIFLANDIRMALAR:
+- "kana rengini ne verir" → Kan ile ilgili sorular "Kan Grupları" konusuna gider
+- "hücre bölünmesi nasıl olur" → "Hücre Bölünmesi" konusuna gider
+- "DNA nedir" → "Genetik" veya "DNA ve RNA" konusuna gider
 
 ÇIKTI FORMATI (JSON):
 {{
-  "topic_id": 5,
-  "topic_title": "Kimyasal Bağlar",
-  "confidence_score": 0.89,
-  "question_complexity": "intermediate",
-  "question_type": "conceptual",
-  "reasoning": "Soruda kovalent bağların özellikleri soruluyor..."
+  "topic_id": 571,
+  "topic_title": "Kan Grupları",
+  "confidence_score": 0.95,
+  "question_complexity": "basic",
+  "question_type": "factual",
+  "reasoning": "Soru kan renginden bahsediyor, hemoglobin konusu Kan Grupları kategorisine ait"
 }}
 
-Sadece JSON çıktısı ver."""
+Sadece JSON çıktısı ver, başka açıklama yapma."""
 
-        # Get session-specific model configuration
-        model_to_use = get_session_model(session_id) or "llama-3.1-8b-instant"  # Default to Groq model instead of Ollama
+        # ULTRA-FAST CLASSIFICATION: Force Groq model, no session model lookup at all
+        model_to_use = "llama-3.1-8b-instant"  # Hardcoded fast Groq model
+        logger.info(f"⚡ [ULTRA-FAST] Using hardcoded model: {model_to_use} (no session lookup for max speed)")
         
-        # Call model inference service
+        # Call model inference service with REDUCED TIMEOUT
         response = requests.post(
             f"{MODEL_INFERENCER_URL}/models/generate",
             json={
                 "prompt": prompt,
                 "model": model_to_use,
                 "max_tokens": 512,
-                "temperature": 0.3
+                "temperature": 0.1  # Lower temperature for more consistent classification
             },
-            timeout=60
+            timeout=15  # Reduced from 60s to 15s for speed
         )
         
         if response.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"LLM service error: {response.text}")
+            # Safely extract error message from response
+            error_detail = "Unknown error"
+            try:
+                if hasattr(response, 'text') and response.text:
+                    error_detail = response.text[:500]  # Limit to 500 chars
+                elif hasattr(response, 'content') and response.content:
+                    error_detail = response.content.decode('utf-8', errors='ignore')[:500]
+                else:
+                    error_detail = f"HTTP {response.status_code} - No response body"
+            except Exception as e:
+                error_detail = f"HTTP {response.status_code} - Error reading response: {str(e)}"
+            
+            logger.error(f"❌ [LLM SERVICE ERROR] Status: {response.status_code}, Model: {model_to_use}, URL: {MODEL_INFERENCER_URL}")
+            logger.error(f"❌ [LLM SERVICE ERROR] Response: {error_detail}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"LLM service error (HTTP {response.status_code}): {error_detail}"
+            )
         
         result = response.json()
         llm_output = result.get("response", "")
@@ -587,9 +647,39 @@ Sadece JSON çıktısı ver."""
         
         return classification
         
+    except requests.exceptions.Timeout as e:
+        logger.error(f"⏰ [TIMEOUT ERROR] Question classification timed out after 15s")
+        logger.error(f"⏰ [TIMEOUT ERROR] Model: {model_to_use}, URL: {MODEL_INFERENCER_URL}")
+        logger.error(f"⏰ [TIMEOUT ERROR] Error: {str(e)}")
+        raise HTTPException(
+            status_code=504, 
+            detail=f"Question classification timeout. The model ({model_to_use}) may be taking too long to respond."
+        )
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"🔌 [CONNECTION ERROR] Failed to connect to model service for question classification")
+        logger.error(f"🔌 [CONNECTION ERROR] URL: {MODEL_INFERENCER_URL}, Model: {model_to_use}")
+        logger.error(f"🔌 [CONNECTION ERROR] Error: {str(e)}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not connect to model service at {MODEL_INFERENCER_URL}. Please check if the service is running."
+        )
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ [JSON ERROR] Failed to parse classification JSON: {e}")
+        logger.error(f"❌ [JSON ERROR] LLM output: {llm_output[:500] if 'llm_output' in locals() else 'N/A'}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to parse classification response: {str(e)}"
+        )
     except Exception as e:
-        logger.error(f"Error in question classification: {e}")
-        raise HTTPException(status_code=500, detail=f"Question classification failed: {str(e)}")
+        logger.error(f"❌ [CLASSIFICATION ERROR] Error in question classification: {e}")
+        logger.error(f"❌ [CLASSIFICATION ERROR] Exception type: {type(e).__name__}")
+        logger.error(f"❌ [CLASSIFICATION ERROR] Exception args: {e.args}")
+        import traceback
+        logger.error(f"❌ [CLASSIFICATION ERROR] Full traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Question classification failed: {str(e)}"
+        )
 
 
 # ============================================================================
@@ -935,6 +1025,9 @@ async def classify_question(request: QuestionClassificationRequest):
     """
     Classify a question to a topic
     """
+    # CRITICAL DEBUG: Log the incoming request
+    logger.info(f"🚨 [CLASSIFY START] Request received: question='{request.question[:50]}...', session_id={request.session_id}, interaction_id={request.interaction_id}")
+    
     # Check if APRAG is enabled
     if not FeatureFlags.is_aprag_enabled(request.session_id):
         raise HTTPException(
@@ -945,6 +1038,8 @@ async def classify_question(request: QuestionClassificationRequest):
     db = get_db()
     
     try:
+        # CRITICAL DEBUG: Log before database operations
+        logger.info(f"🚨 [CLASSIFY START] Starting database operations...")
         # Get topics for session
         with db.get_connection() as conn:
             cursor = conn.execute("""
@@ -971,6 +1066,36 @@ async def classify_question(request: QuestionClassificationRequest):
         # Save mapping if interaction_id is provided
         if request.interaction_id:
             with db.get_connection() as conn:
+                # DEBUG: Check if interaction exists
+                cursor = conn.execute("SELECT user_id, session_id FROM student_interactions WHERE interaction_id = ?", (request.interaction_id,))
+                interaction_row = cursor.fetchone()
+                
+                if not interaction_row:
+                    logger.error(f"❌ [CLASSIFY DEBUG] interaction_id {request.interaction_id} not found in student_interactions table")
+                    raise HTTPException(status_code=400, detail=f"Invalid interaction_id: {request.interaction_id}")
+                
+                interaction_data = dict(interaction_row)
+                user_id = interaction_data["user_id"]
+                interaction_session_id = interaction_data["session_id"]
+                
+                # CRITICAL FIX: Ensure user_id is always treated as string to avoid FOREIGN KEY issues
+                user_id_str = str(user_id) if user_id is not None else None
+                
+                logger.info(f"🔍 [CLASSIFY DEBUG] Found interaction: ID={request.interaction_id}, user_id={user_id} (type: {type(user_id)}) -> {user_id_str} (str), session_id={interaction_session_id}")
+                logger.info(f"🔍 [CLASSIFY DEBUG] Request session_id={request.session_id}, topic_id={classification['topic_id']}")
+                
+                # Check if session_id matches
+                if interaction_session_id != request.session_id:
+                    logger.warning(f"⚠️ [CLASSIFY DEBUG] Session ID mismatch: interaction has {interaction_session_id}, request has {request.session_id}")
+                
+                # Check if topic exists
+                cursor = conn.execute("SELECT topic_id FROM course_topics WHERE topic_id = ? AND session_id = ?", (classification["topic_id"], request.session_id))
+                if not cursor.fetchone():
+                    logger.error(f"❌ [CLASSIFY DEBUG] topic_id {classification['topic_id']} not found in course_topics for session {request.session_id}")
+                    raise HTTPException(status_code=400, detail=f"Invalid topic_id: {classification['topic_id']}")
+                
+                # Insert question mapping
+                logger.info(f"💾 [CLASSIFY DEBUG] Inserting question_topic_mapping...")
                 conn.execute("""
                     INSERT INTO question_topic_mapping (
                         interaction_id, topic_id, confidence_score,
@@ -985,32 +1110,32 @@ async def classify_question(request: QuestionClassificationRequest):
                     classification["question_type"]
                 ))
                 
-                # Update topic progress
+                # Update topic progress - use the INTEGER user_id for FOREIGN KEY constraint
+                # TEMPORARY FIX FOR DOCKER DATABASE - Remove last_question_timestamp column
+                logger.info(f"💾 [CLASSIFY DEBUG] Updating topic_progress for user_id={user_id} (integer)...")
                 conn.execute("""
                     INSERT OR REPLACE INTO topic_progress (
                         user_id, session_id, topic_id,
-                        questions_asked, last_question_timestamp,
-                        updated_at
+                        questions_asked, updated_at
                     ) VALUES (
-                        (SELECT user_id FROM student_interactions WHERE interaction_id = ?),
                         ?,
                         ?,
-                        COALESCE((SELECT questions_asked FROM topic_progress 
-                                 WHERE user_id = (SELECT user_id FROM student_interactions WHERE interaction_id = ?)
-                                 AND session_id = ? AND topic_id = ?), 0) + 1,
-                        CURRENT_TIMESTAMP,
+                        ?,
+                        COALESCE((SELECT questions_asked FROM topic_progress
+                                 WHERE user_id = ? AND session_id = ? AND topic_id = ?), 0) + 1,
                         CURRENT_TIMESTAMP
                     )
                 """, (
-                    request.interaction_id,
+                    user_id,  # Use integer user_id for FOREIGN KEY constraint to users table
                     request.session_id,
                     classification["topic_id"],
-                    request.interaction_id,
+                    user_id,  # Use integer user_id in COALESCE subquery too
                     request.session_id,
                     classification["topic_id"]
                 ))
                 
                 conn.commit()
+                logger.info(f"✅ [CLASSIFY DEBUG] Successfully saved classification mapping and updated progress")
         
         return {
             "success": True,
@@ -1024,7 +1149,10 @@ async def classify_question(request: QuestionClassificationRequest):
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         logger.error(f"Error classifying question: {e}")
+        logger.error(f"Traceback: {error_trace}")
         raise HTTPException(status_code=500, detail=f"Question classification failed: {str(e)}")
 
 
@@ -1202,10 +1330,23 @@ def run_extraction_in_background(job_id: str, session_id: str, method: str):
                 "chunks_analyzed": len(chunks)
             }
             
-    except Exception as e:
-        logger.error(f"Background extraction error: {e}")
+    except HTTPException as http_err:
+        # HTTPException in background thread - extract detail properly
+        error_msg = str(http_err.detail) if hasattr(http_err, 'detail') and http_err.detail else str(http_err)
+        logger.error(f"Background extraction HTTPException: {error_msg}")
+        logger.error(f"HTTPException status: {http_err.status_code if hasattr(http_err, 'status_code') else 'N/A'}")
         extraction_jobs[job_id]["status"] = "failed"
-        extraction_jobs[job_id]["error"] = str(e)
+        extraction_jobs[job_id]["error"] = error_msg
+    except Exception as e:
+        # Log full exception details for debugging
+        import traceback
+        error_msg = str(e)
+        logger.error(f"Background extraction error: {error_msg}")
+        logger.error(f"Exception type: {type(e).__name__}")
+        logger.error(f"Exception args: {e.args}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        extraction_jobs[job_id]["status"] = "failed"
+        extraction_jobs[job_id]["error"] = error_msg
 
 
 @router.post("/re-extract/{session_id}")
@@ -1636,18 +1777,30 @@ async def get_student_progress(user_id: str, session_id: str):
     try:
         with db.get_connection() as conn:
             # Get all topics with progress
+            # Note: Using existing schema columns and mapping to expected response format
             cursor = conn.execute("""
                 SELECT 
                     t.topic_id,
                     t.topic_title,
                     t.topic_order,
                     COALESCE(p.questions_asked, 0) as questions_asked,
-                    p.average_understanding,
-                    p.mastery_level,
-                    p.mastery_score,
-                    p.is_ready_for_next,
-                    p.readiness_score,
-                    p.time_spent_minutes
+                    COALESCE(p.understanding_level, 0.0) as average_understanding,
+                    CASE 
+                        WHEN p.status = 'mastered' THEN 'mastered'
+                        WHEN p.status = 'learning' THEN 'learning'
+                        WHEN p.status = 'not_started' THEN 'not_started'
+                        WHEN p.completion_percentage >= 80 THEN 'mastered'
+                        WHEN p.completion_percentage >= 50 THEN 'learning'
+                        WHEN p.questions_asked > 0 THEN 'learning'
+                        ELSE 'not_started'
+                    END as mastery_level,
+                    COALESCE(p.completion_percentage / 100.0, 0.0) as mastery_score,
+                    CASE 
+                        WHEN p.completion_percentage >= 80 THEN 1
+                        ELSE 0
+                    END as is_ready_for_next,
+                    COALESCE(p.completion_percentage / 100.0, 0.0) as readiness_score,
+                    COALESCE(CAST(p.time_spent_seconds AS REAL) / 60.0, 0.0) as time_spent_minutes
                 FROM course_topics t
                 LEFT JOIN topic_progress p ON t.topic_id = p.topic_id 
                     AND p.user_id = ? AND p.session_id = ?
@@ -1662,11 +1815,18 @@ async def get_student_progress(user_id: str, session_id: str):
             for row in cursor.fetchall():
                 topic_progress = dict(row)
                 
-                # Determine current topic (first topic with questions but not mastered)
-                if (current_topic is None and 
-                    topic_progress["questions_asked"] > 0 and 
-                    topic_progress.get("mastery_level") != "mastered"):
-                    current_topic = topic_progress
+                # Determine current topic:
+                # 1. First topic with questions but not mastered
+                # 2. If no questions asked yet, use first topic in order that has questions_asked > 0
+                # 3. If no topics have questions, use first topic in order
+                if current_topic is None:
+                    questions = topic_progress.get("questions_asked", 0) or 0
+                    mastery = topic_progress.get("mastery_level", "not_started")
+                    if questions > 0 and mastery != "mastered":
+                        current_topic = topic_progress
+                    elif questions == 0 and not current_topic:
+                        # Use first topic (by order) as current if no progress yet
+                        current_topic = topic_progress
                 
                 # Find next recommended topic (first topic ready for next)
                 if (next_recommended is None and 
@@ -1782,7 +1942,24 @@ Sadece JSON çıktısı ver, başka açıklama yapma."""
         )
         
         if response.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"LLM service error: {response.text}")
+            # Safely extract error message from response
+            error_detail = "Unknown error"
+            try:
+                if hasattr(response, 'text') and response.text:
+                    error_detail = response.text[:500]  # Limit to 500 chars
+                elif hasattr(response, 'content') and response.content:
+                    error_detail = response.content.decode('utf-8', errors='ignore')[:500]
+                else:
+                    error_detail = f"HTTP {response.status_code} - No response body"
+            except Exception as e:
+                error_detail = f"HTTP {response.status_code} - Error reading response: {str(e)}"
+            
+            logger.error(f"❌ [LLM SERVICE ERROR] Status: {response.status_code}, Model: {model_to_use}, URL: {MODEL_INFERENCER_URL}")
+            logger.error(f"❌ [LLM SERVICE ERROR] Response: {error_detail}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"LLM service error (HTTP {response.status_code}): {error_detail}"
+            )
         
         result = response.json()
         llm_output = result.get("response", "")

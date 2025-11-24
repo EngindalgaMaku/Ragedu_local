@@ -133,6 +133,18 @@ except (ImportError, Exception) as e:
         }
         return service_map.get(service_name, f"http://localhost:{API_GATEWAY_PORT}")
 
+# Marker API URL
+MARKER_API_URL = os.getenv('MARKER_API_URL', None)
+if not MARKER_API_URL:
+    MARKER_API_PORT = int(os.getenv('MARKER_API_PORT', '8090'))
+    MARKER_API_HOST = os.getenv('MARKER_API_HOST', 'marker-api')
+    if MARKER_API_HOST.startswith('http://') or MARKER_API_HOST.startswith('https://'):
+        MARKER_API_URL = MARKER_API_HOST
+    else:
+        MARKER_API_URL = f'http://{MARKER_API_HOST}:{MARKER_API_PORT}'
+
+logger.info(f"[API GATEWAY] MARKER_API_URL: {MARKER_API_URL}")
+
 # Model Inference Service - Google Cloud Run compatible
 # If MODEL_INFERENCE_URL is set (Cloud Run), use it directly
 # Otherwise, construct from host and port (Docker)
@@ -534,6 +546,9 @@ def delete_session(session_id: str, create_backup: bool = True, deleted_by: Opti
 class StatusUpdateRequest(BaseModel):
     status: str
 
+class NameUpdateRequest(BaseModel):
+    name: str
+
 @app.patch("/sessions/{session_id}/status")
 def update_session_status(session_id: str, request: StatusUpdateRequest, req: Request):
     """Update session status (active/inactive)"""
@@ -570,6 +585,43 @@ def update_session_status(session_id: str, request: StatusUpdateRequest, req: Re
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update session status: {str(e)}")
+
+@app.patch("/sessions/{session_id}/name")
+def update_session_name(session_id: str, request: NameUpdateRequest, req: Request):
+    """Update session name"""
+    try:
+        # Validate name
+        name = request.name.strip()
+        if not name:
+            raise HTTPException(
+                status_code=400,
+                detail="Session name cannot be empty"
+            )
+        if len(name) > 200:
+            raise HTTPException(
+                status_code=400,
+                detail="Session name cannot exceed 200 characters"
+            )
+        # Access control
+        _require_owner_or_admin(req, session_id)
+        # Update session name
+        success = professional_session_manager.update_session_metadata(session_id, name=name)
+        if not success:
+            raise HTTPException(status_code=404, detail="Session not found")
+        # Get updated session
+        updated_metadata = professional_session_manager.get_session_metadata(session_id)
+        if not updated_metadata:
+            raise HTTPException(status_code=404, detail="Session not found after update")
+        return {
+            "success": True,
+            "session_id": session_id,
+            "new_name": name,
+            "updated_session": _convert_metadata_to_response(updated_metadata)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update session name: {str(e)}")
 
 @app.get("/sessions/{session_id}/chunks")
 def get_session_chunks(session_id: str):
@@ -2298,7 +2350,8 @@ def get_embedding_models():
 @app.post("/documents/convert-document-to-markdown")
 async def convert_document_to_markdown(
     file: UploadFile = File(...),
-    use_fallback: str = Form(default="false")
+    use_fallback: str = Form(default="false"),
+    session_id: str = Form(default="")
 ):
     """
     Convert PDF/DOCX/PPTX to Markdown using DocStrange service
@@ -2355,15 +2408,37 @@ async def convert_document_to_markdown(
         markdown_dir = Path("data/markdown")
         markdown_dir.mkdir(parents=True, exist_ok=True)
         
-        # Generate safe filename
+        # Generate safe filename with session prefix if session_id is provided
         base_filename = os.path.splitext(os.path.basename(file.filename))[0]
-        safe_filename = base_filename.replace('..', '').replace('/', '').replace('\\', '') + '.md'
+        base_filename = base_filename.replace('..', '').replace('/', '').replace('\\', '')
+        
+        # If session_id is provided, get session name and prefix filename
+        session_prefix = ""
+        if session_id:
+            try:
+                # Get session name from database
+                session = professional_session_manager.get_session(session_id)
+                if session:
+                    # Create safe session name prefix (remove special chars, spaces -> hyphens)
+                    session_name = session.name
+                    session_prefix = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in session_name)
+                    session_prefix = session_prefix.replace(' ', '-').replace('_', '-')
+                    # Remove multiple consecutive hyphens
+                    while '--' in session_prefix:
+                        session_prefix = session_prefix.replace('--', '-')
+                    session_prefix = session_prefix.strip('-').lower()
+                    if session_prefix:
+                        session_prefix = f"{session_prefix}-"
+            except Exception as e:
+                logger.warning(f"[DocConverter] Could not get session name for {session_id}: {e}")
+        
+        safe_filename = f"{session_prefix}{base_filename}.md"
         
         # Handle duplicate filenames
         counter = 1
         final_filename = safe_filename
         while (markdown_dir / final_filename).exists():
-            final_filename = f"{base_filename}_{counter}.md"
+            final_filename = f"{session_prefix}{base_filename}_{counter}.md"
             counter += 1
         
         # Save file using cloud storage manager
@@ -2380,18 +2455,30 @@ async def convert_document_to_markdown(
         }
         
     except requests.exceptions.Timeout:
+        logger.error(f"[DocConverter] Timeout error for {file.filename}")
         raise HTTPException(
             status_code=504,
             detail="Document conversion timeout. Please try with 'Fast' method or use smaller files."
         )
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"[DocConverter] Connection error to PDF_PROCESSOR_URL={PDF_PROCESSOR_URL}: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot connect to document processing service. Please check if docstrange-service is running. URL: {PDF_PROCESSOR_URL}"
+        )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[DocConverter] Unexpected error: {e}")
+        import traceback
+        logger.error(f"[DocConverter] Unexpected error for {file.filename}: {e}")
+        logger.error(f"[DocConverter] Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Failed to convert document: {str(e)}")
 
 @app.post("/documents/convert-marker")
-async def convert_document_marker(file: UploadFile = File(...)):
+async def convert_document_marker(
+    file: UploadFile = File(...),
+    session_id: str = Form(default="")
+):
     """
     Convert PDF/DOC/PPT to Markdown using Marker API
     Highest quality conversion with OCR and layout preservation
@@ -2441,25 +2528,34 @@ async def convert_document_marker(file: UploadFile = File(...)):
         def call_marker(pdf_bytes: bytes) -> str:
             # Ensure service is up before calling
             if not _marker_ready(10):
+                logger.error(f"[Marker] Service not ready at {MARKER_API_URL}")
                 raise requests.exceptions.RequestException("Marker service not ready")
             local_files = {'pdf_file': (file.filename, pdf_bytes, file.content_type or 'application/pdf')}
             last_err: Exception | None = None
             for attempt in range(3):
                 try:
+                    logger.info(f"[Marker] Attempt {attempt + 1}/3: Calling {MARKER_API_URL}/convert")
                     resp = requests.post(f"{MARKER_API_URL}/convert", files=local_files, timeout=900)
                     if not resp.ok:
-                        raise requests.exceptions.RequestException(resp.text)
+                        error_text = resp.text[:500]  # Limit error text length
+                        logger.error(f"[Marker] HTTP {resp.status_code} error: {error_text}")
+                        raise requests.exceptions.RequestException(f"HTTP {resp.status_code}: {error_text}")
                     data = resp.json()
                     md = None
                     if isinstance(data, dict):
                         md = data.get('markdown') or data.get('content') or data.get('text')
                     if not md or not str(md).strip():
+                        logger.error(f"[Marker] Empty content returned. Response keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
                         raise requests.exceptions.RequestException("Marker returned empty content")
+                    logger.info(f"[Marker] Successfully converted, content length: {len(str(md))}")
                     return str(md)
                 except Exception as e:
                     last_err = e
+                    logger.warning(f"[Marker] Attempt {attempt + 1} failed: {e}")
                     # brief backoff then retry
-                    time.sleep(1 + attempt)
+                    if attempt < 2:  # Don't sleep on last attempt
+                        time.sleep(1 + attempt)
+            logger.error(f"[Marker] All 3 attempts failed. Last error: {last_err}")
             raise requests.exceptions.RequestException(f"Marker failed after retries: {last_err}")
 
         markdown_content = None
@@ -2509,15 +2605,37 @@ async def convert_document_marker(file: UploadFile = File(...)):
         markdown_dir = Path("data/markdown")
         markdown_dir.mkdir(parents=True, exist_ok=True)
         
-        # Generate safe filename
+        # Generate safe filename with session prefix if session_id is provided
         base_filename = os.path.splitext(os.path.basename(file.filename))[0]
-        safe_filename = base_filename.replace('..', '').replace('/', '').replace('\\', '') + '.md'
+        base_filename = base_filename.replace('..', '').replace('/', '').replace('\\', '')
+        
+        # If session_id is provided, get session name and prefix filename
+        session_prefix = ""
+        if session_id:
+            try:
+                # Get session name from database
+                session = professional_session_manager.get_session(session_id)
+                if session:
+                    # Create safe session name prefix (remove special chars, spaces -> hyphens)
+                    session_name = session.name
+                    session_prefix = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in session_name)
+                    session_prefix = session_prefix.replace(' ', '-').replace('_', '-')
+                    # Remove multiple consecutive hyphens
+                    while '--' in session_prefix:
+                        session_prefix = session_prefix.replace('--', '-')
+                    session_prefix = session_prefix.strip('-').lower()
+                    if session_prefix:
+                        session_prefix = f"{session_prefix}-"
+            except Exception as e:
+                logger.warning(f"[Marker] Could not get session name for {session_id}: {e}")
+        
+        safe_filename = f"{session_prefix}{base_filename}.md"
         
         # Handle duplicate filenames
         counter = 1
         final_filename = safe_filename
         while (markdown_dir / final_filename).exists():
-            final_filename = f"{base_filename}_{counter}.md"
+            final_filename = f"{session_prefix}{base_filename}_{counter}.md"
             counter += 1
         
         # Save file using cloud storage manager
@@ -2533,11 +2651,23 @@ async def convert_document_marker(file: UploadFile = File(...)):
             "content_preview": markdown_content[:200] + "..." if len(markdown_content) > 200 else markdown_content
         }
     except requests.exceptions.Timeout:
+        logger.error(f"[Marker] Timeout error for {file.filename}")
         raise HTTPException(
             status_code=504,
             detail="Marker conversion timeout (15 min). Document may be too complex. Try 'Fast' method."
         )
+    except requests.exceptions.ConnectionError as e:
+        import traceback
+        logger.error(f"[Marker] Connection error to MARKER_API_URL={MARKER_API_URL}: {e}")
+        logger.error(f"[Marker] Traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot connect to Marker API service. Please check if marker-api is running. URL: {MARKER_API_URL}"
+        )
     except Exception as e:
+        import traceback
+        logger.error(f"[Marker] Unexpected error for {file.filename}: {e}")
+        logger.error(f"[Marker] Traceback: {traceback.format_exc()}")
         # Fallback to DocStrange (pdfplumber) on any Marker failure (OOM/connection closed/etc.)
         try:
             logger.warning(f"[Marker] Failed ({e}). Falling back to pdfplumber via DocStrange.")
@@ -3518,6 +3648,11 @@ async def improve_all_chunks_proxy(session_id: str, request: Request):
 
 # ==================== Student Chat History Endpoints ====================
 
+class TopicInfo(BaseModel):
+    topic_id: int
+    topic_title: str
+    confidence_score: float
+
 class StudentChatMessageCreate(BaseModel):
     user: str
     bot: str
@@ -3526,6 +3661,8 @@ class StudentChatMessageCreate(BaseModel):
     session_id: str
     suggestions: Optional[List[str]] = None
     aprag_interaction_id: Optional[int] = None
+    emoji_feedback: Optional[str] = None
+    topic: Optional[TopicInfo] = None
 
 class StudentChatMessageResponse(BaseModel):
     id: int
@@ -3537,6 +3674,8 @@ class StudentChatMessageResponse(BaseModel):
     timestamp: str
     suggestions: Optional[List[str]] = None
     aprag_interaction_id: Optional[int] = None
+    emoji_feedback: Optional[str] = None
+    topic: Optional[TopicInfo] = None
 
 import sqlite3
 
@@ -3563,9 +3702,33 @@ def init_student_chat_table():
                 timestamp TEXT NOT NULL,
                 suggestions TEXT,
                 aprag_interaction_id INTEGER,
+                emoji_feedback TEXT,
+                topic_id INTEGER,
+                topic_title TEXT,
+                topic_confidence_score REAL,
                 FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
             )
         """)
+        
+        # Add emoji_feedback column if it doesn't exist
+        try:
+            cursor.execute("ALTER TABLE student_chat_history ADD COLUMN emoji_feedback TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        
+        # Add topic columns if they don't exist (for existing tables)
+        try:
+            cursor.execute("ALTER TABLE student_chat_history ADD COLUMN topic_id INTEGER")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        try:
+            cursor.execute("ALTER TABLE student_chat_history ADD COLUMN topic_title TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        try:
+            cursor.execute("ALTER TABLE student_chat_history ADD COLUMN topic_confidence_score REAL")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_student_chat_session 
             ON student_chat_history(session_id)
@@ -3588,7 +3751,8 @@ async def get_student_chat_history(session_id: str, request: Request):
         
         cursor.execute("""
             SELECT id, user_message as user, bot_message as bot, sources, duration_ms as durationMs,
-                   session_id, timestamp, suggestions, aprag_interaction_id
+                   session_id, timestamp, suggestions, aprag_interaction_id, emoji_feedback,
+                   topic_id, topic_title, topic_confidence_score
             FROM student_chat_history
             WHERE session_id = ?
             ORDER BY timestamp ASC
@@ -3608,9 +3772,22 @@ async def get_student_chat_history(session_id: str, request: Request):
                     message['sources'] = None
             if message.get('suggestions'):
                 try:
-                    message['suggestions'] = json.loads(message['suggestions'])
+                    suggestions_parsed = json.loads(message['suggestions'])
+                    # Only keep non-empty suggestions
+                    message['suggestions'] = suggestions_parsed if isinstance(suggestions_parsed, list) and len(suggestions_parsed) > 0 else None
                 except:
                     message['suggestions'] = None
+            # Build topic object if topic data exists (check topic_title too, not just topic_id)
+            if message.get('topic_id') is not None or message.get('topic_title'):
+                message['topic'] = {
+                    'topic_id': message.get('topic_id', 0),
+                    'topic_title': message.get('topic_title', ''),
+                    'confidence_score': message.get('topic_confidence_score', 0.0) or 0.0
+                }
+            # Remove individual topic fields
+            message.pop('topic_id', None)
+            message.pop('topic_title', None)
+            message.pop('topic_confidence_score', None)
             history.append(message)
         
         return history
@@ -3620,49 +3797,191 @@ async def get_student_chat_history(session_id: str, request: Request):
 
 @app.post("/api/students/chat-message", response_model=StudentChatMessageResponse)
 async def save_student_chat_message(message: StudentChatMessageCreate, request: Request):
-    """Save a student chat message"""
+    """Save or update a student chat message"""
     try:
         conn = get_student_db_connection()
         cursor = conn.cursor()
+        
+        # Check if message already exists (by aprag_interaction_id)
+        existing_message = None
+        if message.aprag_interaction_id:
+            cursor.execute("""
+                SELECT id, timestamp FROM student_chat_history 
+                WHERE aprag_interaction_id = ? AND session_id = ?
+            """, (message.aprag_interaction_id, message.session_id))
+            existing_message = cursor.fetchone()
         
         timestamp = datetime.utcnow().isoformat() + "Z"
         sources_json = json.dumps(message.sources) if message.sources else None
         suggestions_json = json.dumps(message.suggestions) if message.suggestions else None
         
-        cursor.execute("""
-            INSERT INTO student_chat_history 
-            (user_message, bot_message, sources, duration_ms, session_id, timestamp, suggestions, aprag_interaction_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            message.user,
-            message.bot,
-            sources_json,
-            message.durationMs,
-            message.session_id,
-            timestamp,
-            suggestions_json,
-            message.aprag_interaction_id
-        ))
+        # Extract topic information - handle both TopicInfo object and None
+        topic_id = None
+        topic_title = None
+        topic_confidence = None
+        if message.topic:
+            if hasattr(message.topic, 'topic_id'):
+                topic_id = message.topic.topic_id
+                topic_title = message.topic.topic_title
+                topic_confidence = message.topic.confidence_score
+            elif isinstance(message.topic, dict):
+                topic_id = message.topic.get('topic_id')
+                topic_title = message.topic.get('topic_title')
+                topic_confidence = message.topic.get('confidence_score')
         
-        message_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        
-        # Return the saved message
-        response = {
-            "id": message_id,
-            "user": message.user,
-            "bot": message.bot,
-            "sources": message.sources,
-            "durationMs": message.durationMs,
-            "session_id": message.session_id,
-            "timestamp": timestamp,
-            "suggestions": message.suggestions,
-            "aprag_interaction_id": message.aprag_interaction_id
-        }
-        
-        logger.info(f"✅ Saved chat message for session {message.session_id}")
-        return response
+        if existing_message:
+            # Update existing message (for emoji feedback updates)
+            message_id = existing_message['id']
+            original_timestamp = existing_message['timestamp']
+            
+            # Update existing message - preserve all fields, update what's provided
+            update_fields = []
+            update_values = []
+            
+            if hasattr(message, 'emoji_feedback') and message.emoji_feedback is not None:
+                update_fields.append("emoji_feedback = ?")
+                update_values.append(message.emoji_feedback)
+            
+            # Always update topic if provided (even if None, to clear it)
+            if hasattr(message, 'topic') and message.topic is not None:
+                # Extract topic info again in case it's a dict
+                update_topic_id = None
+                update_topic_title = None
+                update_topic_confidence = None
+                if hasattr(message.topic, 'topic_id'):
+                    update_topic_id = message.topic.topic_id
+                    update_topic_title = message.topic.topic_title
+                    update_topic_confidence = message.topic.confidence_score
+                elif isinstance(message.topic, dict):
+                    update_topic_id = message.topic.get('topic_id')
+                    update_topic_title = message.topic.get('topic_title')
+                    update_topic_confidence = message.topic.get('confidence_score')
+                
+                if update_topic_id is not None or update_topic_title:
+                    update_fields.append("topic_id = ?")
+                    update_values.append(update_topic_id)
+                    update_fields.append("topic_title = ?")
+                    update_values.append(update_topic_title)
+                    update_fields.append("topic_confidence_score = ?")
+                    update_values.append(update_topic_confidence)
+            
+            # Update suggestions if provided and not empty
+            if message.suggestions is not None:
+                # Check if it's a list with items or empty
+                if isinstance(message.suggestions, list) and len(message.suggestions) > 0:
+                    update_fields.append("suggestions = ?")
+                    update_values.append(suggestions_json)
+                elif not isinstance(message.suggestions, list):
+                    # If it's not a list, still update it
+                    update_fields.append("suggestions = ?")
+                    update_values.append(suggestions_json)
+            
+            if update_fields:
+                update_values.append(message_id)
+                cursor.execute(f"""
+                    UPDATE student_chat_history 
+                    SET {', '.join(update_fields)}
+                    WHERE id = ?
+                """, update_values)
+            
+            # Get updated message
+            cursor.execute("""
+                SELECT id, user_message as user, bot_message as bot, sources, duration_ms as durationMs,
+                       session_id, timestamp, suggestions, aprag_interaction_id, emoji_feedback,
+                       topic_id, topic_title, topic_confidence_score
+                FROM student_chat_history
+                WHERE id = ?
+            """, (message_id,))
+            updated_row = cursor.fetchone()
+            
+            conn.commit()
+            conn.close()
+            
+            # Parse response
+            response = dict(updated_row)
+            if response.get('sources'):
+                try:
+                    response['sources'] = json.loads(response['sources'])
+                except:
+                    response['sources'] = None
+            if response.get('suggestions'):
+                try:
+                    suggestions_parsed = json.loads(response['suggestions'])
+                    response['suggestions'] = suggestions_parsed if isinstance(suggestions_parsed, list) and len(suggestions_parsed) > 0 else None
+                except:
+                    response['suggestions'] = None
+            # Build topic object if topic data exists (check topic_title too, not just topic_id)
+            if response.get('topic_id') is not None or response.get('topic_title'):
+                response['topic'] = {
+                    'topic_id': response.get('topic_id', 0),
+                    'topic_title': response.get('topic_title', ''),
+                    'confidence_score': response.get('topic_confidence_score', 0.0) or 0.0
+                }
+            response.pop('topic_id', None)
+            response.pop('topic_title', None)
+            response.pop('topic_confidence_score', None)
+            
+            logger.info(f"✅ Updated chat message {message_id} with emoji feedback")
+            return response
+        else:
+            # Insert new message
+            cursor.execute("""
+                INSERT INTO student_chat_history 
+                (user_message, bot_message, sources, duration_ms, session_id, timestamp, suggestions, aprag_interaction_id,
+                 emoji_feedback, topic_id, topic_title, topic_confidence_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                message.user,
+                message.bot,
+                sources_json,
+                message.durationMs,
+                message.session_id,
+                timestamp,
+                suggestions_json,
+                message.aprag_interaction_id,
+                getattr(message, 'emoji_feedback', None),
+                topic_id,
+                topic_title,
+                topic_confidence
+            ))
+            
+            message_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            
+            # Return the saved message - parse suggestions if it's a JSON string
+            suggestions_parsed = message.suggestions
+            if isinstance(suggestions_parsed, str):
+                try:
+                    suggestions_parsed = json.loads(suggestions_parsed)
+                except:
+                    suggestions_parsed = None
+            
+            # Build topic object if exists
+            topic_obj = None
+            if topic_id is not None or topic_title:
+                topic_obj = {
+                    'topic_id': topic_id or 0,
+                    'topic_title': topic_title or '',
+                    'confidence_score': topic_confidence or 0.0
+                }
+            
+            response = {
+                "id": message_id,
+                "user": message.user,
+                "bot": message.bot,
+                "sources": message.sources,
+                "durationMs": message.durationMs,
+                "session_id": message.session_id,
+                "timestamp": timestamp,
+                "suggestions": suggestions_parsed if isinstance(suggestions_parsed, list) and len(suggestions_parsed) > 0 else None,
+                "aprag_interaction_id": message.aprag_interaction_id,
+                "emoji_feedback": getattr(message, 'emoji_feedback', None),
+                "topic": topic_obj
+            }
+            
+            logger.info(f"✅ Saved chat message for session {message.session_id}")
+            return response
     except Exception as e:
         logger.error(f"Failed to save chat message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -3685,6 +4004,60 @@ async def clear_student_chat_history(session_id: str, request: Request):
     except Exception as e:
         logger.error(f"Failed to clear chat history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/students/sessions")
+async def get_student_sessions(request: Request):
+    """Get all student sessions with their latest activity"""
+    try:
+        current_user = _get_current_user(request)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
+        # Students can see all active sessions
+        sessions = professional_session_manager.list_sessions(
+            created_by=None,
+            category=None,
+            status=SessionStatus.ACTIVE,
+            limit=100
+        )
+        
+        # Get chat history counts for each session
+        conn = get_student_db_connection()
+        cursor = conn.cursor()
+        
+        result = []
+        for session in sessions:
+            # Get message count and last message time for this session
+            cursor.execute("""
+                SELECT COUNT(*) as message_count, MAX(timestamp) as last_message_time
+                FROM student_chat_history
+                WHERE session_id = ?
+            """, (session.session_id,))
+            
+            row = cursor.fetchone()
+            message_count = row["message_count"] if row else 0
+            last_message_time = row["last_message_time"] if row else None
+            
+            result.append({
+                "session": _convert_metadata_to_response(session),
+                "last_message_time": last_message_time,
+                "message_count": message_count
+            })
+        
+        conn.close()
+        logger.info(f"✅ Returned {len(result)} sessions for student")
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get student sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/students/sessions")
+async def get_student_sessions_no_prefix(request: Request):
+    """Get all student sessions (for Next.js rewrites that strip /api prefix)"""
+    return await get_student_sessions(request)
 
 
 # ==================== Backup and Restore Routes ====================

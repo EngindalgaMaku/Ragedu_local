@@ -1,0 +1,6 @@
+scenario,current_level,recommended_level,success_rate,avg_difficulty,confidence,in_zpd
+Struggling Beginner,beginner,beginner,0.0,0.2,1.0,False
+Struggling Elementary,elementary,beginner,0.0,0.4,1.0,False
+Optimal Intermediate,intermediate,elementary,0.0,0.4,1.0,False
+Successful Intermediate,intermediate,intermediate,1.0,0.6,1.0,False
+Excellent Advanced,advanced,advanced,1.0,0.6,1.0,False

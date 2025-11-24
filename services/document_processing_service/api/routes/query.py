@@ -320,7 +320,14 @@ def _generate_answer_with_llm(
         context = "\n\n".join(context_parts)
         
         # Simple and direct prompt - no meta-analysis, just answer from context
-        full_prompt = f"Aşağıdaki bilgileri kullanarak soruyu cevapla:\n\n{context}\n\nSoru: {query}\n\nCevap:"
+        # Include markdown formatting instructions
+        full_prompt = f"""Aşağıdaki bilgileri kullanarak soruyu cevapla. MARKDOWN FORMATI KULLAN: Önemli kavramları **kalın** yaz, listeler için `-` veya `*` kullan, kod için `backtick` kullan, başlıklar için `##` kullan.
+
+{context}
+
+Soru: {query}
+
+Cevap (markdown formatında, formatlı ve okunabilir):"""
         
         # Call LLM using /models/generate endpoint
         generate_url = f"{MODEL_INFERENCER_URL}/models/generate"

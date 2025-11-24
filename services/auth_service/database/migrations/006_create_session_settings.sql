@@ -57,15 +57,11 @@ END;
 -- ============================================================================
 -- DEFAULT SETTINGS FOR EXISTING SESSIONS
 -- ============================================================================
--- Insert default settings for sessions that already have student_interactions
--- This ensures backward compatibility
-INSERT OR IGNORE INTO session_settings (session_id, user_id, enable_progressive_assessment, enable_personalized_responses)
-SELECT DISTINCT 
-    session_id, 
-    user_id,
-    FALSE,  -- Progressive assessment OFF by default (teacher can enable)
-    TRUE    -- Personalized responses ON by default
-FROM student_interactions;
+-- NOTE: We do NOT create default settings from student_interactions
+-- because student_interactions.user_id is a STUDENT ID, not a TEACHER ID.
+-- Session settings must have the TEACHER's user_id (session owner).
+-- Settings will be created automatically when accessed via the API,
+-- using the session's created_by field (teacher) from the sessions table.
 
 -- Verify table was created successfully
 SELECT 'Session Settings table created successfully' as status;

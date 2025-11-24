@@ -1,0 +1,6 @@
+response_length,response_category,total_load,length_load,complexity_load,technical_load,needs_simplification,query
+4,simple,0.1182,0.008,0.13333333333333333,0.25,False,Python nedir?
+21,medium,0.2982285714285714,0.042,0.7,0.23809523809523808,False,What is machine learning?
+48,complex,0.45714999999999995,0.096,1.0,0.3958333333333333,False,Explain CNN
+55,long,0.2818787878787879,0.11,0.611111111111111,0.18181818181818182,False,What is deep learning?
+1,very_simple,0.0108,0.002,0.03333333333333333,0.0,False,What is AI?

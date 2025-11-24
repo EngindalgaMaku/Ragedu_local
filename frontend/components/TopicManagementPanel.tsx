@@ -941,11 +941,7 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
           <>
             {/* Top Pagination (so it's always visible) */}
             {totalPages > 1 && (
-              <div className="flex items-center justify-between mb-3 text-xs sm:text-sm text-muted-foreground">
-                <span>
-                  Toplam {mainTopics.length} ana konu • Sayfa {topicPage}/
-                  {totalPages}
-                </span>
+              <div className="flex items-center justify-end mb-3 text-xs sm:text-sm text-muted-foreground">
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setTopicPage((p) => Math.max(1, p - 1))}

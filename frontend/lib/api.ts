@@ -143,6 +143,86 @@ export async function updateSessionStatus(
   return res.json();
 }
 
+export async function updateSessionName(
+  sessionId: string,
+  name: string
+): Promise<{
+  success: boolean;
+  session_id: string;
+  new_name: string;
+  updated_session: SessionMeta;
+}> {
+  console.log("🌐 [API] Starting updateSessionName API call");
+  console.log("🌐 [API] Session ID:", sessionId);
+  console.log("🌐 [API] New Name:", name);
+
+  const token = tokenManager.getAccessToken?.() || null;
+  console.log("🌐 [API] Token available:", token ? "YES" : "NO");
+  console.log(
+    "🌐 [API] Token (masked):",
+    token ? `${token.substring(0, 20)}...` : "null"
+  );
+
+  const apiUrl = getApiUrl();
+  const fullUrl = `${apiUrl}/sessions/${sessionId}/name`;
+  console.log("🌐 [API] API URL:", apiUrl);
+  console.log("🌐 [API] Full URL:", fullUrl);
+
+  const requestBody = JSON.stringify({ name });
+  console.log("🌐 [API] Request body:", requestBody);
+
+  const headers = {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  console.log("🌐 [API] Request headers:", JSON.stringify(headers, null, 2));
+
+  try {
+    console.log("🌐 [API] Making PATCH request...");
+    const res = await fetch(fullUrl, {
+      method: "PATCH",
+      headers,
+      body: requestBody,
+    });
+
+    console.log("🌐 [API] Response received:");
+    console.log("🌐 [API] - Status:", res.status);
+    console.log("🌐 [API] - Status Text:", res.statusText);
+    console.log("🌐 [API] - OK:", res.ok);
+    console.log(
+      "🌐 [API] - Response Headers:",
+      JSON.stringify(Object.fromEntries(res.headers.entries()), null, 2)
+    );
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error("❌ [API] Response not OK:");
+      console.error("❌ [API] - Status:", res.status);
+      console.error("❌ [API] - Status Text:", res.statusText);
+      console.error("❌ [API] - Error Text:", errorText);
+
+      throw new Error(errorText);
+    }
+
+    const responseData = await res.json();
+    console.log(
+      "✅ [API] Success! Response data:",
+      JSON.stringify(responseData, null, 2)
+    );
+    return responseData;
+  } catch (error: any) {
+    console.error("❌ [API] Network error occurred:");
+    console.error("❌ [API] - Error name:", error.name);
+    console.error("❌ [API] - Error message:", error.message);
+    console.error("❌ [API] - Error stack:", error.stack);
+    console.error(
+      "❌ [API] - Full error object:",
+      JSON.stringify(error, null, 2)
+    );
+    throw error;
+  }
+}
+
 export async function uploadDocument(form: FormData): Promise<any> {
   const res = await fetch(
     `${getApiUrl()}/documents/convert-document-to-markdown`,
@@ -977,15 +1057,24 @@ export async function listAvailableRerankerModels(): Promise<{
   return res.json();
 }
 
-
 // Document Conversion Functions
 export async function convertPdfToMarkdown(
   file: File,
-  useFallback: boolean = false
-): Promise<any> {
+  useFallback: boolean = false,
+  sessionId?: string
+): Promise<{
+  success: boolean;
+  message: string;
+  markdown_filename: string;
+  extraction_method?: string;
+  content_preview?: string;
+}> {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("use_fallback", useFallback ? "true" : "false");
+  if (sessionId) {
+    formData.append("session_id", sessionId);
+  }
 
   // Shorter timeout for fallback (pdfplumber is faster)
   const timeout = useFallback ? 120000 : 600000; // 2 min for pdfplumber, 10 min for Nanonets
@@ -1004,7 +1093,33 @@ export async function convertPdfToMarkdown(
 
     clearTimeout(timeoutId);
 
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error(
+        `[convertPdfToMarkdown] HTTP ${res.status} error:`,
+        errorText
+      );
+      let errorMessage = "Dönüştürme işlemi başarısız";
+
+      // Handle plain text errors like "Internal Server Error"
+      if (errorText && errorText.trim()) {
+        if (errorText.includes("Internal Server Error")) {
+          errorMessage =
+            "Sunucu hatası oluştu. Lütfen daha sonra tekrar deneyin veya daha küçük bir dosya kullanın.";
+        } else {
+          try {
+            const errorJson = JSON.parse(errorText);
+            errorMessage =
+              errorJson.detail || errorJson.message || errorMessage;
+          } catch {
+            // If not JSON, use the text directly (might be plain text error)
+            errorMessage = errorText.trim() || errorMessage;
+          }
+        }
+      }
+
+      throw new Error(errorMessage);
+    }
     return res.json();
   } catch (error: any) {
     clearTimeout(timeoutId);
@@ -1017,9 +1132,21 @@ export async function convertPdfToMarkdown(
   }
 }
 
-export async function convertMarker(file: File): Promise<any> {
+export async function convertMarker(
+  file: File,
+  sessionId?: string
+): Promise<{
+  success: boolean;
+  message: string;
+  markdown_filename: string;
+  extraction_method?: string;
+  content_preview?: string;
+}> {
   const formData = new FormData();
   formData.append("file", file);
+  if (sessionId) {
+    formData.append("session_id", sessionId);
+  }
 
   // 15 minutes timeout for Marker (complex documents)
   const timeout = 900000;
@@ -1035,7 +1162,30 @@ export async function convertMarker(file: File): Promise<any> {
 
     clearTimeout(timeoutId);
 
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error(`[convertMarker] HTTP ${res.status} error:`, errorText);
+      let errorMessage = "Marker ile dönüştürme işlemi başarısız";
+
+      // Handle plain text errors like "Internal Server Error"
+      if (errorText && errorText.trim()) {
+        if (errorText.includes("Internal Server Error")) {
+          errorMessage =
+            "Marker API sunucu hatası. Büyük/karmaşık PDF'ler için 'Hızlı Dönüştür' yöntemini deneyin.";
+        } else {
+          try {
+            const errorJson = JSON.parse(errorText);
+            errorMessage =
+              errorJson.detail || errorJson.message || errorMessage;
+          } catch {
+            // If not JSON, use the text directly (might be plain text error)
+            errorMessage = errorText.trim() || errorMessage;
+          }
+        }
+      }
+
+      throw new Error(errorMessage);
+    }
     return res.json();
   } catch (error: any) {
     clearTimeout(timeoutId);
@@ -1065,7 +1215,13 @@ export interface StudentChatMessage {
   timestamp: string;
   session_id: string;
   aprag_interaction_id?: number; // For emoji feedback
+  emoji_feedback?: string; // Emoji feedback (😊, 👍, 😐, ❌)
   correction?: CorrectionDetails; // NEW: For self-correction details
+  topic?: {
+    topic_id: number;
+    topic_title: string;
+    confidence_score: number;
+  }; // Topic classification information
 }
 
 export interface StudentChatHistory {
@@ -2045,7 +2201,7 @@ export async function extractTopics(
   request: TopicExtractionRequest
 ): Promise<TopicExtractionResponse> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/api/aprag/topics/extract`, {
+  const res = await fetch(`${getApiUrl()}/aprag/topics/extract`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -2069,7 +2225,7 @@ export async function getSessionTopics(sessionId: string): Promise<{
 }> {
   const token = tokenManager.getAccessToken?.() || null;
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/topics/session/${sessionId}`,
+    `${getApiUrl()}/aprag/topics/session/${sessionId}`,
     {
       headers: {
         "Content-Type": "application/json",
@@ -2102,7 +2258,7 @@ export async function updateTopic(
   }
 ): Promise<{ success: boolean; message: string }> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/api/aprag/topics/${topicId}`, {
+  const res = await fetch(`${getApiUrl()}/aprag/topics/${topicId}`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
@@ -2123,7 +2279,7 @@ export async function deleteTopic(
   topicId: number
 ): Promise<{ success: boolean; message: string; topic_id: number }> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/api/aprag/topics/${topicId}`, {
+  const res = await fetch(`${getApiUrl()}/aprag/topics/${topicId}`, {
     method: "DELETE",
     headers: {
       "Content-Type": "application/json",
@@ -2143,7 +2299,7 @@ export async function classifyQuestion(
   request: QuestionClassificationRequest
 ): Promise<QuestionClassificationResponse> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/api/aprag/topics/classify-question`, {
+  const res = await fetch(`${getApiUrl()}/aprag/topics/classify-question`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -2166,7 +2322,7 @@ export async function getStudentProgress(
 ): Promise<StudentProgressResponse> {
   const token = tokenManager.getAccessToken?.() || null;
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/topics/progress/${userId}/${sessionId}`,
+    `${getApiUrl()}/aprag/topics/progress/${userId}/${sessionId}`,
     {
       headers: {
         "Content-Type": "application/json",
