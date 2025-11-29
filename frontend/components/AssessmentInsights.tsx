@@ -12,6 +12,7 @@
  */
 
 import React, { useState, useEffect } from "react";
+import { getApiUrl } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -146,7 +147,7 @@ const AssessmentInsights: React.FC<AssessmentInsightsProps> = ({
       if (userId) {
         // Load individual student insights
         const response = await fetch(
-          `${apiBaseUrl}/api/aprag/progressive-assessment/insights/${userId}${
+          `${getApiUrl()}/aprag/progressive-assessment/insights/${userId}${
             sessionId ? `?session_id=${sessionId}` : ""
           }`,
           {

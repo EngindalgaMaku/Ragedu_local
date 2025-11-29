@@ -31,7 +31,7 @@ export default function SettingsPage() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${getApiUrl()}/api/aprag/settings/status`);
+      const response = await fetch(`${getApiUrl()}/aprag/settings/status`);
       if (response.ok) {
         const data = await response.json();
         setApragSettings(data);
@@ -73,7 +73,7 @@ export default function SettingsPage() {
     setSuccess(null);
 
     try {
-      const response = await fetch(`${getApiUrl()}/api/aprag/settings/toggle`, {
+      const response = await fetch(`${getApiUrl()}/aprag/settings/toggle`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

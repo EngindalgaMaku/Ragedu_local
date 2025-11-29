@@ -35,6 +35,11 @@ import {
   deleteSession,
   updateSessionStatus,
   updateSessionName,
+  listMarkdownCategories,
+  createMarkdownCategory,
+  deleteMarkdownCategory,
+  assignMarkdownCategory,
+  listMarkdownFilesWithCategories,
   SessionMeta,
   RAGSource,
   getRecentInteractions,
@@ -53,11 +58,16 @@ import {
   submitFeedback,
   FeedbackCreate,
   getSessionInteractions,
+  getTotalInteractions,
   getApiUrl,
   CorrectionDetails,
+  MarkdownFileWithCategory,
+  MarkdownCategory,
 } from "@/lib/api";
+import { Module } from "@/types/modules";
 import FeedbackModal, { FeedbackData } from "@/components/FeedbackModal";
 import { useStudentChat } from "@/hooks/useStudentChat";
+import { useEducationAssistant } from "@/hooks/useEducationAssistant";
 import Modal from "@/components/Modal";
 import MarkdownViewer from "@/components/MarkdownViewer";
 import ChangelogCard from "@/components/ChangelogCard";
@@ -72,6 +82,11 @@ import TeacherLayout from "@/app/components/TeacherLayout";
 import RecommendationPanel from "@/components/RecommendationPanel";
 import TopicProgressCard from "@/components/TopicProgressCard";
 import TopicAnalyticsDashboard from "@/components/TopicAnalyticsDashboard";
+import ModuleExtractionPanel from "@/components/ModuleExtractionPanel";
+import ModuleManagementDashboard from "@/components/ModuleManagementDashboard";
+import ModuleProgressMonitoringDashboard from "@/components/ModuleProgressMonitoringDashboard";
+import EmojiFeedback from "@/components/EmojiFeedback";
+import EBARSStatusPanel from "@/components/EBARSStatusPanel";
 
 // Type definition for RAG source (extend if RAGSource is not exported from api.ts)
 interface ExtendedRAGSource {
@@ -524,96 +539,113 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [sessionPage, setSessionPage] = useState(1);
   const SESSIONS_PER_PAGE = 5;
-  const [activeTab, setActiveTab] = useState<
-    "dashboard" | "sessions" | "upload" | "query" | "analytics"
-  >("dashboard");
+  type TabType = "dashboard" | "sessions" | "upload" | "analytics" | "modules" | "assistant" | "query";
+  const [activeTab, setActiveTab] = useState<TabType>("dashboard");
+  
+  // Check URL params for tab on mount and when URL changes
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tabParam = params.get("tab");
+    if (tabParam === "query") {
+      setActiveTab("query");
+    }
+  }, []);
+
+  // Listen for URL changes
+  useEffect(() => {
+    const handlePopState = () => {
+      const params = new URLSearchParams(window.location.search);
+      const tabParam = params.get("tab");
+      if (tabParam === "query") {
+        setActiveTab("query");
+      }
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  // Module state
+  const [modules, setModules] = useState<Module[]>([]);
+  const [modulesLoading, setModulesLoading] = useState(false);
 
   // Form states
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("research");
   const [file, setFile] = useState<File | null>(null);
+
+  // Basic query states - kept for compatibility (not causing errors)
   const [query, setQuery] = useState("");
-  const [chatHistory, setChatHistory] = useState<
-    {
-      user: string;
-      bot: string;
-      sources?: (RAGSource & ExtendedRAGSource)[];
-      durationMs?: number;
-      suggestions?: string[];
-      timestamp?: string;
-      interactionId?: number; // APRAG interaction ID for feedback
-      correction?: CorrectionDetails; // Self-correction details
-    }[]
-  >([]);
-  const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
-  const [selectedInteractionForFeedback, setSelectedInteractionForFeedback] =
-    useState<{
-      interactionId: number;
-      query: string;
-      answer: string;
-    } | null>(null);
+  const [chatHistory, setChatHistory] = useState<any[]>([]);
   const [isQuerying, setIsQuerying] = useState(false);
-  const [uploadStats, setUploadStats] = useState<any>(null);
+  const [isChatOpen, setIsChatOpen] = useState(true);
 
-  // Source Modal states
-  const [sourceModalOpen, setSourceModalOpen] = useState(false);
-  const [selectedSource, setSelectedSource] = useState<RAGSource | null>(null);
-
-  // Model selection states
+  // Model selection states - minimal for compatibility
   const [availableModels, setAvailableModels] = useState<any[]>([]);
-  const [selectedProvider, setSelectedProvider] = useState<string>("groq"); // Default: groq
+  const [selectedProvider, setSelectedProvider] = useState<string>("groq");
   const [selectedQueryModel, setSelectedQueryModel] = useState<string>("");
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelProviders, setModelProviders] = useState<Record<string, any>>({});
-
-  // Direct LLM response option
   const [useDirectLLM, setUseDirectLLM] = useState<boolean>(false);
-  // Chain type selection for teacher
   const [chainType, setChainType] = useState<"stuff" | "refine" | "map_reduce">(
     "stuff"
   );
-  // Answer length selection
   const [answerLength, setAnswerLength] = useState<
     "short" | "normal" | "detailed"
   >("normal");
-  const [savingSettings, setSavingSettings] = useState(false);
-  const [savedSettingsInfo, setSavedSettingsInfo] = useState<string | null>(
-    null
-  );
   const [sessionRagSettings, setSessionRagSettings] = useState<any>(null);
 
-  // Reranker selection
-  const [selectedRerankerType, setSelectedRerankerType] =
-    useState<string>("ms-marco"); // "bge" or "ms-marco"
-  const [useRerankerService, setUseRerankerService] = useState<boolean>(false); // Use new reranker service
-
-  // Accordion state for chat
-  const [isChatOpen, setIsChatOpen] = useState(true);
-
-  // Embedding model selection for document processing
-  const [selectedEmbeddingProvider, setSelectedEmbeddingProvider] =
-    useState<string>("ollama");
+  // Embedding model selection - minimal for compatibility
   const [selectedEmbeddingModel, setSelectedEmbeddingModel] =
     useState<string>("nomic-embed-text");
-  const [availableEmbeddingModels, setAvailableEmbeddingModels] = useState<{
-    ollama: string[];
-    huggingface: Array<{
-      id: string;
-      name: string;
-      description?: string;
-      dimensions?: number;
-      language?: string;
-    }>;
-  }>({ ollama: [], huggingface: [] });
+  const [availableEmbeddingModels, setAvailableEmbeddingModels] = useState<any>(
+    { ollama: [], huggingface: [] }
+  );
   const [embeddingModelsLoading, setEmbeddingModelsLoading] = useState(false);
 
+  // Modal states - minimal for compatibility
+  const [sourceModalOpen, setSourceModalOpen] = useState(false);
+  const [selectedSource, setSelectedSource] = useState<RAGSource | null>(null);
+  const [uploadStats, setUploadStats] = useState<any>(null);
+
+  // Missing state variables for feedback system
+  const [selectedInteractionForFeedback, setSelectedInteractionForFeedback] =
+    useState<{
+      interactionId: string;
+      query: string;
+      answer: string;
+    } | null>(null);
+  const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
+
+  // Missing embedding provider state
+  const [selectedEmbeddingProvider, setSelectedEmbeddingProvider] =
+    useState<string>("ollama");
+
+  // Missing reranker states
+  const [useRerankerService, setUseRerankerService] = useState<boolean>(false);
+  const [selectedRerankerType, setSelectedRerankerType] =
+    useState<string>("bge-reranker-v2-m3");
+
   // Markdown files states
-  const [markdownFiles, setMarkdownFiles] = useState<string[]>([]);
+  const [markdownFiles, setMarkdownFiles] = useState<
+    MarkdownFileWithCategory[]
+  >([]);
+  const [filteredMarkdownFiles, setFilteredMarkdownFiles] = useState<
+    MarkdownFileWithCategory[]
+  >([]);
   const [selectedMarkdownFiles, setSelectedMarkdownFiles] = useState<string[]>(
     []
   );
   const [markdownLoading, setMarkdownLoading] = useState(false);
+
+  // Category states
+  const [categories, setCategories] = useState<MarkdownCategory[]>([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(
+    null
+  );
+  const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [isCategoryLoading, setIsCategoryLoading] = useState(false);
   const [addingDocuments, setAddingDocuments] = useState(false);
   const [markdownPage, setMarkdownPage] = useState(1);
   const MARKDOWN_FILES_PER_PAGE = 20;
@@ -649,9 +681,7 @@ export default function HomePage() {
   useEffect(() => {
     const checkApragStatus = async () => {
       try {
-        const response = await fetch(
-          `${getApiUrl()}/api/aprag/settings/status`
-        );
+        const response = await fetch(`${getApiUrl()}/aprag/settings/status`);
         if (response.ok) {
           const data = await response.json();
           setApragEnabled(data.global_enabled || false);
@@ -689,6 +719,10 @@ export default function HomePage() {
     error: studentChatError = null,
   } = isStudent && selectedSessionId ? studentChatResult : {};
 
+  // State for total queries (fetched from database)
+  const [totalQueries, setTotalQueries] = useState<number>(0);
+  const [queriesLoading, setQueriesLoading] = useState<boolean>(false);
+
   // Calculated metrics
   const totalSessions = sessions.length;
   const totalDocuments = sessions.reduce(
@@ -699,10 +733,35 @@ export default function HomePage() {
     (acc, s) => acc + (s.total_chunks || 0),
     0
   );
-  const totalQueries = sessions.reduce(
-    (acc, s) => acc + (s.query_count || 0),
-    0
-  );
+
+  // Fetch total queries from database when sessions change
+  useEffect(() => {
+    const fetchTotalQueries = async () => {
+      if (sessions.length === 0) {
+        setTotalQueries(0);
+        return;
+      }
+
+      setQueriesLoading(true);
+      try {
+        const sessionIds = sessions.map((s) => s.session_id);
+        const result = await getTotalInteractions(sessionIds);
+        setTotalQueries(result.total);
+      } catch (error) {
+        console.error("Failed to fetch total queries:", error);
+        // Fallback to metadata count if API fails
+        const fallbackCount = sessions.reduce(
+          (acc, s) => acc + (s.query_count || 0),
+          0
+        );
+        setTotalQueries(fallbackCount);
+      } finally {
+        setQueriesLoading(false);
+      }
+    };
+
+    fetchTotalQueries();
+  }, [sessions]);
 
   const [isRecentModalOpen, setIsRecentModalOpen] = useState(false);
   const [recentInteractions, setRecentInteractions] = useState<any[]>([]);
@@ -730,17 +789,23 @@ export default function HomePage() {
   const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
 
-  // Student panel state management - Two-stage experience
-  const [studentView, setStudentView] = useState<"course-selection" | "chat">(
-    "course-selection"
-  );
+  // Student panel state management - Three-stage experience
+  const [studentView, setStudentView] = useState<
+    "course-selection" | "modules" | "chat"
+  >("course-selection");
   const [selectedCourse, setSelectedCourse] = useState<SessionMeta | null>(
     null
   );
+  const [selectedModule, setSelectedModule] = useState<any>(null);
+  const [courseModules, setCourseModules] = useState<any[]>([]);
+  const [loadingModules, setLoadingModules] = useState(false);
 
   // Dynamic course questions
   const [courseQuestions, setCourseQuestions] = useState<string[]>([]);
   const [loadingCourseQuestions, setLoadingCourseQuestions] = useState(false);
+
+  // EBARS refresh trigger
+  const [ebarsRefreshTrigger, setEbarsRefreshTrigger] = useState(0);
 
   // Scroll to top when new message arrives (en yeni mesaj üstte)
   useEffect(() => {
@@ -775,6 +840,32 @@ export default function HomePage() {
   async function openRecentInteractions(sessionId?: string) {
     setIsRecentModalOpen(true);
     await loadRecentInteractions(1, sessionId);
+  }
+
+  // Fetch modules for selected session
+  async function fetchModules(sessionId: string) {
+    if (!sessionId) {
+      setModules([]);
+      return;
+    }
+
+    try {
+      setModulesLoading(true);
+      const response = await fetch(
+        `${getApiUrl()}/api/v1/modules/session/${sessionId}`
+      );
+      if (response.ok) {
+        const data = await response.json();
+        setModules(data.modules || []);
+      } else {
+        setModules([]);
+      }
+    } catch (error) {
+      console.error("Error fetching modules:", error);
+      setModules([]);
+    } finally {
+      setModulesLoading(false);
+    }
   }
 
   async function refreshSessions() {
@@ -1272,18 +1363,123 @@ export default function HomePage() {
     }
   };
 
+  // Fetch markdown files with categories
   async function fetchMarkdownFiles() {
     try {
       setMarkdownLoading(true);
       setError(null);
-      const files = await listMarkdownFiles();
+
+      // Fetch both files with categories and categories in parallel
+      const [files, cats] = await Promise.all([
+        listMarkdownFilesWithCategories(selectedCategoryId || undefined),
+        listMarkdownCategories(),
+      ]);
+
       setMarkdownFiles(files);
+      setFilteredMarkdownFiles(files);
+      setCategories(cats);
     } catch (e: any) {
       setError(e.message || "Markdown dosyaları yüklenemedi");
     } finally {
       setMarkdownLoading(false);
     }
   }
+
+  // Handle category filter change
+  const handleCategoryFilterChange = (categoryId: number | null) => {
+    setSelectedCategoryId(categoryId);
+    setMarkdownPage(1); // Reset to first page when changing filter
+  };
+
+  // Create a new category
+  const handleCreateCategory = async () => {
+    if (!newCategoryName.trim()) return;
+
+    try {
+      setIsCategoryLoading(true);
+      const category = await createMarkdownCategory({
+        name: newCategoryName.trim(),
+        description: null,
+      });
+
+      setCategories([...categories, category]);
+      setNewCategoryName("");
+      setSuccess(`"${category.name}" kategorisi oluşturuldu`);
+    } catch (e: any) {
+      setError(e.message || "Kategori oluşturulurken hata oluştu");
+    } finally {
+      setIsCategoryLoading(false);
+    }
+  };
+
+  // Delete a category
+  const handleDeleteCategory = async (id: number) => {
+    if (
+      !confirm(
+        "Bu kategoriyi silmek istediğinize emin misiniz? Bu işlem geri alınamaz."
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setIsCategoryLoading(true);
+      await deleteMarkdownCategory(id);
+      setCategories(categories.filter((cat) => cat.id !== id));
+      setSuccess("Kategori silindi");
+
+      // Reset category filter if the deleted category was selected
+      if (selectedCategoryId === id) {
+        setSelectedCategoryId(null);
+      }
+    } catch (e: any) {
+      setError(e.message || "Kategori silinirken hata oluştu");
+    } finally {
+      setIsCategoryLoading(false);
+    }
+  };
+
+  // Assign selected files to a category
+  const handleAssignCategory = async (categoryId: number | null) => {
+    if (selectedMarkdownFiles.length === 0) return;
+
+    try {
+      setMarkdownLoading(true);
+      await assignMarkdownCategory(selectedMarkdownFiles, categoryId);
+
+      // Update local state
+      const updatedFiles = markdownFiles.map((file) =>
+        selectedMarkdownFiles.includes(file.filename)
+          ? {
+              ...file,
+              category_id: categoryId,
+              category_name: categoryId
+                ? categories.find((c) => c.id === categoryId)?.name || null
+                : null,
+            }
+          : file
+      );
+
+      setMarkdownFiles(updatedFiles);
+      setFilteredMarkdownFiles(
+        updatedFiles.filter(
+          (file) =>
+            !selectedCategoryId || file.category_id === selectedCategoryId
+        )
+      );
+
+      setSuccess(
+        `Seçili dosyalar ${
+          categoryId ? "kategoriye eklendi" : "kategorisiz olarak işaretlendi"
+        }`
+      );
+      setSelectedMarkdownFiles([]);
+    } catch (e: any) {
+      setError(e.message || "Kategori atanırken hata oluştu");
+    } finally {
+      setMarkdownLoading(false);
+    }
+  };
 
   async function handleAddMarkdownDocuments() {
     if (!selectedSessionId || selectedMarkdownFiles.length === 0) return;
@@ -1560,27 +1756,27 @@ export default function HomePage() {
     loadSessionRagSettings();
   }, [selectedSessionId]);
 
+  // Fetch categories - Robust version that doesn't break UI
+  const fetchCategories = async () => {
+    try {
+      console.log("[Categories] Fetching categories...");
+      const cats = await listMarkdownCategories();
+      console.log("[Categories] Fetched categories:", cats);
+      setCategories(cats || []);
+    } catch (e: any) {
+      console.error("[Categories] Error fetching categories:", e);
+      // Don't set error state as it might break UI - just log the error
+      // Initialize with empty array to ensure UI renders
+      setCategories([]);
+    }
+  };
+
   useEffect(() => {
-    if (activeTab === "upload" && markdownFiles.length === 0) {
+    if (activeTab === "upload") {
       fetchMarkdownFiles();
+      fetchCategories();
     }
-    if (activeTab === "query" && availableModels.length === 0) {
-      fetchAvailableModels();
-    }
-    // Always fetch embedding models when query tab is active
-    if (
-      activeTab === "query" &&
-      availableEmbeddingModels.ollama.length === 0 &&
-      availableEmbeddingModels.huggingface.length === 0
-    ) {
-      console.log("[Embedding] useEffect: Fetching embedding models...");
-      fetchAvailableEmbeddingModels();
-    }
-  }, [
-    activeTab,
-    availableEmbeddingModels.ollama.length,
-    availableEmbeddingModels.huggingface.length,
-  ]);
+  }, [activeTab]);
 
   // Auto-load models for student panel
   useEffect(() => {
@@ -2084,6 +2280,24 @@ export default function HomePage() {
               </div>
             </div>
 
+            {/* EBARS Status Panel - Only for students when EBARS is enabled */}
+            {apragEnabled &&
+              userRole === "student" &&
+              selectedSessionId &&
+              user?.username && (
+                <div className="mb-4">
+                  <EBARSStatusPanel
+                    key={ebarsRefreshTrigger}
+                    userId={user.username}
+                    sessionId={selectedSessionId}
+                    onFeedbackSubmitted={() => {
+                      // Trigger refresh when feedback is submitted
+                      setEbarsRefreshTrigger(prev => prev + 1);
+                    }}
+                  />
+                </div>
+              )}
+
             {/* Topic Progress Card - APRAG (only for students when enabled) */}
             {apragEnabled &&
               userRole === "student" &&
@@ -2371,6 +2585,60 @@ export default function HomePage() {
                                         </div>
                                       </div>
                                     )}
+
+                                  {/* Debug: Show feedback component status - ALWAYS VISIBLE */}
+                                  <div className="mt-4 text-xs text-gray-500 p-3 bg-yellow-50 border border-yellow-200 rounded">
+                                    <div className="font-semibold mb-1">
+                                      🔍 Feedback Debug Info:
+                                    </div>
+                                    <div>
+                                      aprag_interaction_id:{" "}
+                                      {message.aprag_interaction_id
+                                        ? `✅ ${message.aprag_interaction_id}`
+                                        : "❌ missing"}
+                                    </div>
+                                    <div>
+                                      user_id:{" "}
+                                      {user?.id
+                                        ? `✅ ${user.id}`
+                                        : "❌ missing"}
+                                    </div>
+                                    <div>
+                                      session_id:{" "}
+                                      {selectedSessionId
+                                        ? `✅ ${selectedSessionId}`
+                                        : "❌ missing"}
+                                    </div>
+                                    <div>
+                                      Will render EmojiFeedback:{" "}
+                                      {message.aprag_interaction_id &&
+                                      user?.id &&
+                                      selectedSessionId
+                                        ? "✅ YES"
+                                        : "❌ NO"}
+                                    </div>
+                                  </div>
+
+                                  {/* Emoji Feedback Component */}
+                                  {message.aprag_interaction_id &&
+                                    user?.id &&
+                                    selectedSessionId && (
+                                      <div className="mt-6 pt-4 border-t border-gray-100">
+                                        <EmojiFeedback
+                                          interactionId={
+                                            message.aprag_interaction_id
+                                          }
+                                          userId={user.id.toString()}
+                                          sessionId={selectedSessionId}
+                                          compact={false}
+                                          onFeedbackSubmitted={() => {
+                                            // Refresh EBARS status panel
+                                            setEbarsRefreshTrigger(prev => prev + 1);
+                                            console.log("Feedback submitted, EBARS refreshed");
+                                          }}
+                                        />
+                                      </div>
+                                    )}
                                 </div>
                               </div>
                             )}
@@ -2385,6 +2653,209 @@ export default function HomePage() {
         </div>
       );
     }
+  }
+
+  // Education Assistant Component for Teachers
+  function EducationAssistantContent() {
+    const assistant = useEducationAssistant();
+    
+    return (
+      <div className="space-y-6">
+        {/* Session Selection */}
+        {!assistant.selectedSessionId && assistant.sessions.length > 0 && (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+            <p className="text-yellow-800">
+              ⚠️ Lütfen bir ders oturumu seçin.
+            </p>
+          </div>
+        )}
+
+        {/* Query Interface */}
+        {assistant.selectedSessionId && (
+          <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+            {/* Chat Input */}
+            <div className="border-b border-gray-100 p-4 sm:p-6">
+              <form
+                onSubmit={assistant.handleQuery}
+                className="flex flex-col sm:flex-row gap-3"
+              >
+                <div className="flex-1 relative">
+                  <input
+                    value={assistant.query}
+                    onChange={(e) => assistant.setQuery(e.target.value)}
+                    placeholder="Ders hakkında soru sorabilirsiniz..."
+                    className="w-full px-4 sm:px-6 py-3 sm:py-4 border-2 border-gray-200 rounded-2xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all shadow-sm text-gray-800 placeholder-gray-400 text-sm sm:text-base"
+                    disabled={assistant.isQuerying}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={assistant.isQuerying || !assistant.query.trim()}
+                  className="w-full sm:w-auto px-6 sm:px-8 py-3 sm:py-4 rounded-2xl bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-semibold hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 transform hover:scale-105 active:scale-95 shadow-md text-sm sm:text-base min-h-[44px]"
+                >
+                  {assistant.isQuerying ? (
+                    <div className="flex items-center gap-2">
+                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <span>Düşünüyor...</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <span>🚀</span>
+                      <span>Sor</span>
+                    </div>
+                  )}
+                </button>
+              </form>
+            </div>
+
+            {/* Chat History */}
+            <div className="min-h-[50vh] max-h-[70vh] overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-6">
+              {assistant.chatHistory.length === 0 && !assistant.isQuerying && (
+                <div className="text-center py-16">
+                  <div className="text-6xl mb-4">🤖</div>
+                  <h3 className="text-xl font-semibold text-gray-700 mb-2">
+                    Merhaba! Size nasıl yardımcı olabilirim?
+                  </h3>
+                  <p className="text-gray-500 max-w-md mx-auto mb-6">
+                    Ders hakkında sorularınızı sorabilirsiniz. Detaylı cevaplar verebilirim!
+                  </p>
+                </div>
+              )}
+
+              {/* Chat Messages */}
+              <div className="flex flex-col space-y-6">
+                {assistant.chatHistory.map((message, index) => (
+                  <div key={index} className="space-y-4">
+                    {/* User Question */}
+                    <div className="flex justify-end">
+                      <div className="max-w-3xl bg-gradient-to-r from-blue-50 to-indigo-50 rounded-2xl p-4 border-l-4 border-blue-400 shadow-sm">
+                        <div className="flex items-start gap-3">
+                          <span className="text-xl">👨‍🏫</span>
+                          <div className="flex-1">
+                            <div className="flex items-center justify-between mb-1">
+                              <p className="font-medium text-sm text-blue-700">
+                                Soru
+                              </p>
+                              {message.timestamp && (
+                                <p className="text-xs text-gray-500">
+                                  {formatTimestamp(message.timestamp)}
+                                </p>
+                              )}
+                            </div>
+                            <p className="text-gray-800">{message.user}</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* AI Response */}
+                    <div className="flex justify-start">
+                      <div className="max-w-4xl bg-gradient-to-br from-white to-gray-50 border-2 border-indigo-100 rounded-2xl p-6 shadow-lg">
+                        <div className="flex items-start gap-4">
+                          <div className="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center text-white text-xl shadow-lg">
+                            🎓
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between mb-4 pb-3 border-b border-gray-200">
+                              <p className="font-bold text-lg text-gray-800">
+                                Cevap
+                              </p>
+                              <div className="flex items-center gap-2">
+                                {message.timestamp && (
+                                  <span className="text-xs text-gray-500">
+                                    {formatTimestamp(message.timestamp)}
+                                  </span>
+                                )}
+                                {message.durationMs != null && (
+                                  <span className="text-xs text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+                                    ⏱️ {message.durationMs} ms
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="prose prose-base max-w-none text-gray-700 leading-relaxed">
+                              {message.bot}
+                            </div>
+
+                            {/* Sources */}
+                            {message.sources && message.sources.length > 0 && (
+                              <div className="mt-6 pt-4 border-t border-gray-100">
+                                <div className="flex items-center gap-2 mb-3">
+                                  <span className="text-sm font-semibold text-gray-700">
+                                    📚 Kaynaklar
+                                  </span>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  {message.sources.map((source: any, i: number) => (
+                                    <button
+                                      key={i}
+                                      onClick={() => assistant.handleOpenSourceModal(source)}
+                                      className="px-3 py-2 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg border border-gray-200 hover:border-gray-300 transition-all"
+                                    >
+                                      {source.source || source.metadata?.source_file || `Kaynak ${i + 1}`}
+                                      {source.score !== undefined && (
+                                        <span className="ml-2 text-gray-500">
+                                          ({Math.round(source.score * 100)}%)
+                                        </span>
+                                      )}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Suggestions */}
+                            {Array.isArray(message.suggestions) &&
+                              message.suggestions.length > 0 && (
+                                <div className="mt-6 pt-4 border-t border-gray-100">
+                                  <div className="flex items-center gap-2 mb-3">
+                                    <span className="text-sm font-semibold text-gray-700">
+                                      💡 İlgili Sorular
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    {message.suggestions.map(
+                                      (suggestion: string, i: number) => (
+                                        <button
+                                          key={i}
+                                          onClick={() => assistant.handleSuggestionClick(suggestion)}
+                                          className="px-4 py-3 text-sm bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-full hover:shadow-md transition-all duration-200 transform hover:scale-105 min-h-[44px]"
+                                        >
+                                          {suggestion}
+                                        </button>
+                                      )
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Source Modal */}
+        <Modal
+          isOpen={assistant.sourceModalOpen}
+          onClose={assistant.handleCloseSourceModal}
+          title="Kaynak Detayları"
+          size="xl"
+        >
+          {assistant.selectedSource && (
+            <div className="space-y-4">
+              <div className="prose prose-sm max-w-none">
+                {assistant.selectedSource.content}
+              </div>
+            </div>
+          )}
+        </Modal>
+      </div>
+    );
   }
 
   // Teacher view - full interface with sidebar layout
@@ -2679,28 +3150,31 @@ export default function HomePage() {
         <div className="space-y-8">
           {/* Header Section */}
           <div className="bg-gradient-to-br from-blue-50 via-white to-purple-50 rounded-2xl p-8 border border-blue-100">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex flex-col lg:flex-row items-center justify-between gap-6 mb-6">
               <div className="flex items-center gap-4">
                 <div className="p-4 bg-gradient-to-br from-blue-500 to-purple-600 text-white rounded-2xl shadow-lg">
                   <DocumentIcon />
                 </div>
                 <div>
                   <h2 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-                    Belge Yönetim Merkezi
+                    Belge Merkezi
                   </h2>
                   <p className="text-gray-600 mt-1">
-                    Belgelerinizi yükleyin, dönüştürün ve RAG sistemi için
-                    hazırlayın
+                    Kapsamlı belge yönetimi ve markdown dosya işlemleri
                   </p>
                 </div>
               </div>
-              <button
-                onClick={() => setIsDocumentUploadModalOpen(true)}
-                className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white px-8 py-4 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all transform hover:scale-105 flex items-center gap-3"
-              >
-                <UploadIcon />
-                <span>Yeni Belge Yükle</span>
-              </button>
+
+              <div className="flex flex-col sm:flex-row items-center gap-4">
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-gray-800">
+                    Yeni Deneyim
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    Ayrı sayfada organize edildi
+                  </div>
+                </div>
+              </div>
             </div>
 
             {success && (
@@ -2722,385 +3196,200 @@ export default function HomePage() {
               </div>
             )}
 
-            {/* Quick Stats */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-white/70 backdrop-blur-sm p-6 rounded-xl border border-white/50 shadow-sm">
-                <div className="flex items-center gap-3">
-                  <div className="p-3 bg-blue-100 text-blue-600 rounded-lg">
-                    <DocumentIcon />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold text-gray-800">
-                      {markdownFiles.length}
-                    </p>
-                    <p className="text-sm text-gray-600">
-                      Toplam Markdown Dosyası
-                    </p>
+            {/* Information Card */}
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 mb-6">
+              <div className="flex items-start gap-4">
+                <div className="p-3 bg-blue-100 rounded-full">
+                  <svg
+                    className="w-6 h-6 text-blue-600"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                    />
+                  </svg>
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-lg font-semibold text-blue-800 mb-2">
+                    Belge Merkezi Ayrı Sayfaya Taşındı
+                  </h3>
+                  <p className="text-blue-700 mb-4">
+                    Tüm belge yönetimi işlemleri artık daha organize ve
+                    kullanıcı dostu bir ayrı sayfada bulunmaktadır. Bu sayede
+                    daha iyi performans ve geliştirilmiş kullanıcı deneyimi
+                    sunuyoruz.
+                  </p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                    <div className="flex items-center gap-2">
+                      <span className="text-blue-600">✅</span>
+                      <span className="text-sm text-blue-700">
+                        Dosya yükleme ve dönüştürme
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-blue-600">✅</span>
+                      <span className="text-sm text-blue-700">
+                        Kategori yönetimi
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-blue-600">✅</span>
+                      <span className="text-sm text-blue-700">
+                        Markdown dosya listesi
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-blue-600">✅</span>
+                      <span className="text-sm text-blue-700">
+                        Oturuma belge ekleme
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
-              <div className="bg-white/70 backdrop-blur-sm p-6 rounded-xl border border-white/50 shadow-sm">
-                <div className="flex items-center gap-3">
-                  <div className="p-3 bg-purple-100 text-purple-600 rounded-lg">
-                    <UploadIcon />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold text-gray-800">
-                      {selectedMarkdownFiles.length}
-                    </p>
-                    <p className="text-sm text-gray-600">Seçili Dosya</p>
-                  </div>
-                </div>
-              </div>
-              <div className="bg-white/70 backdrop-blur-sm p-6 rounded-xl border border-white/50 shadow-sm">
-                <div className="flex items-center gap-3">
-                  <div className="p-3 bg-green-100 text-green-600 rounded-lg">
-                    <SessionIcon />
-                  </div>
-                  <div>
-                    <p className="text-2xl font-bold text-gray-800">
-                      {sessions.length}
-                    </p>
-                    <p className="text-sm text-gray-600">Aktif Oturum</p>
-                  </div>
+            </div>
+
+            {/* Navigation Card */}
+            <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-2xl p-8 text-white shadow-xl">
+              <div className="text-center">
+                <h3 className="text-2xl font-bold mb-4">
+                  Belge Merkezine Geçin
+                </h3>
+                <p className="text-indigo-100 mb-6 max-w-2xl mx-auto">
+                  Tüm belge yönetimi işlemlerinizi modern ve organize bir
+                  arayüzde gerçekleştirin. Markdown dosyalarınızı kategorilere
+                  ayırın, oturumlara ekleyin ve kolayca yönetin.
+                </p>
+
+                <Link
+                  href="/document-center"
+                  className="inline-flex items-center gap-3 bg-white text-indigo-600 px-8 py-4 rounded-xl font-bold shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105 hover:bg-indigo-50"
+                >
+                  <span className="text-2xl">📁</span>
+                  <span>Belge Merkezini Aç</span>
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      d="M17 8l4 4m0 0l-4 4m4-4H3"
+                    />
+                  </svg>
+                </Link>
+
+                <div className="mt-4 text-sm text-indigo-200">
+                  Yeni sekmede açmak için Ctrl+Click kullanın
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Session Selection and Document Management */}
-          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
-            <div className="bg-gradient-to-r from-gray-50 to-gray-100 px-8 py-6 border-b border-gray-200">
-              <h2 className="text-2xl font-bold text-gray-800 mb-2">
-                Oturuma Markdown Belgeleri Ekle
-              </h2>
-              <p className="text-gray-600">
-                Mevcut Markdown dosyalarını seçin ve bir ders oturumuna ekleyin
+          {/* Quick Action Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {/* Upload Documents */}
+            <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm hover:shadow-md transition-shadow">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-3 bg-blue-100 text-blue-600 rounded-lg">
+                  <UploadIcon />
+                </div>
+                <h3 className="text-lg font-semibold text-gray-800">
+                  Belge Yükle
+                </h3>
+              </div>
+              <p className="text-gray-600 text-sm mb-4">
+                PDF dosyalarınızı yükleyin ve Markdown formatına dönüştürün
               </p>
+              <button
+                onClick={() => setIsDocumentUploadModalOpen(true)}
+                className="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors font-medium"
+              >
+                Belge Yükle
+              </button>
             </div>
 
-            <div className="p-8">
-              <div className="mb-8">
-                <label className="block text-sm font-semibold text-gray-700 mb-3">
-                  🎯 Hedef Ders Oturumu
-                </label>
-                <select
-                  value={selectedSessionId}
-                  onChange={(e) => setSelectedSessionId(e.target.value)}
-                  className="w-full max-w-md px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-white shadow-sm"
-                >
-                  <option value="">Ders Oturumu Seçin</option>
-                  {sessions.map((session) => (
-                    <option key={session.session_id} value={session.session_id}>
-                      {session.name}
-                    </option>
-                  ))}
-                </select>
+            {/* Manage Categories */}
+            <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm hover:shadow-md transition-shadow">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-3 bg-purple-100 text-purple-600 rounded-lg">
+                  <span className="text-lg">📂</span>
+                </div>
+                <h3 className="text-lg font-semibold text-gray-800">
+                  Kategoriler
+                </h3>
               </div>
+              <p className="text-gray-600 text-sm mb-4">
+                Markdown dosyalarınızı organize etmek için kategoriler oluşturun
+              </p>
+              <Link
+                href="/document-center"
+                className="block w-full bg-purple-600 text-white py-2 px-4 rounded-lg hover:bg-purple-700 transition-colors font-medium text-center"
+              >
+                Kategorileri Yönet
+              </Link>
+            </div>
 
-              {!selectedSessionId ? (
-                <div className="bg-yellow-50 border border-yellow-200 rounded-md p-4 mb-4">
-                  <p className="text-yellow-800">
-                    Belge eklemek için önce bir ders oturumu seçin.
-                  </p>
+            {/* View Files */}
+            <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm hover:shadow-md transition-shadow">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-3 bg-green-100 text-green-600 rounded-lg">
+                  <MarkdownIcon />
                 </div>
-              ) : (
-                <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-md">
-                  <p className="text-blue-800 text-sm">
-                    Seçili ders oturumu:{" "}
-                    <strong>
-                      {
-                        sessions.find((s) => s.session_id === selectedSessionId)
-                          ?.name
-                      }
-                    </strong>
-                  </p>
+                <h3 className="text-lg font-semibold text-gray-800">
+                  Dosyalar
+                </h3>
+              </div>
+              <p className="text-gray-600 text-sm mb-4">
+                Mevcut Markdown dosyalarınızı görüntüleyin ve yönetin
+              </p>
+              <Link
+                href="/document-center"
+                className="block w-full bg-green-600 text-white py-2 px-4 rounded-lg hover:bg-green-700 transition-colors font-medium text-center"
+              >
+                Dosyaları Görüntüle
+              </Link>
+            </div>
+          </div>
+
+          {/* Migration Notice */}
+          <div className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-xl p-6">
+            <div className="flex items-start gap-3">
+              <span className="text-2xl">🚀</span>
+              <div>
+                <h3 className="text-lg font-semibold text-amber-800 mb-2">
+                  Geliştirilmiş Belge Yönetimi
+                </h3>
+                <p className="text-amber-700 mb-3">
+                  Belge merkezi, daha iyi performans ve kullanılabilirlik için
+                  tamamen yeniden tasarlandı. Tüm mevcut özellikler korunurken,
+                  yeni özellikler de eklendi:
+                </p>
+                <ul className="text-sm text-amber-700 space-y-1 mb-4">
+                  <li>• Daha hızlı dosya yükleme ve işleme</li>
+                  <li>• Gelişmiş kategori yönetimi</li>
+                  <li>• Daha iyi dosya görüntüleme ve filtreleme</li>
+                  <li>• Responsive tasarım ve mobil uyumluluk</li>
+                  <li>• Sürükle-bırak dosya yükleme</li>
+                </ul>
+                <div className="text-sm text-amber-600 font-medium">
+                  Tüm verileriniz güvende - hiçbir şey kaybolmadı!
                 </div>
-              )}
-
-              {markdownLoading ? (
-                <div className="text-center py-12 animate-fade-in">
-                  <div className="relative mx-auto w-16 h-16 mb-4">
-                    <div className="absolute inset-0 rounded-full border-4 border-muted"></div>
-                    <div className="absolute inset-0 rounded-full border-4 border-primary border-t-transparent animate-spin"></div>
-                  </div>
-                  <p className="text-muted-foreground animate-pulse-soft">
-                    Markdown dosyaları yükleniyor...
-                  </p>
-                  <div className="flex justify-center mt-3 space-x-1">
-                    <div
-                      className="w-1 h-1 bg-primary rounded-full animate-bounce"
-                      style={{ animationDelay: "0ms" }}
-                    ></div>
-                    <div
-                      className="w-1 h-1 bg-primary rounded-full animate-bounce"
-                      style={{ animationDelay: "150ms" }}
-                    ></div>
-                    <div
-                      className="w-1 h-1 bg-primary rounded-full animate-bounce"
-                      style={{ animationDelay: "300ms" }}
-                    ></div>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="space-y-4">
-                    <div>
-                      <div className="flex items-center justify-between mb-3">
-                        <label className="label">
-                          Mevcut Markdown Dosyaları ({markdownFiles.length})
-                        </label>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={async () => {
-                              if (selectedMarkdownFiles.length === 0) return;
-                              if (
-                                !confirm(
-                                  `${selectedMarkdownFiles.length} dosyayı silmek istiyor musunuz?`
-                                )
-                              )
-                                return;
-                              try {
-                                for (const f of selectedMarkdownFiles) {
-                                  await deleteMarkdownFile(f);
-                                }
-                                setSelectedMarkdownFiles([]);
-                                await fetchMarkdownFiles();
-                              } catch (e: any) {
-                                setError(
-                                  e.message || "Seçili dosyalar silinemedi"
-                                );
-                              }
-                            }}
-                            className="text-sm text-red-600 hover:text-red-800"
-                            disabled={selectedMarkdownFiles.length === 0}
-                            title="Seçili dosyaları sil"
-                          >
-                            🗑️ Seçilileri Sil
-                          </button>
-                          <button
-                            onClick={async () => {
-                              if (
-                                !confirm(
-                                  "Tüm markdown dosyalarını silmek istiyor musunuz?"
-                                )
-                              )
-                                return;
-                              try {
-                                await deleteAllMarkdownFiles();
-                                setSelectedMarkdownFiles([]);
-                                await fetchMarkdownFiles();
-                              } catch (e: any) {
-                                setError(
-                                  e.message || "Tüm dosyalar silinemedi"
-                                );
-                              }
-                            }}
-                            className="text-sm text-red-600 hover:text-red-800"
-                            title="Tümünü sil"
-                          >
-                            🧹 Tümünü Sil
-                          </button>
-                          <button
-                            onClick={fetchMarkdownFiles}
-                            className="text-sm text-primary-600 hover:text-primary-800"
-                          >
-                            🔄 Yenile
-                          </button>
-                        </div>
-                      </div>
-
-                      {markdownFiles.length === 0 ? (
-                        <div className="text-center py-6 text-gray-500 border border-gray-200 rounded-md">
-                          Henüz markdown dosyası bulunmuyor.
-                        </div>
-                      ) : (
-                        <>
-                          <div className="max-h-[600px] overflow-y-auto border border-gray-200 rounded-md bg-white">
-                            {markdownFiles
-                              .slice(
-                                (markdownPage - 1) * MARKDOWN_FILES_PER_PAGE,
-                                markdownPage * MARKDOWN_FILES_PER_PAGE
-                              )
-                              .map((filename) => (
-                                <div
-                                  key={filename}
-                                  className="flex items-center p-3 hover:bg-gray-50 border-b border-gray-100 last:border-b-0"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedMarkdownFiles.includes(
-                                      filename
-                                    )}
-                                    onChange={() =>
-                                      handleMarkdownFileToggle(filename)
-                                    }
-                                    className="mr-3 h-4 w-4 text-primary-600 rounded border-gray-300 focus:ring-primary-500"
-                                  />
-                                  <div className="flex-1">
-                                    <div className="text-sm font-medium text-gray-900">
-                                      {filename.replace(".md", "")}
-                                    </div>
-                                    <div className="text-xs text-gray-500">
-                                      {filename}
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <button
-                                      onClick={() =>
-                                        handleViewMarkdownFile(filename)
-                                      }
-                                      className="px-3 py-1 text-xs bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-md transition-colors flex items-center gap-1"
-                                      title="Dosyayı görüntüle"
-                                    >
-                                      <svg
-                                        className="w-3 h-3"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        viewBox="0 0 24 24"
-                                      >
-                                        <path
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          strokeWidth="2"
-                                          d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-                                        />
-                                        <path
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          strokeWidth="2"
-                                          d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
-                                        />
-                                      </svg>
-                                      Görüntüle
-                                    </button>
-                                    <button
-                                      onClick={() =>
-                                        handleDownloadMarkdownFile(filename)
-                                      }
-                                      className="px-3 py-1 text-xs bg-green-100 text-green-700 hover:bg-green-200 rounded-md transition-colors flex items-center gap-1"
-                                      title="Dosyayı indir"
-                                    >
-                                      <svg
-                                        className="w-3 h-3"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        viewBox="0 0 24 24"
-                                      >
-                                        <path
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          strokeWidth="2"
-                                          d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                                        />
-                                      </svg>
-                                      İndir
-                                    </button>
-                                    <button
-                                      onClick={async () => {
-                                        if (
-                                          !confirm(
-                                            `'${filename}' dosyasını silmek istiyor musunuz?`
-                                          )
-                                        )
-                                          return;
-                                        try {
-                                          await deleteMarkdownFile(filename);
-                                          setSelectedMarkdownFiles((prev) =>
-                                            prev.filter((f) => f !== filename)
-                                          );
-                                          await fetchMarkdownFiles();
-                                        } catch (e: any) {
-                                          setError(e.message || "Silinemedi");
-                                        }
-                                      }}
-                                      className="px-3 py-1 text-xs bg-red-100 text-red-700 hover:bg-red-200 rounded-md transition-colors"
-                                      title="Dosyayı sil"
-                                    >
-                                      Sil
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                          </div>
-
-                          {/* Pagination */}
-                          {markdownFiles.length > MARKDOWN_FILES_PER_PAGE && (
-                            <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-200">
-                              <button
-                                onClick={() =>
-                                  setMarkdownPage((p) => Math.max(1, p - 1))
-                                }
-                                disabled={markdownPage === 1}
-                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                              >
-                                Önceki
-                              </button>
-                              <span className="text-sm text-gray-700">
-                                Sayfa {markdownPage} /{" "}
-                                {Math.ceil(
-                                  markdownFiles.length / MARKDOWN_FILES_PER_PAGE
-                                )}{" "}
-                                <span className="text-gray-500">
-                                  (Toplam {markdownFiles.length} dosya)
-                                </span>
-                              </span>
-                              <button
-                                onClick={() =>
-                                  setMarkdownPage((p) =>
-                                    Math.min(
-                                      Math.ceil(
-                                        markdownFiles.length /
-                                          MARKDOWN_FILES_PER_PAGE
-                                      ),
-                                      p + 1
-                                    )
-                                  )
-                                }
-                                disabled={
-                                  markdownPage >=
-                                  Math.ceil(
-                                    markdownFiles.length /
-                                      MARKDOWN_FILES_PER_PAGE
-                                  )
-                                }
-                                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                              >
-                                Sonraki
-                              </button>
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {uploadStats && (
-                <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-md">
-                  <h3 className="text-green-800 font-medium">
-                    Dokümanlar Başarıyla Eklendi!
-                  </h3>
-                  <div className="mt-2 text-sm text-green-700">
-                    <p>
-                      İşlenen dosya sayısı:{" "}
-                      {uploadStats.processed_count || "N/A"}
-                    </p>
-                    <p>
-                      Oluşturulan parça sayısı:{" "}
-                      {uploadStats.chunks_created || "N/A"}
-                    </p>
-                    {uploadStats.message && <p>Mesaj: {uploadStats.message}</p>}
-                  </div>
-                </div>
-              )}
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {activeTab === "query" && (
+      {false && (
         <div className="space-y-8">
           {/* Header Section */}
           <div className="bg-gradient-to-br from-blue-50 via-white to-indigo-50 rounded-2xl p-8 border border-blue-100">
@@ -3243,7 +3532,7 @@ export default function HomePage() {
                     userRole === "student" && (
                       <div className="mb-6">
                         <RecommendationPanel
-                          userId={user.username}
+                          userId={user?.username || "anonymous"}
                           sessionId={selectedSessionId}
                           onQuestionClick={(question) => {
                             setQuery(question);
@@ -3711,31 +4000,33 @@ export default function HomePage() {
                                             </span>
                                           </div>
                                           <div className="flex flex-wrap gap-2">
-                                            {chat.suggestions.map((s, i) => (
-                                              <button
-                                                key={i}
-                                                onClick={() =>
-                                                  handleSuggestionClick(s)
-                                                }
-                                                className="group px-3 py-2 text-sm bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-700 border border-indigo-200 rounded-lg hover:from-indigo-100 hover:to-purple-100 hover:border-indigo-300 hover:shadow-md transition-all duration-200 flex items-center gap-2"
-                                                title="Bu soruyu sor"
-                                              >
-                                                <svg
-                                                  className="w-4 h-4 text-indigo-500 group-hover:text-indigo-600"
-                                                  fill="none"
-                                                  stroke="currentColor"
-                                                  viewBox="0 0 24 24"
+                                            {chat.suggestions.map(
+                                              (s: string, i: number) => (
+                                                <button
+                                                  key={i}
+                                                  onClick={() =>
+                                                    handleSuggestionClick(s)
+                                                  }
+                                                  className="group px-3 py-2 text-sm bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-700 border border-indigo-200 rounded-lg hover:from-indigo-100 hover:to-purple-100 hover:border-indigo-300 hover:shadow-md transition-all duration-200 flex items-center gap-2"
+                                                  title="Bu soruyu sor"
                                                 >
-                                                  <path
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                    strokeWidth={2}
-                                                    d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                                                  />
-                                                </svg>
-                                                <span>{s}</span>
-                                              </button>
-                                            ))}
+                                                  <svg
+                                                    className="w-4 h-4 text-indigo-500 group-hover:text-indigo-600"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    viewBox="0 0 24 24"
+                                                  >
+                                                    <path
+                                                      strokeLinecap="round"
+                                                      strokeLinejoin="round"
+                                                      strokeWidth={2}
+                                                      d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                                                    />
+                                                  </svg>
+                                                  <span>{s}</span>
+                                                </button>
+                                              )
+                                            )}
                                           </div>
                                         </div>
                                       )}
@@ -3765,220 +4056,228 @@ export default function HomePage() {
                                     {/* Tab System for Sources */}
                                     <div className="bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
                                       <div className="flex flex-wrap border-b border-gray-200 bg-white">
-                                        {filteredSources.map((source, idx) => (
-                                          <button
-                                            key={idx}
-                                            className="px-3 py-2 text-xs font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 border-r border-gray-200 last:border-r-0 transition-colors flex items-center gap-2"
-                                            onClick={(e) => {
-                                              const panel =
-                                                e.currentTarget.parentElement
-                                                  ?.nextElementSibling
-                                                  ?.children[idx];
-                                              const allPanels =
-                                                e.currentTarget.parentElement
-                                                  ?.nextElementSibling
-                                                  ?.children;
-                                              const allTabs =
-                                                e.currentTarget.parentElement
-                                                  ?.children;
-
-                                              // Hide all panels and deactivate tabs
-                                              if (allPanels && allTabs) {
-                                                for (
-                                                  let i = 0;
-                                                  i < allPanels.length;
-                                                  i++
-                                                ) {
-                                                  allPanels[i].classList.add(
-                                                    "hidden"
-                                                  );
-                                                  allTabs[i].classList.remove(
-                                                    "bg-blue-100",
-                                                    "text-blue-700"
-                                                  );
-                                                }
-                                              }
-
-                                              // Show selected panel and activate tab
-                                              panel?.classList.remove("hidden");
-                                              e.currentTarget.classList.add(
-                                                "bg-blue-100",
-                                                "text-blue-700"
-                                              );
-                                            }}
-                                          >
-                                            <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full text-xs font-bold">
-                                              {idx + 1}
-                                            </span>
-                                            <span
-                                              className="truncate max-w-20 cursor-pointer hover:text-blue-700 underline"
+                                        {filteredSources.map(
+                                          (source: any, idx: number) => (
+                                            <button
+                                              key={idx}
+                                              className="px-3 py-2 text-xs font-medium text-gray-700 hover:text-blue-600 hover:bg-blue-50 border-r border-gray-200 last:border-r-0 transition-colors flex items-center gap-2"
                                               onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleOpenSourceModal(source);
+                                                const panel =
+                                                  e.currentTarget.parentElement
+                                                    ?.nextElementSibling
+                                                    ?.children[idx];
+                                                const allPanels =
+                                                  e.currentTarget.parentElement
+                                                    ?.nextElementSibling
+                                                    ?.children;
+                                                const allTabs =
+                                                  e.currentTarget.parentElement
+                                                    ?.children;
+
+                                                // Hide all panels and deactivate tabs
+                                                if (allPanels && allTabs) {
+                                                  for (
+                                                    let i = 0;
+                                                    i < allPanels.length;
+                                                    i++
+                                                  ) {
+                                                    allPanels[i].classList.add(
+                                                      "hidden"
+                                                    );
+                                                    allTabs[i].classList.remove(
+                                                      "bg-blue-100",
+                                                      "text-blue-700"
+                                                    );
+                                                  }
+                                                }
+
+                                                // Show selected panel and activate tab
+                                                panel?.classList.remove(
+                                                  "hidden"
+                                                );
+                                                e.currentTarget.classList.add(
+                                                  "bg-blue-100",
+                                                  "text-blue-700"
+                                                );
                                               }}
-                                              title="Kaynağı detaylı görüntülemek için tıklayın"
                                             >
-                                              {source.metadata?.source_file?.replace(
-                                                ".md",
-                                                ""
-                                              ) ||
-                                                source.metadata?.filename?.replace(
+                                              <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full text-xs font-bold">
+                                                {idx + 1}
+                                              </span>
+                                              <span
+                                                className="truncate max-w-20 cursor-pointer hover:text-blue-700 underline"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleOpenSourceModal(source);
+                                                }}
+                                                title="Kaynağı detaylı görüntülemek için tıklayın"
+                                              >
+                                                {source.metadata?.source_file?.replace(
                                                   ".md",
                                                   ""
                                                 ) ||
-                                                `Kaynak ${idx + 1}`}
-                                            </span>
-                                            <span className="flex items-center gap-1">
-                                              {source.crag_score != null ? (
-                                                <>
-                                                  <span className="text-xs text-gray-500">
-                                                    DYSK:
-                                                  </span>
-                                                  <span className="text-indigo-700 font-bold">
+                                                  source.metadata?.filename?.replace(
+                                                    ".md",
+                                                    ""
+                                                  ) ||
+                                                  `Kaynak ${idx + 1}`}
+                                              </span>
+                                              <span className="flex items-center gap-1">
+                                                {source.crag_score != null ? (
+                                                  <>
+                                                    <span className="text-xs text-gray-500">
+                                                      DYSK:
+                                                    </span>
+                                                    <span className="text-indigo-700 font-bold">
+                                                      {Math.round(
+                                                        source.crag_score * 100
+                                                      )}
+                                                      %
+                                                    </span>
+                                                  </>
+                                                ) : (
+                                                  <span className="text-green-600 font-bold">
                                                     {Math.round(
-                                                      source.crag_score * 100
+                                                      source.score * 100
                                                     )}
                                                     %
                                                   </span>
-                                                </>
-                                              ) : (
-                                                <span className="text-green-600 font-bold">
-                                                  {Math.round(
-                                                    source.score * 100
-                                                  )}
-                                                  %
-                                                </span>
-                                              )}
-                                            </span>
-                                          </button>
-                                        ))}
+                                                )}
+                                              </span>
+                                            </button>
+                                          )
+                                        )}
                                       </div>
 
                                       {/* Tab Panels */}
                                       <div className="relative">
-                                        {filteredSources.map((source, idx) => (
-                                          <div
-                                            key={idx}
-                                            className={`p-3 ${
-                                              idx !== 0 ? "hidden" : ""
-                                            }`}
-                                          >
-                                            <div className="space-y-2">
-                                              <div className="flex items-center justify-between">
-                                                <div
-                                                  className="text-xs font-semibold text-blue-700 cursor-pointer hover:text-blue-900 hover:underline"
-                                                  onClick={() =>
-                                                    handleOpenSourceModal(
-                                                      source
-                                                    )
-                                                  }
-                                                  title="Kaynağı detaylı görüntülemek için tıklayın"
-                                                >
-                                                  📄{" "}
-                                                  {source.metadata
-                                                    ?.source_file ||
-                                                    source.metadata?.filename ||
-                                                    "Belge"}
-                                                </div>
-                                                <div className="flex items-center gap-3">
-                                                  {source.crag_score !=
-                                                    null && (
-                                                    <div className="flex items-center gap-1">
-                                                      <span className="text-xs text-gray-500">
-                                                        DYSK:
-                                                      </span>
-                                                      <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                                                        <div
-                                                          className="h-full bg-gradient-to-r from-indigo-400 to-purple-500 rounded-full"
-                                                          style={{
-                                                            width: `${
-                                                              source.crag_score *
-                                                              100
-                                                            }%`,
-                                                          }}
-                                                        ></div>
-                                                      </div>
-                                                      <span className="text-xs text-indigo-700 font-bold">
-                                                        {Math.round(
-                                                          source.crag_score *
-                                                            100
-                                                        )}
-                                                        %
-                                                      </span>
-                                                    </div>
-                                                  )}
-                                                  <div className="flex items-center gap-1">
-                                                    <span className="text-xs text-gray-500">
-                                                      Benzerlik:
-                                                    </span>
-                                                    <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                                                      <div
-                                                        className="h-full bg-gradient-to-r from-green-400 to-blue-500 rounded-full"
-                                                        style={{
-                                                          width: `${
-                                                            source.score * 100
-                                                          }%`,
-                                                        }}
-                                                      ></div>
-                                                    </div>
-                                                    <span className="text-xs text-green-600 font-bold">
-                                                      {Math.round(
-                                                        source.score * 100
-                                                      )}
-                                                      %
-                                                    </span>
-                                                  </div>
-                                                </div>
-                                              </div>
-
-                                              {(source.metadata?.chunk_index ||
-                                                source.metadata
-                                                  ?.chunk_title) && (
-                                                <div className="text-xs text-gray-600">
-                                                  📍 Bölüm{" "}
-                                                  {source.metadata
-                                                    ?.chunk_index || "?"}{" "}
-                                                  /{" "}
-                                                  {source.metadata
-                                                    ?.total_chunks || "?"}
-                                                  {source.metadata
-                                                    ?.chunk_title && (
-                                                    <div className="font-medium text-gray-700 mt-1">
-                                                      🏷️{" "}
-                                                      {
-                                                        source.metadata
-                                                          .chunk_title
-                                                      }
-                                                    </div>
-                                                  )}
-                                                </div>
-                                              )}
-
-                                              {source.content && (
-                                                <div className="text-xs text-gray-700 bg-white p-2 rounded border-l-2 border-blue-300">
-                                                  <div className="line-clamp-3">
-                                                    "
-                                                    {source.content.substring(
-                                                      0,
-                                                      150
-                                                    )}
-                                                    ..."
-                                                  </div>
-                                                  <button
+                                        {filteredSources.map(
+                                          (source: any, idx: number) => (
+                                            <div
+                                              key={idx}
+                                              className={`p-3 ${
+                                                idx !== 0 ? "hidden" : ""
+                                              }`}
+                                            >
+                                              <div className="space-y-2">
+                                                <div className="flex items-center justify-between">
+                                                  <div
+                                                    className="text-xs font-semibold text-blue-700 cursor-pointer hover:text-blue-900 hover:underline"
                                                     onClick={() =>
                                                       handleOpenSourceModal(
                                                         source
                                                       )
                                                     }
-                                                    className="mt-2 text-xs text-blue-600 hover:text-blue-800 font-medium"
+                                                    title="Kaynağı detaylı görüntülemek için tıklayın"
                                                   >
-                                                    Tam içeriği görüntüle →
-                                                  </button>
+                                                    📄{" "}
+                                                    {source.metadata
+                                                      ?.source_file ||
+                                                      source.metadata
+                                                        ?.filename ||
+                                                      "Belge"}
+                                                  </div>
+                                                  <div className="flex items-center gap-3">
+                                                    {source.crag_score !=
+                                                      null && (
+                                                      <div className="flex items-center gap-1">
+                                                        <span className="text-xs text-gray-500">
+                                                          DYSK:
+                                                        </span>
+                                                        <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                                                          <div
+                                                            className="h-full bg-gradient-to-r from-indigo-400 to-purple-500 rounded-full"
+                                                            style={{
+                                                              width: `${
+                                                                source.crag_score *
+                                                                100
+                                                              }%`,
+                                                            }}
+                                                          ></div>
+                                                        </div>
+                                                        <span className="text-xs text-indigo-700 font-bold">
+                                                          {Math.round(
+                                                            source.crag_score *
+                                                              100
+                                                          )}
+                                                          %
+                                                        </span>
+                                                      </div>
+                                                    )}
+                                                    <div className="flex items-center gap-1">
+                                                      <span className="text-xs text-gray-500">
+                                                        Benzerlik:
+                                                      </span>
+                                                      <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                                                        <div
+                                                          className="h-full bg-gradient-to-r from-green-400 to-blue-500 rounded-full"
+                                                          style={{
+                                                            width: `${
+                                                              source.score * 100
+                                                            }%`,
+                                                          }}
+                                                        ></div>
+                                                      </div>
+                                                      <span className="text-xs text-green-600 font-bold">
+                                                        {Math.round(
+                                                          source.score * 100
+                                                        )}
+                                                        %
+                                                      </span>
+                                                    </div>
+                                                  </div>
                                                 </div>
-                                              )}
+
+                                                {(source.metadata
+                                                  ?.chunk_index ||
+                                                  source.metadata
+                                                    ?.chunk_title) && (
+                                                  <div className="text-xs text-gray-600">
+                                                    📍 Bölüm{" "}
+                                                    {source.metadata
+                                                      ?.chunk_index || "?"}{" "}
+                                                    /{" "}
+                                                    {source.metadata
+                                                      ?.total_chunks || "?"}
+                                                    {source.metadata
+                                                      ?.chunk_title && (
+                                                      <div className="font-medium text-gray-700 mt-1">
+                                                        🏷️{" "}
+                                                        {
+                                                          source.metadata
+                                                            .chunk_title
+                                                        }
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                )}
+
+                                                {source.content && (
+                                                  <div className="text-xs text-gray-700 bg-white p-2 rounded border-l-2 border-blue-300">
+                                                    <div className="line-clamp-3">
+                                                      "
+                                                      {source.content.substring(
+                                                        0,
+                                                        150
+                                                      )}
+                                                      ..."
+                                                    </div>
+                                                    <button
+                                                      onClick={() =>
+                                                        handleOpenSourceModal(
+                                                          source
+                                                        )
+                                                      }
+                                                      className="mt-2 text-xs text-blue-600 hover:text-blue-800 font-medium"
+                                                    >
+                                                      Tam içeriği görüntüle →
+                                                    </button>
+                                                  </div>
+                                                )}
+                                              </div>
                                             </div>
-                                          </div>
-                                        ))}
+                                          )
+                                        )}
                                       </div>
                                     </div>
 
@@ -4048,6 +4347,237 @@ export default function HomePage() {
         </div>
       )}
 
+      {activeTab === "query" && (
+        <div className="space-y-8">
+          {/* Header Section */}
+          <div className="bg-gradient-to-br from-blue-50 via-white to-indigo-50 rounded-2xl p-8 border border-blue-100">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-4">
+                <div className="p-4 bg-gradient-to-br from-blue-500 to-indigo-600 text-white rounded-2xl shadow-lg">
+                  <span className="text-3xl">🎓</span>
+                </div>
+                <div>
+                  <h2 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+                    RAG Temelli Eğitim Asistanı
+                  </h2>
+                  <p className="text-gray-600 mt-1">
+                    Ders materyalleri hakkında sorularınızı sorun
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Session Selection */}
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden p-6">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-3">
+                🎯 Ders Oturumu Seçin
+              </label>
+              <div className="flex items-center gap-3">
+                <select
+                  value={selectedSessionId}
+                  onChange={(e) => setSelectedSessionId(e.target.value)}
+                  className="flex-1 px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all bg-white shadow-sm"
+                >
+                  <option value="">Ders Oturumu Seçin</option>
+                  {sessions
+                    .filter((s) => s.status === "active")
+                    .map((session) => (
+                      <option
+                        key={session.session_id}
+                        value={session.session_id}
+                      >
+                        📚 {session.name} ({session.document_count} doküman)
+                      </option>
+                    ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Chat Interface - Use existing chat code from dashboard */}
+          {(selectedSessionId || useDirectLLM) && (
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
+              <div className="p-8">
+                {/* Query Input */}
+                <form
+                  onSubmit={handleQuery}
+                  className="bg-white rounded-xl border border-gray-200 shadow-lg p-4 mb-6"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 relative">
+                      <input
+                        type="text"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        placeholder="Ders materyalleri hakkında sorunuzu yazın..."
+                        className="w-full p-4 pr-12 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 text-gray-800 placeholder-gray-400"
+                        disabled={
+                          isQuerying ||
+                          (!sessionRagSettings?.model && !selectedQueryModel)
+                        }
+                      />
+                      <div className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400">
+                        💭
+                      </div>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={
+                        isQuerying ||
+                        !query.trim() ||
+                        (!sessionRagSettings?.model && !selectedQueryModel)
+                      }
+                      className="px-6 py-4 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-xl hover:from-blue-600 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 transform hover:scale-105 active:scale-95 shadow-lg font-medium"
+                    >
+                      {isQuerying ? (
+                        <>
+                          <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin inline-block mr-2"></div>
+                          <span>Düşünüyor...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-lg">🚀</span>
+                          <span>Sor</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </form>
+
+                {/* Chat History - Use existing chat history rendering */}
+                <div
+                  id="chat-history-container"
+                  className="relative min-h-[50vh] max-h-[65vh] overflow-y-auto bg-gradient-to-b from-indigo-50/40 to-white rounded-xl border border-gray-200 p-3 sm:p-4 space-y-3 sm:space-y-4 flex flex-col"
+                >
+                  {chatHistory.length === 0 && (
+                    <div className="text-center py-12">
+                      <div className="text-6xl mb-4">🎓</div>
+                      <h3 className="text-xl font-semibold text-gray-700 mb-2">
+                        Eğitim Asistanınıza Hoş Geldiniz!
+                      </h3>
+                      <p className="text-gray-500 max-w-md mx-auto">
+                        Ders materyalleriniz hakkında soru sorarak öğrenme
+                        sürecinizi destekleyin.
+                      </p>
+                    </div>
+                  )}
+                  {chatHistory
+                    .slice()
+                    .reverse()
+                    .map((chat, index) => (
+                      <div key={index} className="space-y-3">
+                        {/* Teacher Question */}
+                        <div className="w-full">
+                          <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border-l-4 border-blue-500 p-4 rounded-r-lg shadow-sm">
+                            <div className="flex items-start gap-3">
+                              <span className="text-xl">👨‍🏫</span>
+                              <div className="flex-1">
+                                <div className="flex items-center justify-between mb-1">
+                                  <p className="font-medium text-sm text-blue-700">
+                                    Soru
+                                  </p>
+                                  {chat.timestamp && (
+                                    <p className="text-xs text-gray-500">
+                                      {formatTimestamp(chat.timestamp)}
+                                    </p>
+                                  )}
+                                </div>
+                                <p className="text-gray-800">{chat.user}</p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        {/* AI Assistant Response */}
+                        <div className="w-full">
+                          <div className="bg-gradient-to-br from-white to-gray-50 border-2 border-indigo-100 p-5 rounded-xl shadow-md hover:shadow-lg transition-shadow">
+                            {chat.bot === "..." ? (
+                              <div className="py-6">
+                                <div className="flex items-center gap-4 mb-4">
+                                  <div className="relative">
+                                    <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center animate-pulse">
+                                      <span className="text-2xl">🤖</span>
+                                    </div>
+                                  </div>
+                                  <div className="flex-1">
+                                    <span className="text-sm font-medium text-gray-700">
+                                      Cevap hazırlanıyor...
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex items-start gap-4">
+                                <div className="flex-shrink-0 w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white text-lg shadow-md">
+                                  🎓
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="prose prose-base max-w-none text-gray-800 leading-relaxed">
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                      {chat.bot}
+                                    </ReactMarkdown>
+                                  </div>
+
+                                  {/* Sources */}
+                                  {chat.sources && chat.sources.length > 0 && (
+                                    <div className="mt-6 pt-4 border-t border-gray-100">
+                                      <div className="flex flex-wrap gap-2">
+                                        {chat.sources.map((source: any, i: number) => (
+                                          <button
+                                            key={i}
+                                            onClick={() => handleOpenSourceModal(source)}
+                                            className="px-3 py-2 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg border border-gray-200 transition-all"
+                                          >
+                                            {source.source || source.metadata?.source_file || `Kaynak ${i + 1}`}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Suggestions */}
+                                  {Array.isArray(chat.suggestions) && chat.suggestions.length > 0 && (
+                                    <div className="mt-6 pt-4 border-t border-gray-100">
+                                      <div className="flex flex-wrap gap-2">
+                                        {chat.suggestions.map((suggestion: string, i: number) => (
+                                          <button
+                                            key={i}
+                                            onClick={() => handleSuggestionClick(suggestion)}
+                                            className="px-4 py-3 text-sm bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-full hover:shadow-md transition-all min-h-[44px]"
+                                          >
+                                            {suggestion}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {!selectedSessionId && !useDirectLLM && (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-6 text-center">
+              <div className="text-4xl mb-3">⚠️</div>
+              <h3 className="text-lg font-semibold text-yellow-800 mb-2">
+                Ders Oturumu Seçin
+              </h3>
+              <p className="text-yellow-700">
+                Soru sormak için önce yukarıdan bir ders oturumu seçin.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       {activeTab === "analytics" && (
         <div className="space-y-6">
           {selectedSessionId ? (
@@ -4064,6 +4594,104 @@ export default function HomePage() {
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {activeTab === "modules" && (
+        <div className="space-y-8">
+          {/* Header Section */}
+          <div className="bg-gradient-to-br from-indigo-50 via-white to-purple-50 rounded-2xl p-8 border border-indigo-100">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-4">
+                <div className="p-4 bg-gradient-to-br from-indigo-500 to-purple-600 text-white rounded-2xl shadow-lg">
+                  <span className="text-3xl">🧩</span>
+                </div>
+                <div>
+                  <h2 className="text-3xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+                    Modül Sistemi
+                  </h2>
+                  <p className="text-gray-600 mt-1">
+                    Konuları modüllerle organize edin ve öğrenme yolculuğunu
+                    yapılandırın
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Info Card */}
+            <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 flex items-start gap-3">
+              <span className="text-2xl">💡</span>
+              <div className="flex-1">
+                <span className="text-sm font-medium text-blue-800 dark:text-blue-200">
+                  Nasıl Çalışır?{" "}
+                </span>
+                <span className="text-sm text-blue-700 dark:text-blue-300">
+                  Ders oturumlarındaki konuları LLM desteğiyle Türkiye MEB
+                  müfredatına uygun modüllere ayırın. Bu sistem konuları
+                  pedagojik sıraya göre organize ederek öğrenme sürecini
+                  optimize eder.
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Module Management Tabs */}
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
+            <div className="bg-gradient-to-r from-gray-50 to-gray-100 px-8 py-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold text-gray-800">
+                  Modül Yönetimi
+                </h2>
+                <div className="flex items-center gap-2 text-sm text-gray-600">
+                  <span className="inline-flex items-center gap-1">
+                    <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                    <span>LLM Aktif</span>
+                  </span>
+                  <span className="text-gray-400">•</span>
+                  <span>Türkiye MEB Müfredatı</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-8">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                {/* Module Extraction Panel */}
+                <div className="lg:col-span-2">
+                  <ModuleExtractionPanel sessionId={selectedSessionId} />
+                </div>
+
+                {/* Module Management Dashboard */}
+                <div className="lg:col-span-1">
+                  <ModuleManagementDashboard
+                    sessionId={selectedSessionId}
+                    modules={modules}
+                    onModuleUpdate={async (moduleId, updates) => {
+                      // Refresh modules after update
+                      await fetchModules(selectedSessionId);
+                    }}
+                    onModuleDelete={async (moduleId) => {
+                      // Refresh modules after delete
+                      await fetchModules(selectedSessionId);
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Progress Monitoring Dashboard */}
+              <div className="mt-8">
+                <ModuleProgressMonitoringDashboard
+                  sessionId={selectedSessionId}
+                  modules={modules}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "query" && (
+        <div className="space-y-6 -mt-4">
+          <EducationAssistantContent />
         </div>
       )}
 
@@ -4737,10 +5365,118 @@ export default function HomePage() {
               setError(e.message || "Geri bildirim gönderilemedi");
             }
           }}
-          interactionId={selectedInteractionForFeedback.interactionId}
+          interactionId={parseInt(selectedInteractionForFeedback.interactionId)}
           query={selectedInteractionForFeedback.query}
           answer={selectedInteractionForFeedback.answer}
         />
+      )}
+
+      {/* Category Management Modal */}
+      {isCategoryModalOpen && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+          onClick={() => setIsCategoryModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6 pb-0">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-bold text-gray-900">
+                  Markdown Kategorileri
+                </h3>
+                <button
+                  onClick={() => setIsCategoryModalOpen(false)}
+                  className="text-gray-500 hover:text-gray-700"
+                >
+                  <svg
+                    className="w-6 h-6"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Add New Category */}
+              <div className="flex gap-2 mb-6">
+                <input
+                  type="text"
+                  value={newCategoryName}
+                  onChange={(e) => setNewCategoryName(e.target.value)}
+                  placeholder="Yeni kategori adı"
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  onKeyDown={(e) => e.key === "Enter" && handleCreateCategory()}
+                />
+                <button
+                  onClick={handleCreateCategory}
+                  disabled={!newCategoryName.trim() || isCategoryLoading}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isCategoryLoading ? "Ekleniyor..." : "Ekle"}
+                </button>
+              </div>
+
+              {/* Categories List */}
+              <div className="max-h-[50vh] overflow-y-auto">
+                {categories.length === 0 ? (
+                  <p className="text-gray-500 text-center py-4">
+                    Henüz kategori bulunmuyor
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-gray-200">
+                    {categories.map((category) => (
+                      <li
+                        key={category.id}
+                        className="py-3 px-1 flex items-center justify-between hover:bg-gray-50"
+                      >
+                        <span className="text-gray-800">{category.name}</span>
+                        <button
+                          onClick={() => handleDeleteCategory(category.id)}
+                          disabled={isCategoryLoading}
+                          className="text-red-500 hover:text-red-700 disabled:opacity-50"
+                          title="Kategoriyi sil"
+                        >
+                          <svg
+                            className="w-5 h-5"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth="2"
+                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                            />
+                          </svg>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-gray-50 rounded-b-xl flex justify-end border-t border-gray-200">
+              <button
+                onClick={() => setIsCategoryModalOpen(false)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              >
+                Kapat
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </TeacherLayout>
   );

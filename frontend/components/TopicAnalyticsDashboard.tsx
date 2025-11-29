@@ -23,6 +23,8 @@ import {
   BookOpen,
   Brain,
   TrendingDown,
+  Layers,
+  Sparkles,
 } from "lucide-react";
 
 import TopicMasteryHeatmap from "./TopicMasteryHeatmap";
@@ -61,6 +63,11 @@ const TopicAnalyticsDashboard: React.FC<TopicAnalyticsDashboardProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState("overview");
   const [refreshing, setRefreshing] = useState(false);
+  const [moduleExtraction, setModuleExtraction] = useState({
+    loading: false,
+    results: null as any,
+    error: null as string | null,
+  });
 
   // Fetch session overview data
   const fetchOverview = async () => {
@@ -96,6 +103,92 @@ const TopicAnalyticsDashboard: React.FC<TopicAnalyticsDashboardProps> = ({
     setRefreshing(true);
     await fetchOverview();
     setRefreshing(false);
+  };
+
+  // Extract topics and organize into modules using LLM
+  const handleModuleExtraction = async () => {
+    try {
+      setModuleExtraction({ loading: true, results: null, error: null });
+
+      // First, get session topics from current analytics data
+      if (!overview) {
+        throw new Error("Önce analitik veriler yüklenmelidir");
+      }
+
+      // Extract topic names from various parts of the overview data
+      const topicNames = new Set<string>();
+
+      // From mastery overview
+      if (overview.mastery_overview?.topic_mastery) {
+        Object.keys(overview.mastery_overview.topic_mastery).forEach(
+          (topic) => {
+            topicNames.add(topic);
+          }
+        );
+      }
+
+      // From difficulty analysis
+      if (overview.difficulty_analysis?.difficulty_levels) {
+        Object.keys(overview.difficulty_analysis.difficulty_levels).forEach(
+          (topic) => {
+            topicNames.add(topic);
+          }
+        );
+      }
+
+      // From recommendations
+      const addTopicsFromArray = (arr: string[] | undefined) => {
+        if (arr) {
+          arr.forEach((topic) => topicNames.add(topic));
+        }
+      };
+
+      addTopicsFromArray(overview.recommendations?.critical_topics);
+      addTopicsFromArray(overview.recommendations?.moderate_issues);
+      addTopicsFromArray(overview.recommendations?.strong_topics);
+      addTopicsFromArray(
+        overview.recommendations?.action_items?.immediate_attention
+      );
+
+      const topics = Array.from(topicNames);
+
+      if (topics.length === 0) {
+        throw new Error("Bu oturumda henüz konu bulunmamaktadır");
+      }
+
+      // Call module extraction API
+      const response = await fetch("/api/v1/modules/extract", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          session_id: sessionId,
+          topics: topics,
+          curriculum_type: "turkey_meb",
+          subject: "auto_detect",
+          grade: "auto_detect",
+          custom_prompt: `Bu konuları Türkiye MEB müfredatına uygun eğitim modüllerine ayırın:
+${topics.map((topic, i) => `${i + 1}. ${topic}`).join("\n")}
+
+Konuları pedagojik sıraya göre ve öğrenme hedefleriyle organize edin.`,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`API hatası: ${response.status}`);
+      }
+
+      const result = await response.json();
+      setModuleExtraction({ loading: false, results: result, error: null });
+    } catch (error: any) {
+      console.error("Module extraction error:", error);
+      setModuleExtraction({
+        loading: false,
+        results: null,
+        error: error.message || "Modül çıkarımı başarısız oldu",
+      });
+    }
   };
 
   // Load data on mount
@@ -315,6 +408,158 @@ const TopicAnalyticsDashboard: React.FC<TopicAnalyticsDashboardProps> = ({
           </CardContent>
         </Card>
       </div>
+
+      {/* Module Extraction Panel */}
+      <Card className="bg-gradient-to-br from-indigo-50 to-purple-50 border-indigo-200">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-indigo-800">
+            <Sparkles className="h-5 w-5" />
+            AI Destekli Modül Çıkarımı
+          </CardTitle>
+          <CardDescription>
+            Mevcut konuları Türkiye MEB müfredatına uygun modüllere ayırın
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-col sm:flex-row items-start gap-4">
+            <div className="flex-1">
+              <p className="text-sm text-gray-600 mb-4">
+                Bu oturumdaki {executive_summary.total_topics} konu LLM
+                desteğiyle eğitim modüllerine organize edilecektir. Sistem
+                konuları pedagojik sıraya göre ve öğrenme hedefleriyle gruplar.
+              </p>
+              {moduleExtraction.results && (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
+                  <p className="text-sm text-green-800 font-medium">
+                    ✅ {moduleExtraction.results.modules?.length || 0} modül
+                    başarıyla oluşturuldu!
+                  </p>
+                </div>
+              )}
+              {moduleExtraction.error && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+                  <p className="text-sm text-red-800">
+                    ❌ {moduleExtraction.error}
+                  </p>
+                </div>
+              )}
+            </div>
+            <Button
+              onClick={handleModuleExtraction}
+              disabled={moduleExtraction.loading || !overview}
+              className="bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700"
+            >
+              {moduleExtraction.loading ? (
+                <>
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  LLM İşliyor...
+                </>
+              ) : (
+                <>
+                  <Layers className="h-4 w-4 mr-2" />
+                  Modüllere Ayır
+                </>
+              )}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Module Extraction Results */}
+      {moduleExtraction.results && (
+        <Card className="bg-white border-l-4 border-l-indigo-500">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Layers className="h-5 w-5 text-indigo-600" />
+              Çıkarılan Modüller
+            </CardTitle>
+            <CardDescription>
+              {moduleExtraction.results.modules?.length} modül •
+              {moduleExtraction.results.total_topics} konu organize edildi
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {moduleExtraction.results.modules?.map(
+                (module: any, index: number) => (
+                  <Card key={index} className="bg-gray-50">
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base text-indigo-700">
+                        📚 {module.name}
+                      </CardTitle>
+                      <CardDescription className="text-sm">
+                        {module.description}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="pt-0">
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2 text-sm">
+                          <Target className="h-3 w-3 text-green-600" />
+                          <span className="font-medium">Öğrenme Hedefi:</span>
+                        </div>
+                        <p className="text-sm text-gray-600 ml-5">
+                          {module.learning_objectives}
+                        </p>
+
+                        <div className="flex items-center gap-2 text-sm mt-3">
+                          <BookOpen className="h-3 w-3 text-blue-600" />
+                          <span className="font-medium">
+                            İçindeki Konular ({module.topics?.length || 0}):
+                          </span>
+                        </div>
+                        <div className="ml-5 flex flex-wrap gap-1">
+                          {module.topics?.map((topic: string, i: number) => (
+                            <Badge
+                              key={i}
+                              variant="secondary"
+                              className="text-xs"
+                            >
+                              {topic}
+                            </Badge>
+                          ))}
+                        </div>
+
+                        {module.prerequisite_topics?.length > 0 && (
+                          <>
+                            <div className="flex items-center gap-2 text-sm mt-3">
+                              <AlertTriangle className="h-3 w-3 text-amber-600" />
+                              <span className="font-medium">Ön Koşullar:</span>
+                            </div>
+                            <div className="ml-5 flex flex-wrap gap-1">
+                              {module.prerequisite_topics.map(
+                                (prereq: string, i: number) => (
+                                  <Badge
+                                    key={i}
+                                    variant="outline"
+                                    className="text-xs"
+                                  >
+                                    {prereq}
+                                  </Badge>
+                                )
+                              )}
+                            </div>
+                          </>
+                        )}
+
+                        <div className="flex items-center justify-between mt-4 pt-3 border-t border-gray-200">
+                          <div className="flex items-center gap-2 text-xs text-gray-500">
+                            <span>
+                              Zorluk: {module.difficulty_level || "Orta"}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 text-xs text-gray-500">
+                            <span>Sıra: {module.order || index + 1}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Main Analytics Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">

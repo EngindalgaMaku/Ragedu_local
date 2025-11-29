@@ -9,7 +9,7 @@ from utils.logger import logger
 from config import MODEL_INFERENCER_URL
 
 
-def get_embeddings_direct(texts: List[str], embedding_model: str = "nomic-embed-text") -> List[List[float]]:
+def get_embeddings_direct(texts: List[str], embedding_model: str = "text-embedding-v4") -> List[List[float]]:
     """
     Direct embedding function for use with unified chunking system.
     Get embeddings from local model inference service (Ollama)

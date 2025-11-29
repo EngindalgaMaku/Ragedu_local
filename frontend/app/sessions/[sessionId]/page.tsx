@@ -11,6 +11,7 @@ import {
   APRAGInteraction,
   getApiUrl,
   listAvailableModels,
+  getSession,
 } from "@/lib/api";
 import TopicManagementPanel from "@/components/TopicManagementPanel";
 import SessionSettingsPanel from "@/components/SessionSettingsPanel";
@@ -41,6 +42,7 @@ import {
   Brain,
   Zap,
   Layers,
+  Database,
   ChevronRight,
 } from "lucide-react";
 
@@ -50,9 +52,8 @@ export default function SessionPage() {
   const sessionId = params.sessionId as string;
 
   // Handler for sidebar navigation
-  const handleTabChange = (
-    tab: "dashboard" | "sessions" | "upload" | "query" | "analytics"
-  ) => {
+  type TabType = "dashboard" | "sessions" | "upload" | "analytics" | "modules" | "assistant" | "query";
+  const handleTabChange = (tab: TabType) => {
     // Navigate to main page, which will handle the tab change
     router.push("/");
   };
@@ -95,14 +96,16 @@ export default function SessionPage() {
   const [interactionsLoading, setInteractionsLoading] = useState(false);
   const [showInteractions, setShowInteractions] = useState(false);
   const [apragEnabled, setApragEnabled] = useState<boolean>(false);
+  const [interactionsPage, setInteractionsPage] = useState(1);
+  const [interactionsTotal, setInteractionsTotal] = useState(0);
+  const INTERACTIONS_PER_PAGE = 10;
   const [activeTab, setActiveTab] = useState<
-    | "documents"
-    | "chunks"
-    | "topics"
-    | "interactions"
-    | "rag-settings"
-    | "session-settings"
-  >("documents");
+    "genel" | "chunks" | "topics" | "interactions" | "session-settings"
+  >("genel");
+  
+  // Batch processing job tracking
+  const [batchJobId, setBatchJobId] = useState<string | null>(null);
+  const [batchStatus, setBatchStatus] = useState<any | null>(null);
 
   // RAG Settings states
   const [availableModels, setAvailableModels] = useState<any[]>([]);
@@ -129,8 +132,7 @@ export default function SessionPage() {
   // Fetch session details
   const fetchSessionDetails = async () => {
     try {
-      const sessions = await listSessions();
-      const currentSession = sessions.find((s) => s.session_id === sessionId);
+      const currentSession = await getSession(sessionId);
       if (currentSession) {
         setSession(currentSession);
       } else {
@@ -178,7 +180,19 @@ export default function SessionPage() {
 
   // Handle modal success
   const handleModalSuccess = async (result: any) => {
-    // Defensive programming: ensure we have valid values to prevent undefined display
+    // Check if this is a batch processing job
+    if (result.job_id && result.background_processing) {
+      // Batch processing started - track job
+      setBatchJobId(result.job_id);
+      setProcessing(true);
+      setSuccess(
+        `Batch işlem başlatıldı: ${result.total_files || 0} dosya arka planda işleniyor...`
+      );
+      // Polling will start via useEffect
+      return;
+    }
+    
+    // Normal completion (non-batch or completed batch)
     const processedCount = result?.processed_count ?? 0;
     const totalChunks = result?.total_chunks_added ?? 0;
 
@@ -186,6 +200,8 @@ export default function SessionPage() {
       `RAG işlemi tamamlandı! ${processedCount} dosya işlendi, ${totalChunks} parça oluşturuldu.`
     );
     setProcessing(false);
+    setBatchJobId(null);
+    setBatchStatus(null);
     // Refresh chunks after successful processing
     await fetchChunks();
     await fetchSessionDetails();
@@ -203,6 +219,102 @@ export default function SessionPage() {
     router.push("/login");
   };
 
+  // Poll batch processing status (similar to KB extraction)
+  useEffect(() => {
+    if (!batchJobId) return;
+
+    let interval: NodeJS.Timeout | null = null;
+    let consecutiveErrors = 0;
+    const MAX_CONSECUTIVE_ERRORS = 5;
+
+    const pollStatus = async () => {
+      try {
+        const res = await fetch(
+          `/api/documents/process-and-store-batch/status/${batchJobId}`
+        );
+
+        if (!res.ok) {
+          consecutiveErrors++;
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            console.error("Batch status polling failed too many times");
+            if (interval) clearInterval(interval);
+            setBatchJobId(null);
+            setProcessing(false);
+            setError(
+              "Batch işlem durumu alınamadı. İşlem arka planda devam ediyor olabilir."
+            );
+            return;
+          }
+          return;
+        }
+
+        consecutiveErrors = 0;
+        const data = await res.json();
+        setBatchStatus(data.job);
+
+        if (data.job.status === "completed" || data.job.status === "completed_with_errors" || data.job.status === "failed") {
+          if (interval) clearInterval(interval);
+          setBatchJobId(null);
+          setProcessing(false);
+
+          if (data.job.status === "completed") {
+            setSuccess(
+              `Batch işlem tamamlandı! ${data.job.processed_successfully}/${data.job.total_files} dosya işlendi, ${data.job.total_chunks} chunk oluşturuldu.`
+            );
+            await fetchChunks();
+            await fetchSessionDetails();
+          } else if (data.job.status === "completed_with_errors") {
+            setSuccess(
+              `Batch işlem tamamlandı (bazı hatalar var): ${data.job.processed_successfully}/${data.job.total_files} dosya işlendi, ${data.job.total_chunks} chunk oluşturuldu.`
+            );
+            if (data.job.errors && data.job.errors.length > 0) {
+              setError(`Hatalar: ${data.job.errors.map((e: any) => e.filename).join(", ")}`);
+            }
+            await fetchChunks();
+            await fetchSessionDetails();
+          } else {
+            setError(
+              `Batch işlem başarısız: ${data.job.errors?.[0]?.error || "Bilinmeyen hata"}`
+            );
+          }
+        } else if (data.job.status === "running") {
+          // Show progress with batch info (Batch 1, Batch 2, etc.)
+          const batchInfo = data.job.current_batch && data.job.total_batches
+            ? ` - Batch ${data.job.current_batch}/${data.job.total_batches}`
+            : "";
+          const currentFile = data.job.current_file 
+            ? ` - İşleniyor: ${data.job.current_file.split('/').pop() || data.job.current_file}`
+            : "";
+          setSuccess(
+            `Batch işlem devam ediyor... (${data.job.processed_successfully || 0}/${data.job.total_files || 0} dosya işlendi${batchInfo}${currentFile})`
+          );
+        }
+      } catch (err: any) {
+        consecutiveErrors++;
+        console.error("Batch status polling error:", err);
+
+        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+          console.error("Batch status polling failed too many times, stopping");
+          if (interval) clearInterval(interval);
+          setBatchJobId(null);
+          setProcessing(false);
+          setError(
+            "Batch işlem durumu alınamadı. İşlem arka planda devam ediyor olabilir."
+          );
+        }
+      }
+    };
+
+    interval = setInterval(pollStatus, 3000);
+
+    // Poll immediately
+    pollStatus();
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [batchJobId, sessionId]);
+
   // Fetch available embedding models
   const fetchAvailableEmbeddingModels = async () => {
     try {
@@ -215,20 +327,51 @@ export default function SessionPage() {
       }
     } catch (e: any) {
       console.error("Failed to fetch embedding models:", e);
+      // Fallback to default embedding models if API fails
+      const fallbackModels = {
+        ollama: ["nomic-embed-text", "mxbai-embed-large"],
+        huggingface: [
+          {
+            id: "sentence-transformers/all-MiniLM-L6-v2",
+            name: "all-MiniLM-L6-v2",
+            description: "Lightweight multilingual",
+            dimensions: 384,
+          },
+          {
+            id: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            name: "paraphrase-multilingual-MiniLM-L12-v2",
+            description: "Multilingual paraphrase",
+            dimensions: 384,
+          },
+        ],
+        alibaba: [],
+      };
+      setAvailableEmbeddingModels(fallbackModels);
+      // Set default from fallback
+      if (!selectedEmbeddingModel && fallbackModels.ollama.length > 0) {
+        setSelectedEmbeddingModel(fallbackModels.ollama[0]);
+      }
     } finally {
       setEmbeddingModelsLoading(false);
     }
   };
 
-  // Fetch interactions for the session
-  const fetchInteractions = async () => {
+  // Fetch interactions for the session with pagination
+  const fetchInteractions = async (page: number = 1) => {
     try {
       setInteractionsLoading(true);
-      const data = await getSessionInteractions(sessionId, 50, 0);
+      const offset = (page - 1) * INTERACTIONS_PER_PAGE;
+      const data = await getSessionInteractions(
+        sessionId,
+        INTERACTIONS_PER_PAGE,
+        offset
+      );
       setInteractions(data.interactions || []);
+      setInteractionsTotal(data.total || 0);
     } catch (e: any) {
       console.error("Failed to fetch interactions:", e);
       setInteractions([]);
+      setInteractionsTotal(0);
     } finally {
       setInteractionsLoading(false);
     }
@@ -238,9 +381,7 @@ export default function SessionPage() {
   useEffect(() => {
     const checkApragStatus = async () => {
       try {
-        const response = await fetch(
-          `${getApiUrl()}/api/aprag/settings/status`
-        );
+        const response = await fetch(`${getApiUrl()}/aprag/settings/status`);
         if (response.ok) {
           const data = await response.json();
           setApragEnabled(data.global_enabled || false);
@@ -351,16 +492,19 @@ export default function SessionPage() {
     }
   }, [sessionId, apragEnabled]);
 
-  // Fetch interactions when interactions tab becomes active
+  // Fetch interactions when interactions tab becomes active or page changes
   useEffect(() => {
-    if (
-      activeTab === "interactions" &&
-      apragEnabled &&
-      interactions.length === 0
-    ) {
-      fetchInteractions();
+    if (activeTab === "interactions" && apragEnabled) {
+      fetchInteractions(interactionsPage);
     }
-  }, [activeTab, apragEnabled]);
+  }, [activeTab, apragEnabled, interactionsPage]);
+
+  // Reset page to 1 when switching to interactions tab
+  useEffect(() => {
+    if (activeTab === "interactions" && interactionsPage !== 1) {
+      setInteractionsPage(1);
+    }
+  }, [activeTab]);
 
   // Clear messages after some time
   useEffect(() => {
@@ -438,11 +582,11 @@ export default function SessionPage() {
             <div className="border-b bg-muted/30">
               <TabsList className="h-auto w-full justify-start rounded-none bg-transparent p-2 gap-1">
                 <TabsTrigger
-                  value="documents"
+                  value="genel"
                   className="data-[state=active]:bg-background data-[state=active]:shadow-sm gap-2"
                 >
-                  <Upload className="w-4 h-4" />
-                  <span className="hidden sm:inline">Döküman </span>Yönetimi
+                  <Settings className="w-4 h-4" />
+                  <span className="hidden sm:inline">Genel </span>Ayarlar
                 </TabsTrigger>
                 <TabsTrigger
                   value="chunks"
@@ -453,13 +597,6 @@ export default function SessionPage() {
                   <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-muted rounded-full">
                     {chunks.length}
                   </span>
-                </TabsTrigger>
-                <TabsTrigger
-                  value="rag-settings"
-                  className="data-[state=active]:bg-background data-[state=active]:shadow-sm gap-2"
-                >
-                  <Settings className="w-4 h-4" />
-                  <span className="hidden sm:inline">RAG </span>Ayarları
                 </TabsTrigger>
                 <TabsTrigger
                   value="session-settings"
@@ -484,7 +621,7 @@ export default function SessionPage() {
                       <MessageSquare className="w-4 h-4" />
                       <span className="hidden sm:inline">Öğrenci </span>Sorular
                       <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-muted rounded-full">
-                        {interactions.length}
+                        {interactionsTotal || interactions.length}
                       </span>
                     </TabsTrigger>
                   </>
@@ -492,36 +629,517 @@ export default function SessionPage() {
               </TabsList>
             </div>
 
-            <TabsContent value="documents" className="mt-0">
-              <div className="p-6 space-y-4">
-                <div>
-                  <h2 className="text-base font-semibold text-foreground mb-1">
-                    Döküman Yönetimi
-                  </h2>
-                  <p className="text-sm text-muted-foreground">
-                    Markdown yükleyin
-                  </p>
-                </div>
-                <div className="flex flex-col sm:flex-row gap-2">
-                  <Button
-                    onClick={() => setShowModal(true)}
-                    disabled={processing}
-                    className="gap-2"
-                  >
-                    <Upload className="w-4 h-4" />
-                    Markdown Yükle
-                  </Button>
-                </div>
-
-                {/* Processing Status */}
-                {processing && (
-                  <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-md p-3">
-                    <div className="flex items-center gap-2 text-sm text-blue-800 dark:text-blue-200">
-                      <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-600 border-t-transparent"></div>
-                      <span>Markdown işlemi devam ediyor...</span>
+            <TabsContent value="genel" className="mt-0">
+              <div className="p-6 space-y-8">
+                {/* Header */}
+                <div className="text-center">
+                  <div className="flex items-center justify-center gap-3 mb-4">
+                    <div className="p-3 rounded-full bg-gradient-to-br from-blue-500 to-purple-600">
+                      <Settings className="w-6 h-6 text-white" />
                     </div>
                   </div>
-                )}
+                  <h2 className="text-2xl font-bold text-foreground mb-2">
+                    Genel Ayarlar
+                  </h2>
+                  <p className="text-muted-foreground max-w-2xl mx-auto">
+                    Ders oturumunuz için döküman yönetimi ve RAG ayarlarını bu
+                    bölümden yapılandırabilirsiniz
+                  </p>
+                </div>
+
+                {/* Document Management Section */}
+                <Card className="border-2 border-dashed border-primary/20 bg-gradient-to-r from-blue-50/30 to-indigo-50/30 dark:from-blue-950/10 dark:to-indigo-950/10">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-primary">
+                      <Upload className="w-5 h-5" />
+                      Döküman Yönetimi
+                    </CardTitle>
+                    <CardDescription>
+                      Markdown dosyalarınızı yükleyin ve işleyin
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex flex-col sm:flex-row gap-4 items-center">
+                      <Button
+                        onClick={() => setShowModal(true)}
+                        disabled={processing}
+                        size="lg"
+                        className="gap-2 min-w-[200px]"
+                      >
+                        <Upload className="w-4 h-4" />
+                        Markdown Yükle
+                      </Button>
+
+                      {processing && (
+                        <div className="flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400">
+                          <div className="animate-spin rounded-full h-4 w-4 border-2 border-blue-600 border-t-transparent"></div>
+                          <span>İşleme devam ediyor...</span>
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* RAG Settings Section */}
+                <Card className="border-2 border-dashed border-purple-200/50 bg-gradient-to-r from-purple-50/30 to-pink-50/30 dark:from-purple-950/10 dark:to-pink-950/10">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-purple-700 dark:text-purple-300">
+                      <Brain className="w-5 h-5" />
+                      RAG Ayarları
+                    </CardTitle>
+                    <CardDescription>
+                      Yapay zeka ve embedding modellerini yapılandırın
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      {/* AI Provider */}
+                      <div className="space-y-3">
+                        <label className="text-sm font-medium text-foreground flex items-center gap-2">
+                          <Zap className="w-4 h-4 text-primary" />
+                          AI Provider
+                        </label>
+                        <select
+                          value={selectedProvider}
+                          onChange={(e) => {
+                            setSelectedProvider(e.target.value);
+                            setSelectedQueryModel("");
+                          }}
+                          className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
+                          disabled={modelsLoading}
+                        >
+                          <option value="groq">🌐 Groq (Cloud - Hızlı)</option>
+                          <option value="alibaba">
+                            🛒 Alibaba (Cloud - Qwen)
+                          </option>
+                          <option value="deepseek">
+                            🔮 DeepSeek (Cloud - Premium)
+                          </option>
+                          <option value="openrouter">
+                            🚀 OpenRouter (Cloud - Güçlü)
+                          </option>
+                          <option value="huggingface">
+                            🤗 HuggingFace (Ücretsiz)
+                          </option>
+                          <option value="ollama">🏠 Ollama (Yerel)</option>
+                        </select>
+                      </div>
+
+                      {/* AI Model */}
+                      <div className="space-y-3">
+                        <label className="text-sm font-medium text-foreground flex items-center gap-2">
+                          <Brain className="w-4 h-4 text-primary" />
+                          AI Modeli
+                        </label>
+                        <select
+                          value={selectedQueryModel}
+                          onChange={(e) =>
+                            setSelectedQueryModel(e.target.value)
+                          }
+                          className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
+                          disabled={
+                            modelsLoading || availableModels.length === 0
+                          }
+                        >
+                          <option value="">
+                            {modelsLoading
+                              ? "Modeller yükleniyor..."
+                              : availableModels.length === 0
+                              ? "Bu provider için model bulunamadı"
+                              : "Model seçin..."}
+                          </option>
+                          {availableModels.map((model: any) => (
+                            <option
+                              key={model.id || model}
+                              value={model.id || model}
+                            >
+                              {typeof model === "string"
+                                ? model
+                                : model.name || model.id}
+                            </option>
+                          ))}
+                        </select>
+                        {availableModels.length === 0 && !modelsLoading && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={async () => {
+                              setModelsLoading(true);
+                              try {
+                                const response = await listAvailableModels();
+                                const models = Array.isArray(response)
+                                  ? response
+                                  : response.models || [];
+                                setAvailableModels(models);
+                                setModelProviders(
+                                  models.reduce((acc: any, m: any) => {
+                                    const provider = m.provider || "unknown";
+                                    if (!acc[provider]) acc[provider] = [];
+                                    acc[provider].push(m);
+                                    return acc;
+                                  }, {})
+                                );
+                              } catch (e: any) {
+                                setError(e.message || "Modeller yüklenemedi");
+                              } finally {
+                                setModelsLoading(false);
+                              }
+                            }}
+                            className="mt-2"
+                          >
+                            <RefreshCw className="w-3 h-3 mr-1" />
+                            Modelleri Yükle
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* Embedding Provider */}
+                      <div className="space-y-3">
+                        <label className="text-sm font-medium text-foreground flex items-center gap-2">
+                          <Layers className="w-4 h-4 text-primary" />
+                          Embedding Provider
+                        </label>
+                        <select
+                          value={selectedEmbeddingProvider}
+                          onChange={(e) => {
+                            setSelectedEmbeddingProvider(e.target.value);
+                            const providerModels =
+                              e.target.value === "ollama"
+                                ? availableEmbeddingModels.ollama
+                                : e.target.value === "alibaba"
+                                ? (availableEmbeddingModels.alibaba || []).map(
+                                    (m) => m.id
+                                  )
+                                : availableEmbeddingModels.huggingface.map(
+                                    (m) => m.id
+                                  );
+                            const currentModelInNewProvider =
+                              providerModels.includes(selectedEmbeddingModel);
+                            if (
+                              providerModels.length > 0 &&
+                              !currentModelInNewProvider
+                            ) {
+                              setSelectedEmbeddingModel(providerModels[0]);
+                            }
+                          }}
+                          className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
+                        >
+                          <option value="ollama">🏠 Ollama (Yerel)</option>
+                          <option value="huggingface">
+                            🤗 HuggingFace (Ücretsiz)
+                          </option>
+                          <option value="alibaba">
+                            🛒 Alibaba (Cloud - Qwen)
+                          </option>
+                        </select>
+                      </div>
+
+                      {/* Embedding Model */}
+                      <div className="space-y-3">
+                        <label className="text-sm font-medium text-foreground flex items-center gap-2">
+                          <Database className="w-4 h-4 text-primary" />
+                          Embedding Modeli
+                        </label>
+                        <select
+                          value={selectedEmbeddingModel}
+                          onChange={(e) =>
+                            setSelectedEmbeddingModel(e.target.value)
+                          }
+                          className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
+                          disabled={embeddingModelsLoading}
+                        >
+                          {embeddingModelsLoading ? (
+                            <option value="">Modeller yükleniyor...</option>
+                          ) : selectedEmbeddingProvider === "ollama" ? (
+                            availableEmbeddingModels.ollama.length > 0 ? (
+                              <>
+                                {selectedEmbeddingModel &&
+                                  !availableEmbeddingModels.ollama.includes(
+                                    selectedEmbeddingModel
+                                  ) && (
+                                    <option
+                                      key={selectedEmbeddingModel}
+                                      value={selectedEmbeddingModel}
+                                    >
+                                      {selectedEmbeddingModel.replace(
+                                        ":latest",
+                                        ""
+                                      )}{" "}
+                                      (Kayıtlı)
+                                    </option>
+                                  )}
+                                {availableEmbeddingModels.ollama.map(
+                                  (model) => (
+                                    <option key={model} value={model}>
+                                      {model.replace(":latest", "")}
+                                    </option>
+                                  )
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                {selectedEmbeddingModel && (
+                                  <option
+                                    key={selectedEmbeddingModel}
+                                    value={selectedEmbeddingModel}
+                                  >
+                                    {selectedEmbeddingModel.replace(
+                                      ":latest",
+                                      ""
+                                    )}{" "}
+                                    (Kayıtlı)
+                                  </option>
+                                )}
+                                <option value="">
+                                  Ollama model bulunamadı
+                                </option>
+                              </>
+                            )
+                          ) : selectedEmbeddingProvider === "alibaba" ? (
+                            (availableEmbeddingModels.alibaba || []).length >
+                            0 ? (
+                              <>
+                                {selectedEmbeddingModel &&
+                                  !(
+                                    availableEmbeddingModels.alibaba || []
+                                  ).some(
+                                    (m) => m.id === selectedEmbeddingModel
+                                  ) && (
+                                    <option
+                                      key={selectedEmbeddingModel}
+                                      value={selectedEmbeddingModel}
+                                    >
+                                      {selectedEmbeddingModel} (Kayıtlı)
+                                    </option>
+                                  )}
+                                {(availableEmbeddingModels.alibaba || []).map(
+                                  (model) => (
+                                    <option key={model.id} value={model.id}>
+                                      {model.name}{" "}
+                                      {model.description
+                                        ? `- ${model.description}`
+                                        : ""}{" "}
+                                      {model.dimensions
+                                        ? `(${model.dimensions}D)`
+                                        : ""}
+                                    </option>
+                                  )
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                {selectedEmbeddingModel && (
+                                  <option
+                                    key={selectedEmbeddingModel}
+                                    value={selectedEmbeddingModel}
+                                  >
+                                    {selectedEmbeddingModel} (Kayıtlı)
+                                  </option>
+                                )}
+                                <option value="">
+                                  Bu provider için model bulunamadı
+                                </option>
+                              </>
+                            )
+                          ) : availableEmbeddingModels.huggingface.length >
+                            0 ? (
+                            <>
+                              {selectedEmbeddingModel &&
+                                !availableEmbeddingModels.huggingface.some(
+                                  (m) => m.id === selectedEmbeddingModel
+                                ) && (
+                                  <option
+                                    key={selectedEmbeddingModel}
+                                    value={selectedEmbeddingModel}
+                                  >
+                                    {selectedEmbeddingModel} (Kayıtlı)
+                                  </option>
+                                )}
+                              {availableEmbeddingModels.huggingface.map(
+                                (model) => (
+                                  <option key={model.id} value={model.id}>
+                                    {model.name}{" "}
+                                    {model.description
+                                      ? `- ${model.description}`
+                                      : ""}{" "}
+                                    {model.dimensions
+                                      ? `(${model.dimensions}D)`
+                                      : ""}
+                                  </option>
+                                )
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              {selectedEmbeddingModel && (
+                                <option
+                                  key={selectedEmbeddingModel}
+                                  value={selectedEmbeddingModel}
+                                >
+                                  {selectedEmbeddingModel} (Kayıtlı)
+                                </option>
+                              )}
+                              <option value="">
+                                HuggingFace model bulunamadı
+                              </option>
+                            </>
+                          )}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Reranker Section */}
+                    <div className="mt-6 pt-6 border-t border-border">
+                      <div className="space-y-4">
+                        <h4 className="text-sm font-medium text-foreground flex items-center gap-2">
+                          <Sparkles className="w-4 h-4 text-primary" />
+                          Reranker Ayarları
+                        </h4>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={useRerankerService}
+                            onChange={(e) =>
+                              setUseRerankerService(e.target.checked)
+                            }
+                            className="w-4 h-4 text-primary border-border rounded focus:ring-primary"
+                          />
+                          <span className="text-sm text-foreground">
+                            Gelişmiş Reranker Servisi Kullan
+                          </span>
+                        </div>
+                        {useRerankerService && (
+                          <select
+                            value={selectedRerankerType}
+                            onChange={(e) =>
+                              setSelectedRerankerType(e.target.value)
+                            }
+                            className="w-full max-w-md px-4 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm text-sm"
+                          >
+                            <option value="bge-reranker-v2-m3">
+                              🔮 BGE-Reranker-V2-M3 (Türkçe Optimize)
+                            </option>
+                            <option value="ms-marco-minilm-l6">
+                              ⚡ MS-MARCO MiniLM-L6 (Hafif, Hızlı)
+                            </option>
+                            <option value="gte-rerank-v2">
+                              🛒 GTE-Rerank-V2 (Alibaba - 50+ Dil)
+                            </option>
+                          </select>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Save Button */}
+                    <div className="mt-8 flex items-center gap-3">
+                      <Button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            setSavingSettings(true);
+                            setSavedSettingsInfo(null);
+                            const settingsToSave: any = {
+                              top_k: 5,
+                              use_rerank:
+                                session?.rag_settings?.use_rerank ?? false,
+                              min_score: 0.5,
+                              max_context_chars: 8000,
+                              use_reranker_service: useRerankerService,
+                            };
+
+                            if (
+                              selectedQueryModel &&
+                              selectedQueryModel.trim()
+                            ) {
+                              settingsToSave.model = selectedQueryModel;
+                            }
+                            if (selectedProvider && selectedProvider.trim()) {
+                              settingsToSave.provider = selectedProvider;
+                            }
+                            if (
+                              selectedEmbeddingModel &&
+                              selectedEmbeddingModel.trim()
+                            ) {
+                              settingsToSave.embedding_model =
+                                selectedEmbeddingModel;
+                            }
+                            if (
+                              selectedEmbeddingProvider &&
+                              selectedEmbeddingProvider.trim()
+                            ) {
+                              settingsToSave.embedding_provider =
+                                selectedEmbeddingProvider;
+                            }
+                            if (useRerankerService && selectedRerankerType) {
+                              settingsToSave.reranker_type =
+                                selectedRerankerType as "bge" | "ms-marco";
+                            }
+
+                            const resp = await saveSessionRagSettings(
+                              sessionId,
+                              settingsToSave
+                            );
+                            setSavedSettingsInfo(
+                              "✅ Ayarlar başarıyla kaydedildi"
+                            );
+                            await fetchSessionDetails();
+
+                            if (resp.rag_settings) {
+                              if (resp.rag_settings.provider)
+                                setSelectedProvider(resp.rag_settings.provider);
+                              if (resp.rag_settings.model)
+                                setSelectedQueryModel(resp.rag_settings.model);
+                              if (resp.rag_settings.embedding_provider)
+                                setSelectedEmbeddingProvider(
+                                  resp.rag_settings.embedding_provider
+                                );
+                              if (resp.rag_settings.embedding_model)
+                                setSelectedEmbeddingModel(
+                                  resp.rag_settings.embedding_model
+                                );
+                              if (
+                                resp.rag_settings.use_reranker_service !==
+                                undefined
+                              )
+                                setUseRerankerService(
+                                  resp.rag_settings.use_reranker_service
+                                );
+                              if (resp.rag_settings.reranker_type)
+                                setSelectedRerankerType(
+                                  resp.rag_settings.reranker_type
+                                );
+                            }
+                          } catch (e: any) {
+                            setError(e.message || "Ayarlar kaydedilemedi");
+                          } finally {
+                            setSavingSettings(false);
+                          }
+                        }}
+                        disabled={savingSettings}
+                        size="lg"
+                        className="gap-2"
+                      >
+                        {savingSettings ? (
+                          <>
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                            Kaydediliyor...
+                          </>
+                        ) : (
+                          <>
+                            <Upload className="w-4 h-4" />
+                            RAG Ayarlarını Kaydet
+                          </>
+                        )}
+                      </Button>
+                      {savedSettingsInfo && (
+                        <span className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                          <ChevronRight className="w-4 h-4" />
+                          {savedSettingsInfo}
+                        </span>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
             </TabsContent>
 
@@ -991,589 +1609,179 @@ export default function SessionPage() {
                         </p>
                       </div>
                     ) : (
-                      <div className="space-y-4">
-                        {interactions.map((interaction, index) => (
-                          <Card key={interaction.interaction_id}>
-                            <CardContent className="p-4">
-                              <div className="flex items-start gap-3 mb-3">
-                                <div className="flex-shrink-0 w-7 h-7 bg-primary/10 text-primary rounded flex items-center justify-center font-medium text-sm">
-                                  {index + 1}
-                                </div>
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex flex-col gap-2 mb-2">
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      <span className="text-sm font-medium text-foreground">
-                                        👤{" "}
-                                        {interaction.student_name ||
-                                          "Bilinmeyen Öğrenci"}
-                                      </span>
-                                      {interaction.topic_info && (
-                                        <span className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded-full">
-                                          📚 {interaction.topic_info.title}
-                                          {interaction.topic_info
-                                            .confidence && (
-                                            <span className="ml-1 opacity-70">
-                                              (
-                                              {Math.round(
-                                                interaction.topic_info
-                                                  .confidence * 100
+                      <>
+                        <div className="space-y-4">
+                          {interactions.map((interaction, index) => {
+                            // Get student name: prefer first_name + last_name, fallback to student_name, then "Bilinmeyen Öğrenci"
+                            const studentName =
+                              interaction.first_name && interaction.last_name
+                                ? `${interaction.first_name} ${interaction.last_name}`
+                                : interaction.first_name ||
+                                  interaction.last_name
+                                ? interaction.first_name ||
+                                  interaction.last_name
+                                : interaction.student_name &&
+                                  !interaction.student_name.startsWith(
+                                    "Öğrenci (ID:"
+                                  )
+                                ? interaction.student_name
+                                : "Bilinmeyen Öğrenci";
+
+                            return (
+                              <Card key={interaction.interaction_id}>
+                                <CardContent className="p-4">
+                                  <div className="flex items-start gap-3 mb-3">
+                                    <div className="flex-shrink-0 w-7 h-7 bg-primary/10 text-primary rounded flex items-center justify-center font-medium text-sm">
+                                      {(interactionsPage - 1) *
+                                        INTERACTIONS_PER_PAGE +
+                                        index +
+                                        1}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex flex-col gap-2 mb-2">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                          <span className="text-sm font-medium text-foreground">
+                                            👤 {studentName}
+                                          </span>
+                                          {interaction.topic_info && (
+                                            <span className="text-xs bg-blue-50 text-blue-700 px-2 py-1 rounded-full">
+                                              📚 {interaction.topic_info.title}
+                                              {interaction.topic_info
+                                                .confidence && (
+                                                <span className="ml-1 opacity-70">
+                                                  (
+                                                  {Math.round(
+                                                    interaction.topic_info
+                                                      .confidence * 100
+                                                  )}
+                                                  %)
+                                                </span>
                                               )}
-                                              %)
                                             </span>
                                           )}
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                      <span>
-                                        {new Date(
-                                          interaction.timestamp
-                                        ).toLocaleString("tr-TR")}
-                                      </span>
-                                      {interaction.processing_time_ms && (
-                                        <span>
-                                          • {interaction.processing_time_ms}ms
-                                        </span>
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="space-y-3">
-                                <div>
-                                  <p className="text-xs font-medium text-muted-foreground mb-1">
-                                    Soru
-                                  </p>
-                                  <p className="text-sm text-foreground">
-                                    {interaction.query}
-                                  </p>
-                                </div>
-                                <div>
-                                  <p className="text-xs font-medium text-muted-foreground mb-1">
-                                    Cevap
-                                  </p>
-                                  <p className="text-sm text-foreground whitespace-pre-wrap">
-                                    {interaction.personalized_response ||
-                                      interaction.original_response}
-                                  </p>
-                                </div>
-                                {interaction.sources &&
-                                  interaction.sources.length > 0 && (
-                                    <div>
-                                      <p className="text-xs font-medium text-muted-foreground mb-1.5">
-                                        Kaynaklar
-                                      </p>
-                                      <div className="flex flex-wrap gap-1.5">
-                                        {interaction.sources.map(
-                                          (source, idx) => (
-                                            <span
-                                              key={idx}
-                                              className="text-xs bg-muted text-muted-foreground px-2 py-1 rounded"
-                                            >
-                                              {source.source}
-                                              {source.score !== undefined &&
-                                                ` (${(
-                                                  source.score * 100
-                                                ).toFixed(1)}%)`}
+                                        </div>
+                                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                                          <span>
+                                            {new Date(
+                                              interaction.timestamp
+                                            ).toLocaleString("tr-TR")}
+                                          </span>
+                                          {interaction.processing_time_ms && (
+                                            <span>
+                                              • {interaction.processing_time_ms}
+                                              ms
                                             </span>
-                                          )
-                                        )}
+                                          )}
+                                        </div>
                                       </div>
                                     </div>
-                                  )}
-                              </div>
-                            </CardContent>
-                          </Card>
-                        ))}
-                      </div>
+                                  </div>
+                                  <div className="space-y-3">
+                                    <div>
+                                      <p className="text-sm font-bold text-blue-600 mb-1">
+                                        Soru
+                                      </p>
+                                      <p className="text-sm text-foreground">
+                                        {interaction.query}
+                                      </p>
+                                    </div>
+                                    <div>
+                                      <p className="text-sm font-bold text-green-600 mb-1">
+                                        Cevap
+                                      </p>
+                                      <p className="text-sm text-foreground whitespace-pre-wrap">
+                                        {interaction.personalized_response ||
+                                          interaction.original_response}
+                                      </p>
+                                    </div>
+                                    {interaction.sources &&
+                                      interaction.sources.length > 0 && (
+                                        <div>
+                                          <p className="text-sm font-bold text-purple-600 mb-1.5">
+                                            Kaynaklar
+                                          </p>
+                                          <div className="flex flex-wrap gap-1.5">
+                                            {interaction.sources.map(
+                                              (source, idx) => (
+                                                <span
+                                                  key={idx}
+                                                  className="text-xs bg-muted text-muted-foreground px-2 py-1 rounded"
+                                                >
+                                                  {source.source}
+                                                  {source.score !== undefined &&
+                                                    ` (${(
+                                                      source.score * 100
+                                                    ).toFixed(1)}%)`}
+                                                </span>
+                                              )
+                                            )}
+                                          </div>
+                                        </div>
+                                      )}
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            );
+                          })}
+                        </div>
+
+                        {/* Pagination */}
+                        {interactionsTotal > INTERACTIONS_PER_PAGE && (
+                          <div className="flex items-center justify-between px-3 sm:px-5 py-3 border-t border-border mt-4">
+                            <button
+                              onClick={() => {
+                                const newPage = Math.max(
+                                  1,
+                                  interactionsPage - 1
+                                );
+                                setInteractionsPage(newPage);
+                              }}
+                              disabled={
+                                interactionsPage === 1 || interactionsLoading
+                              }
+                              className="py-3 px-4 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[44px]"
+                            >
+                              Önceki
+                            </button>
+                            <span className="text-sm text-muted-foreground">
+                              <span className="hidden sm:inline">Sayfa </span>
+                              {interactionsPage} /{" "}
+                              {Math.ceil(
+                                interactionsTotal / INTERACTIONS_PER_PAGE
+                              )}
+                              <span className="hidden sm:inline">
+                                {" "}
+                                (Toplam {interactionsTotal} soru)
+                              </span>
+                            </span>
+                            <button
+                              onClick={() => {
+                                const newPage = Math.min(
+                                  Math.ceil(
+                                    interactionsTotal / INTERACTIONS_PER_PAGE
+                                  ),
+                                  interactionsPage + 1
+                                );
+                                setInteractionsPage(newPage);
+                              }}
+                              disabled={
+                                interactionsPage >=
+                                  Math.ceil(
+                                    interactionsTotal / INTERACTIONS_PER_PAGE
+                                  ) || interactionsLoading
+                              }
+                              className="py-3 px-4 text-sm bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/80 disabled:opacity-50 disabled:cursor-not-allowed transition-colors min-h-[44px]"
+                            >
+                              Sonraki
+                            </button>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 </TabsContent>
               </>
             )}
-
-            <TabsContent value="rag-settings" className="mt-0">
-              <div className="p-6 space-y-6">
-                <div>
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="p-2 rounded-lg bg-primary/10">
-                      <Settings className="w-5 h-5 text-primary" />
-                    </div>
-                    <div>
-                      <h2 className="text-xl font-semibold text-foreground">
-                        RAG Ayarları
-                      </h2>
-                      <p className="text-sm text-muted-foreground mt-0.5">
-                        Bu ders oturumu için RAG (Retrieval-Augmented
-                        Generation) ayarlarını yapılandırın
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Model Selection */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base flex items-center gap-2">
-                        <Zap className="w-4 h-4 text-primary" />
-                        AI Provider
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <select
-                        value={selectedProvider}
-                        onChange={(e) => {
-                          setSelectedProvider(e.target.value);
-                          // Reset model when provider changes
-                          setSelectedQueryModel("");
-                        }}
-                        className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
-                        disabled={modelsLoading}
-                      >
-                        <option value="groq">🌐 Groq (Cloud - Hızlı)</option>
-                        <option value="alibaba">
-                          🛒 Alibaba (Cloud - Qwen)
-                        </option>
-                        <option value="deepseek">
-                          🔮 DeepSeek (Cloud - Premium)
-                        </option>
-                        <option value="openrouter">
-                          🚀 OpenRouter (Cloud - Güçlü)
-                        </option>
-                        <option value="huggingface">
-                          🤗 HuggingFace (Ücretsiz)
-                        </option>
-                        <option value="ollama">🏠 Ollama (Yerel)</option>
-                      </select>
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base flex items-center gap-2">
-                        <Brain className="w-4 h-4 text-primary" />
-                        AI Modeli
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <select
-                        value={selectedQueryModel}
-                        onChange={(e) => setSelectedQueryModel(e.target.value)}
-                        className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
-                        disabled={modelsLoading || availableModels.length === 0}
-                      >
-                        <option value="">
-                          {modelsLoading
-                            ? "Modeller yükleniyor..."
-                            : availableModels.length === 0
-                            ? "Bu provider için model bulunamadı"
-                            : "Model seçin..."}
-                        </option>
-                        {availableModels.map((model: any) => (
-                          <option
-                            key={model.id || model}
-                            value={model.id || model}
-                          >
-                            {typeof model === "string"
-                              ? model
-                              : model.name || model.id}
-                          </option>
-                        ))}
-                      </select>
-                      {availableModels.length === 0 && !modelsLoading && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={async () => {
-                            setModelsLoading(true);
-                            try {
-                              const response = await listAvailableModels();
-                              // listAvailableModels returns { models: ModelInfo[], providers: ... }
-                              const models = Array.isArray(response)
-                                ? response
-                                : response.models || [];
-                              setAvailableModels(models);
-                              setModelProviders(
-                                models.reduce((acc: any, m: any) => {
-                                  const provider = m.provider || "unknown";
-                                  if (!acc[provider]) acc[provider] = [];
-                                  acc[provider].push(m);
-                                  return acc;
-                                }, {})
-                              );
-                            } catch (e: any) {
-                              setError(e.message || "Modeller yüklenemedi");
-                            } finally {
-                              setModelsLoading(false);
-                            }
-                          }}
-                          className="mt-2"
-                        >
-                          <RefreshCw className="w-3 h-3 mr-1" />
-                          Modelleri Yükle
-                        </Button>
-                      )}
-                    </CardContent>
-                  </Card>
-
-                  {/* Embedding Model Selection */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base flex items-center gap-2">
-                        <Layers className="w-4 h-4 text-primary" />
-                        Embedding Modeli
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="mb-2">
-                        <select
-                          value={selectedEmbeddingProvider}
-                          onChange={(e) => {
-                            setSelectedEmbeddingProvider(e.target.value);
-                            const providerModels =
-                              e.target.value === "ollama"
-                                ? availableEmbeddingModels.ollama
-                                : e.target.value === "alibaba"
-                                ? (availableEmbeddingModels.alibaba || []).map(
-                                    (m) => m.id
-                                  )
-                                : availableEmbeddingModels.huggingface.map(
-                                    (m) => m.id
-                                  );
-                            // Only reset model if current model is not in the new provider's list
-                            const currentModelInNewProvider =
-                              providerModels.includes(selectedEmbeddingModel);
-                            if (
-                              providerModels.length > 0 &&
-                              !currentModelInNewProvider
-                            ) {
-                              setSelectedEmbeddingModel(providerModels[0]);
-                            }
-                          }}
-                          className="w-full px-4 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm text-sm mb-2"
-                        >
-                          <option value="ollama">Ollama (Yerel)</option>
-                          <option value="huggingface">
-                            HuggingFace (Ücretsiz)
-                          </option>
-                          <option value="alibaba">
-                            🛒 Alibaba (Cloud - Qwen)
-                          </option>
-                        </select>
-                      </div>
-                      <select
-                        value={selectedEmbeddingModel}
-                        onChange={(e) =>
-                          setSelectedEmbeddingModel(e.target.value)
-                        }
-                        className="w-full px-4 py-3 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm"
-                        disabled={embeddingModelsLoading}
-                      >
-                        {embeddingModelsLoading ? (
-                          <option value="">Modeller yükleniyor...</option>
-                        ) : selectedEmbeddingProvider === "ollama" ? (
-                          availableEmbeddingModels.ollama.length > 0 ? (
-                            <>
-                              {/* Show current selected model even if not in list (for saved settings) */}
-                              {selectedEmbeddingModel &&
-                                !availableEmbeddingModels.ollama.includes(
-                                  selectedEmbeddingModel
-                                ) && (
-                                  <option
-                                    key={selectedEmbeddingModel}
-                                    value={selectedEmbeddingModel}
-                                  >
-                                    {selectedEmbeddingModel.replace(
-                                      ":latest",
-                                      ""
-                                    )}{" "}
-                                    (Kayıtlı)
-                                  </option>
-                                )}
-                              {availableEmbeddingModels.ollama.map((model) => (
-                                <option key={model} value={model}>
-                                  {model.replace(":latest", "")}
-                                </option>
-                              ))}
-                            </>
-                          ) : (
-                            <>
-                              {/* Show current selected model even if list is empty */}
-                              {selectedEmbeddingModel && (
-                                <option
-                                  key={selectedEmbeddingModel}
-                                  value={selectedEmbeddingModel}
-                                >
-                                  {selectedEmbeddingModel.replace(
-                                    ":latest",
-                                    ""
-                                  )}{" "}
-                                  (Kayıtlı)
-                                </option>
-                              )}
-                              <option value="">Ollama model bulunamadı</option>
-                            </>
-                          )
-                        ) : selectedEmbeddingProvider === "alibaba" ? (
-                          (availableEmbeddingModels.alibaba || []).length >
-                          0 ? (
-                            <>
-                              {/* Show current selected model even if not in list (for saved settings) */}
-                              {selectedEmbeddingModel &&
-                                !(availableEmbeddingModels.alibaba || []).some(
-                                  (m) => m.id === selectedEmbeddingModel
-                                ) && (
-                                  <option
-                                    key={selectedEmbeddingModel}
-                                    value={selectedEmbeddingModel}
-                                  >
-                                    {selectedEmbeddingModel} (Kayıtlı)
-                                  </option>
-                                )}
-                              {(availableEmbeddingModels.alibaba || []).map(
-                                (model) => (
-                                  <option key={model.id} value={model.id}>
-                                    {model.name}{" "}
-                                    {model.description
-                                      ? `- ${model.description}`
-                                      : ""}{" "}
-                                    {model.dimensions
-                                      ? `(${model.dimensions}D)`
-                                      : ""}
-                                  </option>
-                                )
-                              )}
-                            </>
-                          ) : (
-                            <>
-                              {/* Show current selected model even if list is empty */}
-                              {selectedEmbeddingModel && (
-                                <option
-                                  key={selectedEmbeddingModel}
-                                  value={selectedEmbeddingModel}
-                                >
-                                  {selectedEmbeddingModel} (Kayıtlı)
-                                </option>
-                              )}
-                              <option value="">
-                                Bu provider için model bulunamadı
-                              </option>
-                            </>
-                          )
-                        ) : availableEmbeddingModels.huggingface.length > 0 ? (
-                          <>
-                            {/* Show current selected model even if not in list (for saved settings) */}
-                            {selectedEmbeddingModel &&
-                              !availableEmbeddingModels.huggingface.some(
-                                (m) => m.id === selectedEmbeddingModel
-                              ) && (
-                                <option
-                                  key={selectedEmbeddingModel}
-                                  value={selectedEmbeddingModel}
-                                >
-                                  {selectedEmbeddingModel} (Kayıtlı)
-                                </option>
-                              )}
-                            {availableEmbeddingModels.huggingface.map(
-                              (model) => (
-                                <option key={model.id} value={model.id}>
-                                  {model.name}{" "}
-                                  {model.description
-                                    ? `- ${model.description}`
-                                    : ""}{" "}
-                                  {model.dimensions
-                                    ? `(${model.dimensions}D)`
-                                    : ""}
-                                </option>
-                              )
-                            )}
-                          </>
-                        ) : (
-                          <>
-                            {/* Show current selected model even if list is empty */}
-                            {selectedEmbeddingModel && (
-                              <option
-                                key={selectedEmbeddingModel}
-                                value={selectedEmbeddingModel}
-                              >
-                                {selectedEmbeddingModel} (Kayıtlı)
-                              </option>
-                            )}
-                            <option value="">
-                              HuggingFace model bulunamadı
-                            </option>
-                          </>
-                        )}
-                      </select>
-                    </CardContent>
-                  </Card>
-
-                  {/* Reranker Selection */}
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base flex items-center gap-2">
-                        <Sparkles className="w-4 h-4 text-primary" />
-                        Reranker Seçimi
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={useRerankerService}
-                            onChange={(e) =>
-                              setUseRerankerService(e.target.checked)
-                            }
-                            className="w-4 h-4 text-primary border-border rounded focus:ring-primary"
-                          />
-                          <span className="text-sm text-foreground">
-                            Yeni Reranker Servisi Kullan (Ayrı Container)
-                          </span>
-                        </div>
-                        {useRerankerService && (
-                          <select
-                            value={selectedRerankerType}
-                            onChange={(e) =>
-                              setSelectedRerankerType(e.target.value)
-                            }
-                            className="w-full px-4 py-2 border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary transition-all bg-background shadow-sm text-sm"
-                          >
-                            <option value="bge-reranker-v2-m3">
-                              🔮 BGE-Reranker-V2-M3 (Türkçe Optimize)
-                            </option>
-                            <option value="ms-marco-minilm-l6">
-                              ⚡ MS-MARCO MiniLM-L6 (Hafif, Hızlı)
-                            </option>
-                            <option value="gte-rerank-v2">
-                              🛒 GTE-Rerank-V2 (Alibaba - 50+ Dil)
-                            </option>
-                          </select>
-                        )}
-                      </div>
-                    </CardContent>
-                  </Card>
-                </div>
-
-                {/* Save Button */}
-                <div className="flex items-center gap-3 pt-4 border-t border-border">
-                  <Button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        setSavingSettings(true);
-                        setSavedSettingsInfo(null);
-                        // Prepare settings object - only include non-empty values
-                        const settingsToSave: any = {
-                          top_k: 5,
-                          use_rerank:
-                            session?.rag_settings?.use_rerank ?? false,
-                          min_score: 0.5,
-                          max_context_chars: 8000,
-                          use_reranker_service: useRerankerService,
-                        };
-
-                        // Only include model if selected
-                        if (selectedQueryModel && selectedQueryModel.trim()) {
-                          settingsToSave.model = selectedQueryModel;
-                        }
-
-                        // Only include provider if selected
-                        if (selectedProvider && selectedProvider.trim()) {
-                          settingsToSave.provider = selectedProvider;
-                        }
-
-                        // Only include embedding model if selected
-                        if (
-                          selectedEmbeddingModel &&
-                          selectedEmbeddingModel.trim()
-                        ) {
-                          settingsToSave.embedding_model =
-                            selectedEmbeddingModel;
-                        }
-
-                        // Only include embedding provider if selected
-                        if (
-                          selectedEmbeddingProvider &&
-                          selectedEmbeddingProvider.trim()
-                        ) {
-                          settingsToSave.embedding_provider =
-                            selectedEmbeddingProvider;
-                        }
-
-                        // Only include reranker_type if reranker service is enabled
-                        if (useRerankerService && selectedRerankerType) {
-                          settingsToSave.reranker_type =
-                            selectedRerankerType as "bge" | "ms-marco";
-                        }
-
-                        console.log("Saving RAG settings:", settingsToSave);
-                        const resp = await saveSessionRagSettings(
-                          sessionId,
-                          settingsToSave
-                        );
-                        console.log("Save response:", resp);
-                        setSavedSettingsInfo("✅ Ders ayarları kaydedildi.");
-
-                        // Force refresh session data to get updated settings
-                        await fetchSessionDetails();
-
-                        // Also update local state from response if available
-                        if (resp.rag_settings) {
-                          if (resp.rag_settings.provider)
-                            setSelectedProvider(resp.rag_settings.provider);
-                          if (resp.rag_settings.model)
-                            setSelectedQueryModel(resp.rag_settings.model);
-                          if (resp.rag_settings.embedding_provider)
-                            setSelectedEmbeddingProvider(
-                              resp.rag_settings.embedding_provider
-                            );
-                          if (resp.rag_settings.embedding_model)
-                            setSelectedEmbeddingModel(
-                              resp.rag_settings.embedding_model
-                            );
-                          if (
-                            resp.rag_settings.use_reranker_service !== undefined
-                          )
-                            setUseRerankerService(
-                              resp.rag_settings.use_reranker_service
-                            );
-                          if (resp.rag_settings.reranker_type)
-                            setSelectedRerankerType(
-                              resp.rag_settings.reranker_type
-                            );
-                        }
-                      } catch (e: any) {
-                        setError(e.message || "Ayarlar kaydedilemedi");
-                      } finally {
-                        setSavingSettings(false);
-                      }
-                    }}
-                    disabled={savingSettings}
-                    className="gap-2"
-                  >
-                    {savingSettings ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        Kaydediliyor...
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="w-4 h-4" />
-                        Ayarları Kaydet
-                      </>
-                    )}
-                  </Button>
-                  {savedSettingsInfo && (
-                    <span className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
-                      <ChevronRight className="w-4 h-4" />
-                      {savedSettingsInfo}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </TabsContent>
 
             <TabsContent value="session-settings" className="mt-0">
               <div className="p-6">

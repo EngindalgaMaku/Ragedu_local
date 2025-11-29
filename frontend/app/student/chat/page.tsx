@@ -3,10 +3,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useStudentChat } from "@/hooks/useStudentChat";
-import { listSessions, SessionMeta, RAGSource } from "@/lib/api";
+import { listSessions, SessionMeta, RAGSource, getPedagogicalState, PedagogicalState, resetPedagogicalState } from "@/lib/api";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
   Send,
   Loader2,
@@ -18,6 +17,8 @@ import {
 } from "lucide-react";
 import { QuickEmojiFeedback } from "@/components/EmojiFeedback";
 import SourceModal from "@/components/SourceModal";
+import KBRAGPersonalizationDebugPanel from "@/components/KBRAGPersonalizationDebugPanel";
+import EBARSStatusPanel from "@/components/EBARSStatusPanel";
 
 const MESSAGES_PER_PAGE = 10;
 
@@ -34,18 +35,107 @@ export default function StudentChatPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  const [sessionRagSettings, setSessionRagSettings] = useState<any>(null);
+  const [pedagogicalState, setPedagogicalState] = useState<PedagogicalState | null>(null);
+  const [pedagogicalStateLoading, setPedagogicalStateLoading] = useState(false);
+  const [ebarsEnabled, setEbarsEnabled] = useState(false);
+  const [ebarsRefreshTrigger, setEbarsRefreshTrigger] = useState(0);
+
   const {
     messages,
     isLoading: chatLoading,
+    isQuerying,
     error: chatError,
     sendMessage,
     clearHistory,
-    handleSuggestionClick,
-    refreshHistory,
+    debugData,
+    asyncTaskProgress,
   } = useStudentChat({
     sessionId: selectedSession || "",
     autoSave: true,
   });
+
+  // Load student's current pedagogical state (ZPD, Bloom, Cognitive Load)
+  const loadPedagogicalState = async () => {
+    if (!selectedSession || !user?.id) {
+      setPedagogicalState(null);
+      return;
+    }
+
+    try {
+      setPedagogicalStateLoading(true);
+      const state = await getPedagogicalState(String(user.id), selectedSession);
+      setPedagogicalState(state);
+    } catch (err) {
+      console.error("Failed to load pedagogical state:", err);
+      setPedagogicalState(null);
+    } finally {
+      setPedagogicalStateLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadPedagogicalState();
+  }, [selectedSession, user?.id]);
+
+  // Handle reset
+  const handleResetProfile = async () => {
+    if (!selectedSession || !user?.id) return;
+
+    try {
+      await resetPedagogicalState(String(user.id), selectedSession);
+      // Reload the state after reset
+      await loadPedagogicalState();
+      alert("Öğrenme parametreleri başarıyla sıfırlandı!");
+    } catch (err) {
+      console.error("Failed to reset profile:", err);
+      alert("Sıfırlama işlemi başarısız oldu. Lütfen tekrar deneyin.");
+    }
+  };
+
+  // Load session RAG settings when session changes
+  useEffect(() => {
+    const loadSessionSettings = async () => {
+      if (!selectedSession) {
+        setSessionRagSettings(null);
+        setEbarsEnabled(false);
+        return;
+      }
+      try {
+        const sessionData = sessions.find(
+          (s) => s.session_id === selectedSession
+        );
+        if (sessionData?.rag_settings) {
+          setSessionRagSettings(sessionData.rag_settings);
+        } else {
+          setSessionRagSettings(null);
+        }
+        
+        // Check if EBARS is enabled for this session
+        try {
+          const response = await fetch(`/api/aprag/session-settings/${selectedSession}`);
+          if (response.ok) {
+            const data = await response.json();
+            const enabled = data?.settings?.enable_ebars || false;
+            setEbarsEnabled(enabled);
+            console.log("✅ EBARS enabled:", enabled, "for session:", selectedSession, "data:", data);
+          } else {
+            const errorText = await response.text();
+            console.warn("❌ Failed to load session settings, status:", response.status, "error:", errorText);
+            setEbarsEnabled(false);
+          }
+        } catch (err) {
+          console.error("❌ Failed to load session settings:", err);
+          setEbarsEnabled(false);
+        }
+      } catch (err) {
+        console.error("Failed to load session RAG settings:", err);
+        setSessionRagSettings(null);
+        setEbarsEnabled(false);
+      }
+    };
+    loadSessionSettings();
+  }, [selectedSession, sessions]);
 
   // Pagination
   const totalPages = Math.ceil(messages.length / MESSAGES_PER_PAGE);
@@ -81,8 +171,7 @@ export default function StudentChatPage() {
       }
     };
     loadSessions();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, router]);
+  }, [user, selectedSession, router]);
 
   // Reset to last page when new message arrives
   useEffect(() => {
@@ -93,11 +182,16 @@ export default function StudentChatPage() {
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query.trim() || !selectedSession || chatLoading) return;
+    if (!query.trim() || !selectedSession || isQuerying) return;
 
     const currentQuery = query;
     setQuery(""); // Clear input immediately for better UX
-    await sendMessage(currentQuery);
+    await sendMessage(currentQuery, sessionRagSettings);
+    
+    // Trigger EBARS refresh after query
+    if (ebarsEnabled) {
+      setTimeout(() => setEbarsRefreshTrigger(prev => prev + 1), 1000);
+    }
   };
 
   const handleSessionChange = (newSessionId: string) => {
@@ -155,42 +249,8 @@ export default function StudentChatPage() {
     const sourceMap = new Map<string, RAGSource[]>();
 
     sources.forEach((source) => {
-      // Determine filename with better fallbacks
-      let filename = source.metadata?.filename || source.metadata?.source_file;
-
-      // For knowledge base sources, use topic title
-      if (!filename && (source.metadata as any)?.topic_title) {
-        filename = (source.metadata as any).topic_title;
-      }
-
-      // For QA sources, use a descriptive name
-      if (
-        !filename &&
-        ((source.metadata as any)?.source_type === "qa_pair" ||
-          (source.metadata as any)?.source_type === "direct_qa")
-      ) {
-        filename = "Soru Bankası";
-      }
-
-      // For chunk sources without filename, use a generic name
-      if (
-        !filename &&
-        (source.metadata as any)?.source_type === "vector_search"
-      ) {
-        filename = "Döküman Parçası";
-      }
-
-      // Last resort: use source type
-      if (!filename) {
-        const sourceType = (source.metadata as any)?.source_type || "Kaynak";
-        filename =
-          sourceType === "knowledge_base" || sourceType === "structured_kb"
-            ? "Bilgi Tabanı"
-            : sourceType === "qa_pair" || sourceType === "direct_qa"
-            ? "Soru Bankası"
-            : "Döküman";
-      }
-
+      const filename =
+        source.metadata?.filename || source.metadata?.source_file || "unknown";
       if (!sourceMap.has(filename)) {
         sourceMap.set(filename, []);
       }
@@ -207,19 +267,22 @@ export default function StudentChatPage() {
   };
 
   // Get high-level source types (chunk / knowledge_base / qa_pair)
-  const getSourceTypes = (sources?: RAGSource[]) => {
+  const getSourceTypes = (sources?: RAGSource[]): Set<string> => {
     const types = new Set<string>();
-    (sources || []).forEach((s) => {
-      const t = (
-        s.metadata?.source_type ||
-        s.metadata?.source ||
-        ""
-      ).toString();
-      if (t) types.add(t);
-    });
+    if (sources) {
+      sources.forEach((s) => {
+        const t = (
+          s.metadata?.source_type ||
+          s.metadata?.source ||
+          ""
+        ).toString();
+        if (t) types.add(t);
+      });
+    }
     return types;
   };
 
+  // Early returns
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[calc(100vh-200px)]">
@@ -259,7 +322,7 @@ export default function StudentChatPage() {
   );
 
   return (
-    <div className="max-w-6xl mx-auto p-6">
+    <div className="max-w-6xl mx-auto p-4 pb-6" style={{ minHeight: "calc(100vh - 100px)" }}>
       {/* Header Section */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6">
         <div className="flex items-center justify-between flex-wrap gap-4">
@@ -321,10 +384,45 @@ export default function StudentChatPage() {
         )}
       </div>
 
+      {/* EBARS Status Panel - Shows comprehension score and difficulty level when EBARS is enabled */}
+      {user && selectedSession && (
+        <div className="mb-4">
+          {ebarsEnabled ? (
+            <EBARSStatusPanel
+              userId={user.id.toString()}
+              sessionId={selectedSession}
+              refreshTrigger={ebarsRefreshTrigger}
+              onFeedbackSubmitted={() => {
+                // Refresh EBARS state after feedback
+                setEbarsRefreshTrigger(prev => prev + 1);
+              }}
+            />
+          ) : (
+            // Debug: Show why panel is not visible
+            <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800">
+              <div className="flex items-center gap-2">
+                <span>⚠️</span>
+                <div>
+                  <strong>EBARS Panel Görünmüyor</strong>
+                  <div className="text-xs mt-1">
+                    EBARS aktif: {String(ebarsEnabled)} | 
+                    User: {user ? 'var' : 'yok'} | 
+                    Session: {selectedSession || 'yok'}
+                  </div>
+                  <div className="text-xs mt-1 text-yellow-700">
+                    EBARS'ı aktif etmek için oturum ayarlarından "EBARS (Adaptif Zorluk Ayarlama)" toggle'ını açın.
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Chat Container */}
       <div
         className="bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col"
-        style={{ height: "calc(100vh - 350px)", minHeight: "500px" }}
+        style={{ height: "calc(100vh - 280px)", minHeight: "600px" }}
       >
         {/* Messages Area */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -378,125 +476,34 @@ export default function StudentChatPage() {
                     <div className="flex justify-start">
                       <div className="max-w-[85%]">
                         <div className="bg-gray-50 border border-gray-200 rounded-2xl rounded-tl-sm px-5 py-4 shadow-sm group">
-                          {/* Topic Badge - Vurgulu gösterim */}
-                          {message.topic && message.topic.topic_title && (
-                            <div className="mb-3 pb-3 border-b border-gray-300">
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
-                                  Konu:
-                                </span>
-                                <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-500 to-purple-600 text-white text-sm font-bold rounded-lg shadow-md">
-                                  <svg
-                                    className="w-4 h-4"
-                                    fill="none"
-                                    stroke="currentColor"
-                                    viewBox="0 0 24 24"
-                                  >
-                                    <path
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                      strokeWidth={2}
-                                      d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"
-                                    />
-                                  </svg>
-                                  {message.topic.topic_title}
-                                  {message.topic.confidence_score && message.topic.confidence_score > 0 && (
-                                    <span className="ml-1 text-xs opacity-90">
-                                      ({Math.round(message.topic.confidence_score * 100)}%)
-                                    </span>
-                                  )}
-                                </span>
-                              </div>
-                            </div>
-                          )}
-                          <div className="prose prose-sm max-w-none text-gray-800 leading-relaxed markdown-content">
+                          <div className="prose prose-sm max-w-none text-gray-800">
                             <ReactMarkdown
-                              remarkPlugins={[remarkGfm]}
                               components={{
-                                p: ({ node, ...props }) => (
-                                  <p
-                                    className="mb-4 text-gray-800 leading-7"
-                                    {...props}
-                                  />
+                                p: ({ children }) => (
+                                  <p className="mb-2 last:mb-0">{children}</p>
                                 ),
-                                h1: ({ node, ...props }) => (
-                                  <h1
-                                    className="text-2xl font-bold mb-3 mt-6 text-gray-900 border-b border-gray-200 pb-2"
-                                    {...props}
-                                  />
+                                ul: ({ children }) => (
+                                  <ul className="ml-4 mb-2 list-disc">
+                                    {children}
+                                  </ul>
                                 ),
-                                h2: ({ node, ...props }) => (
-                                  <h2
-                                    className="text-xl font-bold mb-3 mt-5 text-gray-900"
-                                    {...props}
-                                  />
+                                ol: ({ children }) => (
+                                  <ol className="ml-4 mb-2 list-decimal">
+                                    {children}
+                                  </ol>
                                 ),
-                                h3: ({ node, ...props }) => (
-                                  <h3
-                                    className="text-lg font-semibold mb-2 mt-4 text-gray-900"
-                                    {...props}
-                                  />
+                                li: ({ children }) => (
+                                  <li className="mb-1">{children}</li>
                                 ),
-                                ul: ({ node, ...props }) => (
-                                  <ul
-                                    className="list-disc list-inside mb-4 space-y-2 text-gray-800"
-                                    {...props}
-                                  />
+                                strong: ({ children }) => (
+                                  <strong className="font-semibold text-gray-900">
+                                    {children}
+                                  </strong>
                                 ),
-                                ol: ({ node, ...props }) => (
-                                  <ol
-                                    className="list-decimal list-inside mb-4 space-y-2 text-gray-800"
-                                    {...props}
-                                  />
-                                ),
-                                li: ({ node, ...props }) => (
-                                  <li className="ml-4" {...props} />
-                                ),
-                                code: ({
-                                  node,
-                                  inline,
-                                  ...props
-                                }: any) =>
-                                  inline ? (
-                                    <code
-                                      className="bg-gray-100 text-indigo-700 px-1.5 py-0.5 rounded text-sm font-mono"
-                                      {...props}
-                                    />
-                                  ) : (
-                                    <code
-                                      className="block bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto text-sm font-mono mb-4"
-                                      {...props}
-                                    />
-                                  ),
-                                pre: ({ node, ...props }) => (
-                                  <pre
-                                    className="bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto mb-4"
-                                    {...props}
-                                  />
-                                ),
-                                blockquote: ({ node, ...props }) => (
-                                  <blockquote
-                                    className="border-l-4 border-indigo-500 pl-4 italic text-gray-700 my-4 bg-indigo-50 py-2 rounded-r"
-                                    {...props}
-                                  />
-                                ),
-                                strong: ({ node, ...props }) => (
-                                  <strong
-                                    className="font-bold text-gray-900"
-                                    {...props}
-                                  />
-                                ),
-                                em: ({ node, ...props }) => (
-                                  <em
-                                    className="italic text-gray-700"
-                                    {...props}
-                                  />
-                                ),
-                                a: ({ node, ...props }) => (
-                                  <a
-                                    className="text-indigo-600 hover:text-indigo-800 underline"
-                                    {...props}
-                                  />
+                                code: ({ children }) => (
+                                  <code className="bg-gray-200 px-1 py-0.5 rounded text-sm">
+                                    {children}
+                                  </code>
                                 ),
                               }}
                             >
@@ -574,27 +581,31 @@ export default function StudentChatPage() {
                                 formatTimestamp(message.timestamp)}
                             </span>
 
-                            {/* Emoji Feedback */}
-                            {message.aprag_interaction_id &&
-                              user &&
-                              selectedSession && (
-                                <QuickEmojiFeedback
-                                  interactionId={message.aprag_interaction_id}
-                                  userId={user.id.toString()}
-                                  sessionId={selectedSession}
-                                  initialEmoji={message.emoji_feedback}
-                                  onFeedbackSubmitted={refreshHistory}
-                                />
-                              )}
+            {/* Emoji Feedback */}
+            {message.aprag_interaction_id &&
+              user &&
+              selectedSession && (
+                <QuickEmojiFeedback
+                  interactionId={message.aprag_interaction_id}
+                  userId={user.id.toString()}
+                  sessionId={selectedSession}
+                  onFeedbackSubmitted={() => {
+                    // Trigger EBARS refresh after emoji feedback
+                    if (ebarsEnabled) {
+                      setTimeout(() => setEbarsRefreshTrigger(prev => prev + 1), 500);
+                    }
+                  }}
+                />
+              )}
                           </div>
 
-                          {/* Question Suggestions */}
+                          {/* İlgili Sorular (Suggestions) */}
                           {Array.isArray(message.suggestions) &&
                             message.suggestions.length > 0 && (
-                              <div className="mt-4 pt-4 border-t border-gray-200">
+                              <div className="mt-6 pt-4 border-t border-gray-200">
                                 <div className="flex items-center gap-2 mb-3">
                                   <svg
-                                    className="w-4 h-4 text-indigo-600"
+                                    className="w-5 h-5 text-indigo-600"
                                     fill="none"
                                     stroke="currentColor"
                                     viewBox="0 0 24 24"
@@ -614,104 +625,105 @@ export default function StudentChatPage() {
                                   {message.suggestions.map((suggestion, i) => (
                                     <button
                                       key={i}
-                                      onClick={() =>
-                                        handleSuggestionClick(suggestion)
-                                      }
-                                      className="group px-3 py-2 text-sm bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-700 border border-indigo-200 rounded-lg hover:from-indigo-100 hover:to-purple-100 hover:border-indigo-300 hover:shadow-md transition-all duration-200 flex items-center gap-2"
+                                      onClick={async () => {
+                                        setQuery(suggestion);
+                                        setTimeout(async () => {
+                                          await sendMessage(suggestion, sessionRagSettings);
+                                        }, 100);
+                                      }}
+                                      className="px-4 py-2 text-sm bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-full hover:shadow-md transition-all duration-200 transform hover:scale-105 min-h-[40px] flex items-center gap-2"
                                       title="Bu soruyu sor"
                                     >
-                                      <svg
-                                        className="w-4 h-4 text-indigo-500 group-hover:text-indigo-600"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        viewBox="0 0 24 24"
-                                      >
-                                        <path
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          strokeWidth={2}
-                                          d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                                        />
-                                      </svg>
+                                      <span>💡</span>
                                       <span>{suggestion}</span>
                                     </button>
                                   ))}
                                 </div>
                               </div>
                             )}
-                        </div>
 
-                        {/* Sources with Chunks - Hide if knowledge base is used */}
-                        {message.sources &&
-                          message.sources.length > 0 &&
-                          (() => {
-                            const types = getSourceTypes(message.sources);
-                            const hasKB = types.has("knowledge_base");
-
-                            // If knowledge base is used, don't show detailed source listing
-                            if (hasKB) return null;
-
-                            return (
-                              <div className="mt-2 ml-4">
-                                <details className="text-xs">
-                                  <summary className="cursor-pointer hover:text-gray-700 font-medium text-gray-600">
-                                    📚 {message.sources.length} kaynak
-                                    kullanıldı
-                                  </summary>
-                                  <div className="mt-2 space-y-2">
-                                    {getUniqueSources(message.sources).map(
-                                      (sourceGroup, idx) => (
+                          {/* Sources with Chunks */}
+                          {message.sources && message.sources.length > 0 && (
+                            <div className="mt-2 ml-4">
+                              <details className="text-xs">
+                                <summary className="cursor-pointer hover:text-gray-700 font-medium text-gray-600">
+                                  📚 {message.sources.length} kaynak kullanıldı
+                                </summary>
+                                <div className="mt-2 space-y-2">
+                                  {getUniqueSources(message.sources).map(
+                                    (sourceGroup, idx) => {
+                                      const filename = sourceGroup.filename || "unknown";
+                                      const isKnowledgeBase = filename.toLowerCase() === "unknown" || filename.trim() === "";
+                                      const displayName = isKnowledgeBase ? "Bilgi Tabanı" : filename;
+                                      
+                                      return (
                                         <div
                                           key={idx}
-                                          className="bg-gray-50 rounded-lg p-2"
+                                          className={`rounded-lg p-2 ${
+                                            isKnowledgeBase 
+                                              ? "bg-purple-50 border border-purple-200" 
+                                              : "bg-gray-50"
+                                          }`}
                                         >
-                                          <div className="font-medium text-gray-700 mb-1">
-                                            📄 {sourceGroup.filename}
+                                          <div className={`font-medium mb-1 flex items-center gap-2 ${
+                                            isKnowledgeBase 
+                                              ? "text-purple-800" 
+                                              : "text-gray-700"
+                                          }`}>
+                                            {isKnowledgeBase ? (
+                                              <>
+                                                <span className="text-purple-600">📚</span>
+                                                <span>{displayName}</span>
+                                              </>
+                                            ) : (
+                                              <>
+                                                <span>📄</span>
+                                                <span>{displayName}</span>
+                                              </>
+                                            )}
                                           </div>
                                           <div className="flex flex-wrap gap-1">
                                             {sourceGroup.chunks.map(
-                                              (chunk, chunkIdx) => (
-                                                <button
-                                                  key={chunkIdx}
-                                                  onClick={() =>
-                                                    handleSourceClick(chunk)
-                                                  }
-                                                  className="px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors text-xs"
-                                                  title={`Chunk ${
-                                                    (chunk.metadata
-                                                      ?.chunk_index ?? 0) + 1
-                                                  } - Skor: ${(
-                                                    chunk.score * 100
-                                                  ).toFixed(0)}%`}
-                                                >
-                                                  #
-                                                  {(chunk.metadata
-                                                    ?.chunk_index ?? 0) + 1}
-                                                  {chunk.metadata
-                                                    ?.page_number &&
-                                                    ` (s.${chunk.metadata.page_number})`}
-                                                </button>
-                                              )
+                                              (chunk, chunkIdx) => {
+                                                const chunkNumber = chunkIdx + 1;
+                                                return (
+                                                  <button
+                                                    key={chunkIdx}
+                                                    onClick={() =>
+                                                      handleSourceClick(chunk)
+                                                    }
+                                                    className="px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors text-xs"
+                                                    title={`Parça ${chunkNumber} - Skor: ${(
+                                                      chunk.score * 100
+                                                    ).toFixed(0)}%`}
+                                                  >
+                                                    #{chunkNumber}
+                                                    {chunk.metadata?.page_number &&
+                                                      ` (s.${chunk.metadata.page_number})`}
+                                                  </button>
+                                                );
+                                              }
                                             )}
                                           </div>
                                         </div>
-                                      )
-                                    )}
-                                  </div>
-                                </details>
-                              </div>
-                            );
-                          })()}
+                                      );
+                                    }
+                                  )}
+                                </div>
+                              </details>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   )}
                 </div>
               ))}
 
-              {/* Loading Indicator - AI Teacher Thinking */}
-              {chatLoading && (
+              {/* Loading Indicator - AI Teacher Thinking with Async Progress */}
+              {isQuerying && messages.length > 0 && messages[messages.length - 1]?.bot === "..." && (
                 <div className="flex justify-start">
-                  <div className="relative bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50 border-2 border-blue-300 rounded-2xl rounded-tl-sm px-6 py-5 shadow-2xl max-w-lg animate-fade-in">
+                  <div className="relative bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50 border-2 border-blue-300 rounded-2xl rounded-tl-sm px-6 py-5 shadow-2xl max-w-lg">
                     {/* Animated background effect */}
                     <div className="absolute inset-0 bg-gradient-to-r from-blue-400/10 via-purple-400/10 to-pink-400/10 rounded-2xl animate-pulse"></div>
 
@@ -720,89 +732,112 @@ export default function StudentChatPage() {
                       <div className="flex items-center gap-3 mb-4">
                         <div className="relative">
                           {/* Main robot icon with glow */}
-                          <div className="w-12 h-12 bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 rounded-full flex items-center justify-center shadow-lg animate-pulse">
+                          <div className="w-12 h-12 bg-gradient-to-br from-blue-500 via-purple-500 to-pink-500 rounded-full flex items-center justify-center shadow-lg animate-ai-thinking">
                             <span className="text-2xl">🤖</span>
                           </div>
                           {/* Pulsing ring effect */}
-                          <div className="absolute inset-0 rounded-full border-2 border-blue-400 animate-ping"></div>
+                          <div className="absolute inset-0 rounded-full border-2 border-blue-400 animate-ping opacity-75"></div>
                           {/* Status indicator */}
-                          <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-400 rounded-full border-2 border-white shadow-lg">
-                            <div className="absolute inset-0 bg-green-400 rounded-full animate-ping"></div>
+                          <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-400 rounded-full border-2 border-white shadow-lg animate-glow">
+                            <div className="absolute inset-0 bg-green-400 rounded-full animate-ping opacity-60"></div>
                           </div>
                         </div>
                         <div className="flex-1">
-                          <p className="text-base font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600 animate-pulse">
-                            🧠 AI Asistanı Cevap Hazırlıyor...
+                          <p className="text-base font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600">
+                            {asyncTaskProgress
+                              ? `🚀 ${asyncTaskProgress.currentStep}`
+                              : "🧠 AI Asistanı Cevap Hazırlıyor..."}
                           </p>
-                          {/* Animated dots */}
-                          <div className="flex items-center gap-1.5 mt-1.5">
-                            <span
-                              className="w-2.5 h-2.5 bg-blue-500 rounded-full animate-bounce shadow-md"
-                              style={{
-                                animationDelay: "0ms",
-                                animationDuration: "1s",
-                              }}
-                            ></span>
-                            <span
-                              className="w-2.5 h-2.5 bg-purple-500 rounded-full animate-bounce shadow-md"
-                              style={{
-                                animationDelay: "200ms",
-                                animationDuration: "1s",
-                              }}
-                            ></span>
-                            <span
-                              className="w-2.5 h-2.5 bg-pink-500 rounded-full animate-bounce shadow-md"
-                              style={{
-                                animationDelay: "400ms",
-                                animationDuration: "1s",
-                              }}
-                            ></span>
-                          </div>
+                          {/* Time estimate or animated dots */}
+                          {asyncTaskProgress ? (
+                            <p className="text-xs text-gray-600 mt-1">
+                              ⏱️ Tahmini süre:{" "}
+                              {Math.ceil(asyncTaskProgress.estimatedRemaining)}s
+                            </p>
+                          ) : (
+                            <div className="flex items-center gap-1.5 mt-1.5">
+                              <span
+                                className="w-2.5 h-2.5 bg-blue-500 rounded-full animate-dots-bounce shadow-md"
+                                style={{ animationDelay: "0ms" }}
+                              ></span>
+                              <span
+                                className="w-2.5 h-2.5 bg-purple-500 rounded-full animate-dots-bounce shadow-md"
+                                style={{ animationDelay: "0.2s" }}
+                              ></span>
+                              <span
+                                className="w-2.5 h-2.5 bg-pink-500 rounded-full animate-dots-bounce shadow-md"
+                                style={{ animationDelay: "0.4s" }}
+                              ></span>
+                            </div>
+                          )}
                         </div>
                       </div>
 
-                      {/* Processing steps with icons */}
+                      {/* Processing steps with dynamic progress or static steps */}
                       <div className="space-y-3 text-sm">
-                        <div className="flex items-center gap-3 p-2 bg-white/50 rounded-lg backdrop-blur-sm">
-                          <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
-                          <span className="text-gray-700 font-medium animate-pulse">
-                            📚 Dökümanlar analiz ediliyor...
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3 p-2 bg-white/50 rounded-lg backdrop-blur-sm">
-                          <div className="w-4 h-4 relative">
-                            <div className="absolute inset-0 bg-purple-500 rounded-full animate-ping opacity-75"></div>
-                            <div className="relative w-4 h-4 bg-purple-500 rounded-full"></div>
+                        {asyncTaskProgress ? (
+                          // Dynamic async progress steps
+                          <div className="space-y-2">
+                            <div className="flex items-center gap-3 p-2 bg-white/50 rounded-lg backdrop-blur-sm">
+                              <div className="w-4 h-4 relative">
+                                <div className="absolute inset-0 bg-blue-500 rounded-full animate-pulse"></div>
+                                <div className="relative w-4 h-4 bg-blue-600 rounded-full"></div>
+                              </div>
+                              <span className="text-gray-700 font-medium text-xs">
+                                {asyncTaskProgress.currentStep}
+                              </span>
+                            </div>
+                            {asyncTaskProgress.progress > 0 && (
+                              <div className="text-center">
+                                <span className="text-xs text-gray-600 font-medium">
+                                  %{Math.round(asyncTaskProgress.progress)}{" "}
+                                  tamamlandı
+                                </span>
+                              </div>
+                            )}
                           </div>
-                          <span
-                            className="text-gray-700 font-medium animate-pulse"
-                            style={{ animationDelay: "300ms" }}
-                          >
-                            🎯 En uygun bilgiler seçiliyor...
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-3 p-2 bg-white/50 rounded-lg backdrop-blur-sm">
-                          <div className="w-4 h-4 relative">
-                            <div className="absolute inset-0 bg-pink-500 rounded-full animate-ping opacity-75"></div>
-                            <div className="relative w-4 h-4 bg-pink-500 rounded-full"></div>
-                          </div>
-                          <span
-                            className="text-gray-700 font-medium animate-pulse"
-                            style={{ animationDelay: "600ms" }}
-                          >
-                            ✨ Senin için özel cevap oluşturuluyor...
-                          </span>
-                        </div>
+                        ) : (
+                          // Static loading steps (for sync RAG)
+                          <>
+                            <div className="flex items-center gap-3 p-2 bg-white/50 rounded-lg backdrop-blur-sm">
+                              <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                              <span className="text-gray-700 font-medium">
+                                📚 Dökümanlar analiz ediliyor...
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-3 p-2 bg-white/50 rounded-lg backdrop-blur-sm">
+                              <div className="w-4 h-4 relative">
+                                <div className="absolute inset-0 bg-purple-500 rounded-full animate-ping opacity-75"></div>
+                                <div className="relative w-4 h-4 bg-purple-500 rounded-full animate-pulse"></div>
+                              </div>
+                              <span className="text-gray-700 font-medium">
+                                🎯 En uygun bilgiler seçiliyor...
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-3 p-2 bg-white/50 rounded-lg backdrop-blur-sm">
+                              <div className="w-4 h-4 relative">
+                                <div className="absolute inset-0 bg-pink-500 rounded-full animate-ping opacity-75"></div>
+                                <div className="relative w-4 h-4 bg-pink-500 rounded-full animate-pulse"></div>
+                              </div>
+                              <span className="text-gray-700 font-medium">
+                                ✨ Senin için özel cevap oluşturuluyor...
+                              </span>
+                            </div>
+                          </>
+                        )}
                       </div>
 
                       {/* Progress bar effect */}
                       <div className="mt-4 h-1.5 bg-gray-200 rounded-full overflow-hidden">
                         <div
-                          className="h-full bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 rounded-full animate-pulse"
+                          className="h-full bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 rounded-full"
                           style={{
-                            width: "70%",
-                            animation:
-                              "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+                            width: asyncTaskProgress
+                              ? `${Math.min(
+                                  95,
+                                  Math.max(10, asyncTaskProgress.progress)
+                                )}%`
+                              : "85%",
                           }}
                         ></div>
                       </div>
@@ -855,6 +890,7 @@ export default function StudentChatPage() {
           </div>
         )}
 
+
         {/* Input Area - Fixed at Bottom */}
         <div className="border-t border-gray-200 bg-gray-50 p-4">
           <form onSubmit={handleSendMessage} className="flex gap-3">
@@ -863,18 +899,20 @@ export default function StudentChatPage() {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Sorunuzu yazın..."
-              disabled={chatLoading || !selectedSession}
+              disabled={isQuerying || !selectedSession}
               className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed text-gray-900 placeholder-gray-500"
             />
             <button
               type="submit"
-              disabled={chatLoading || !query.trim() || !selectedSession}
+              disabled={isQuerying || !query.trim() || !selectedSession}
               className="px-6 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all duration-200 flex items-center gap-2 font-medium shadow-md hover:shadow-lg"
             >
-              {chatLoading ? (
+              {isQuerying ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>Gönderiliyor</span>
+                  <span>
+                    {asyncTaskProgress ? "Cevap Üretiliyor" : "Gönderiliyor"}
+                  </span>
                 </>
               ) : (
                 <>
@@ -899,6 +937,9 @@ export default function StudentChatPage() {
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
       />
+
+      {/* KBRAG & Personalization Debug Panel */}
+      <KBRAGPersonalizationDebugPanel debugData={debugData} />
     </div>
   );
 }

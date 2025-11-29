@@ -85,13 +85,14 @@ def _clean_text_for_embedding(text: str) -> str:
     
     return clean_text
 
-def _generate_embeddings_via_http(texts: List[str], use_cache: bool = True) -> List[List[float]]:
+def _generate_embeddings_via_http(texts: List[str], use_cache: bool = True, batch_size: int = 25) -> List[List[float]]:
     """
-    Generate embeddings using HTTP requests to model-inference-service.
+    Generate embeddings using HTTP requests to model-inference-service with batching support.
     
     Args:
         texts: List of texts to embed
         use_cache: Whether to use caching
+        batch_size: Number of texts to process in each batch (default: 25)
     
     Returns:
         List of embeddings
@@ -99,51 +100,53 @@ def _generate_embeddings_via_http(texts: List[str], use_cache: bool = True) -> L
     if not texts:
         return []
     
-    logger.info(f"Generating embeddings for {len(texts)} text(s) via model-inference-service")
+    logger.info(f"Generating embeddings for {len(texts)} text(s) via model-inference-service with batch size {batch_size}")
     
-    # Clean texts
+    # Clean and preprocess texts
     cleaned_texts = []
     for text in texts:
         clean_text = _clean_text_for_embedding(text)
-        # Truncate if too long
         clean_text = _truncate_text_for_embedding(clean_text)
         cleaned_texts.append(clean_text)
     
     # Initialize cache if enabled
     cache = get_cache(ttl=config.get_config().model_config.get('cache_ttl', 3600)) if use_cache else None
     
-    embeddings = []
-    texts_to_process = []
-    indices_to_process = []
+    # Prepare result list with placeholders
+    embeddings = [None] * len(cleaned_texts)
     
-    # Check cache first
-    for i, text in enumerate(cleaned_texts):
-        if cache:
-            cache_key = _get_cache_key(text, "nomic-embed-text")
-            cached_embedding = cache.get(cache_key)
-            if cached_embedding:
-                embeddings.append(cached_embedding)
-                logger.debug(f"Found cached embedding for text {i}")
-                continue
+    # Process in batches
+    for batch_start in range(0, len(cleaned_texts), batch_size):
+        batch_end = min(batch_start + batch_size, len(cleaned_texts))
+        batch_texts = cleaned_texts[batch_start:batch_end]
+        batch_indices = list(range(batch_start, batch_end))
         
-        # Need to process this text
-        embeddings.append(None)  # Placeholder
-        texts_to_process.append(text)
-        indices_to_process.append(i)
-    
-    # Process uncached texts via HTTP
-    if texts_to_process:
-        logger.info(f"Processing {len(texts_to_process)} uncached texts via HTTP")
+        # Check cache for this batch
+        batch_to_fetch = []
+        batch_to_fetch_indices = []
+        
+        for i, text in zip(batch_indices, batch_texts):
+            if cache:
+                cache_key = _get_cache_key(text, "nomic-embed-text")
+                cached_embedding = cache.get(cache_key)
+                if cached_embedding:
+                    embeddings[i] = cached_embedding
+                    logger.debug(f"Found cached embedding for text {i}")
+                    continue
+            
+            batch_to_fetch.append(text)
+            batch_to_fetch_indices.append(i)
+        
+        # Process uncached texts in this batch
+        if not batch_to_fetch:
+            continue
+            
+        logger.info(f"Processing batch of {len(batch_to_fetch)} texts (batch {batch_start//batch_size + 1}/{(len(cleaned_texts) + batch_size - 1)//batch_size})")
         
         try:
-            # Prepare request payload
-            payload = {
-                "texts": texts_to_process
-            }
-            
-            # Make HTTP request to model-inference-service
+            # Prepare and send batch request
+            payload = {"texts": batch_to_fetch}
             embed_url = f"{MODEL_INFERENCE_URL}/embed"
-            logger.debug(f"Making request to: {embed_url}")
             
             response = requests.post(
                 embed_url,
@@ -156,49 +159,39 @@ def _generate_embeddings_via_http(texts: List[str], use_cache: bool = True) -> L
                 result = response.json()
                 processed_embeddings = result.get("embeddings", [])
                 
-                if len(processed_embeddings) != len(texts_to_process):
-                    logger.error(f"Mismatch in embedding count: expected {len(texts_to_process)}, got {len(processed_embeddings)}")
-                    processed_embeddings = []
+                if len(processed_embeddings) != len(batch_to_fetch):
+                    logger.error(f"Mismatch in batch embedding count: expected {len(batch_to_fetch)}, got {len(processed_embeddings)}")
+                    # Skip this batch to avoid index errors
+                    continue
                 
-                # Fill in the results and cache them
-                for i, embedding in enumerate(processed_embeddings):
-                    if i < len(indices_to_process):
-                        original_index = indices_to_process[i]
-                        embeddings[original_index] = embedding
-                        
-                        # Cache the result
-                        if cache and embedding:
-                            cache_key = _get_cache_key(texts_to_process[i], "nomic-embed-text")
+                # Cache and store results
+                for i, (text, embedding) in enumerate(zip(batch_to_fetch, processed_embeddings)):
+                    if embedding:  # Only cache valid embeddings
+                        if cache:
+                            cache_key = _get_cache_key(text, "nomic-embed-text")
                             cache.set(cache_key, embedding)
-                
+                        
+                        # Store the embedding at the correct index
+                        original_index = batch_to_fetch_indices[i]
+                        embeddings[original_index] = embedding
             else:
                 logger.error(f"HTTP request failed with status {response.status_code}: {response.text}")
-                # Fill with empty embeddings for failed requests
-                for i in indices_to_process:
-                    embeddings[i] = []
-                    
+                
         except requests.exceptions.RequestException as e:
-            logger.error(f"HTTP request error: {e}")
-            # Fill with empty embeddings for failed requests
-            for i in indices_to_process:
-                embeddings[i] = []
+            logger.error(f"HTTP request error in batch {batch_start//batch_size + 1}: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error during embedding generation: {e}")
-            # Fill with empty embeddings for failed requests
-            for i in indices_to_process:
-                embeddings[i] = []
+            logger.error(f"Unexpected error during batch processing: {e}")
     
-    # Filter out any None values and empty embeddings
-    final_embeddings = [emb for emb in embeddings if emb is not None and len(emb) > 0]
-    
-    if len(final_embeddings) != len(texts):
-        logger.warning(f"Could only generate {len(final_embeddings)} embeddings out of {len(texts)} requested")
-        
-        # If we failed to generate some embeddings, use simple fallback
-        if len(final_embeddings) < len(texts):
-            logger.warning("Some embeddings failed, using simple fallback for missing ones")
-            fallback_embeddings = _generate_simple_embeddings([t for i, t in enumerate(texts) if i >= len(final_embeddings)])
-            final_embeddings.extend(fallback_embeddings)
+    # Handle any remaining None values (failed embeddings)
+    final_embeddings = []
+    for i, emb in enumerate(embeddings):
+        if emb is not None and len(emb) > 0:
+            final_embeddings.append(emb)
+        else:
+            logger.warning(f"Failed to generate embedding for text at index {i}, using fallback")
+            # Use a simple fallback for failed embeddings
+            fallback = _generate_simple_embeddings([texts[i]])[0] if i < len(texts) else [0.0] * 768
+            final_embeddings.append(fallback)
     
     logger.info(f"Successfully generated {len(final_embeddings)} embeddings via model-inference-service")
     return final_embeddings
@@ -250,7 +243,7 @@ def _generate_simple_embeddings(texts: List[str]) -> List[List[float]]:
     logger.info(f"Generated {len(embeddings)} simple fallback embeddings")
     return embeddings
 
-def generate_embeddings(texts: List[str], model: str = None, use_cache: bool = True, provider: str = None) -> List[List[float]]:
+def generate_embeddings(texts: List[str], model: str = None, use_cache: bool = True, provider: str = None, batch_size: int = 25) -> List[List[float]]:
     """
     Generates embeddings for a list of texts using model-inference-service.
     Supports caching for improved performance.
@@ -260,6 +253,7 @@ def generate_embeddings(texts: List[str], model: str = None, use_cache: bool = T
         model: The embedding model to use (ignored, always uses nomic-embed-text via service).
         use_cache: Whether to use caching for embeddings.
         provider: Provider override (ignored, always uses model-inference-service).
+        batch_size: Number of texts to process in each batch (default: 25)
 
     Returns:
         A list of embeddings, where each embedding is a list of floats.
@@ -268,10 +262,10 @@ def generate_embeddings(texts: List[str], model: str = None, use_cache: bool = T
     if not texts:
         return []
     
-    logger.info(f"Generating embeddings for {len(texts)} text(s) using model-inference-service")
+    logger.info(f"Generating embeddings for {len(texts)} text(s) using model-inference-service with batch size {batch_size}")
     
     # Always use HTTP-based embedding generation via model-inference-service
-    result = _generate_embeddings_via_http(texts, use_cache)
+    result = _generate_embeddings_via_http(texts, use_cache, batch_size)
     
     if not result:
         # Last resort: simple embeddings

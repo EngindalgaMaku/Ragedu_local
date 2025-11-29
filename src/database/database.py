@@ -65,15 +65,21 @@ class DatabaseManager:
             conn.close()
     
     def init_database(self):
-        """Initialize database with tables if they don't exist"""
+        """Initialize database with tables if they don't exist.
+
+        This keeps existing auth/session tables and also ensures that
+        markdown category tables are present for document management.
+        """
         try:
             with self.get_connection() as conn:
-                # Check if tables exist
-                cursor = conn.execute("""
+                # Check if core auth tables exist
+                cursor = conn.execute(
+                    """
                     SELECT name FROM sqlite_master 
                     WHERE type='table' AND name='users'
-                """)
-                
+                    """
+                )
+
                 if not cursor.fetchone():
                     logger.info("Creating database tables...")
                     self.create_tables(conn)
@@ -81,16 +87,24 @@ class DatabaseManager:
                     logger.info("Database initialized successfully")
                 else:
                     logger.info("Database tables already exist")
-                    
+
+                # Always ensure markdown helper tables exist (idempotent)
+                self.ensure_markdown_tables(conn)
+
         except Exception as e:
             logger.error(f"Database initialization failed: {e}")
             raise
     
     def create_tables(self, conn: sqlite3.Connection):
-        """Create all database tables"""
-        
+        """Create core auth/session tables.
+
+        Markdown-related tables are managed separately by ensure_markdown_tables
+        so they can be added safely to existing databases.
+        """
+
         # Create roles table
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE roles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL,
@@ -99,10 +113,12 @@ class DatabaseManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """)
-        
+            """
+        )
+
         # Create users table
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
@@ -117,10 +133,12 @@ class DatabaseManager:
                 last_login TIMESTAMP,
                 FOREIGN KEY (role_id) REFERENCES roles(id)
             )
-        """)
-        
+            """
+        )
+
         # Create user_sessions table
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE user_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -131,17 +149,61 @@ class DatabaseManager:
                 user_agent TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
-        """)
-        
+            """
+        )
+
         # Create indexes for performance
         conn.execute("CREATE INDEX idx_users_email ON users(email)")
         conn.execute("CREATE INDEX idx_users_username ON users(username)")
         conn.execute("CREATE INDEX idx_sessions_token ON user_sessions(token_hash)")
         conn.execute("CREATE INDEX idx_sessions_user ON user_sessions(user_id)")
         conn.execute("CREATE INDEX idx_sessions_expires ON user_sessions(expires_at)")
-        
+
+        # Also create markdown helper tables for a fully initialized DB
+        self.ensure_markdown_tables(conn)
+
         conn.commit()
         logger.info("Database tables created successfully")
+
+    def ensure_markdown_tables(self, conn: sqlite3.Connection):
+        """Ensure markdown category tables exist (idempotent).
+
+        - markdown_categories: stores category definitions
+        - markdown_file_categories: maps markdown filenames to a single category
+        """
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS markdown_categories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS markdown_file_categories (
+                    filename TEXT PRIMARY KEY,
+                    category_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (category_id) REFERENCES markdown_categories(id) ON DELETE SET NULL
+                )
+                """
+            )
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_markdown_file_categories_category ON markdown_file_categories(category_id)"
+            )
+
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to ensure markdown tables: {e}")
+            raise
     
     def insert_default_data(self, conn: sqlite3.Connection):
         """Insert default roles and admin user"""

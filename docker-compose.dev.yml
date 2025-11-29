@@ -6,97 +6,155 @@ services:
   # API GATEWAY - Hot Reload
   # ============================================
   api-gateway:
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          memory: 512M
     volumes:
-      # Kod değişikliklerini direkt mount et
       - ./src/api:/app/src/api
       - ./src/database:/app/src/database
-      # Mevcut volume'ları koru
       - session_data:/app/sessions
       - markdown_data:/app/data/markdown
       - database_data:/app/data
-    # API Gateway main.py içinde uvicorn.run kullanıyor, --reload için uvicorn komutu kullan
-    command: python -m uvicorn src.api.main:app --host 0.0.0.0 --port ${API_GATEWAY_PORT:-8000} --reload
+    command: python -m uvicorn src.api.main:app --host 0.0.0.0 --port ${API_GATEWAY_PORT:-8000} --reload --workers 2
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${API_GATEWAY_PORT:-8000}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   # ============================================
   # DOCUMENT PROCESSING SERVICE - Hot Reload
   # ============================================
   document-processing-service:
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1.5G
+        reservations:
+          memory: 512M
     volumes:
-      # Kod değişikliklerini direkt mount et
       - ./services/document_processing_service:/app
       - ./src:/app/src
-      # Mevcut volume'ları koru
       - session_data:/app/sessions
-    command: python -m uvicorn main_new:app --host 0.0.0.0 --port 8080 --reload
+    command: python -m uvicorn main_new:app --host 0.0.0.0 --port 8080 --reload --workers 1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ============================================
   # AUTH SERVICE - Hot Reload
   # ============================================
   auth-service:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          memory: 512M
     volumes:
-      # Kod değişikliklerini direkt mount et
       - ./services/auth_service:/app
-      # Mevcut volume'ları koru
       - database_data:/app/data
       - ./src/database:/app/src_database
       - ./services/auth_service/create_test_user.py:/app/create_test_user.py
       - ./services/auth_service/reset_admin_password.py:/app/reset_admin_password.py
-    # init-db.sh'i koru ama reload ekle
     command: >
       sh -c "/app/init-db.sh &&
-             python -m uvicorn main:app --host 0.0.0.0 --port $$PORT --reload"
+             python -m uvicorn main:app --host 0.0.0.0 --port $$PORT --reload --workers 1"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:-8006/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
   # ============================================
   # APRAG SERVICE - Hot Reload
   # ============================================
   aprag-service:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          memory: 512M
     volumes:
-      # Kod değişikliklerini direkt mount et
       - ./services/aprag_service:/app
-      # Mevcut volume'ları koru
       - database_data:/app/data
       - ./services/auth_service/database/migrations:/app/migrations:ro
-    command: python -m uvicorn main:app --host 0.0.0.0 --port ${APRAG_SERVICE_PORT:-8007} --reload
+    command: python -m uvicorn main:app --host 0.0.0.0 --port ${APRAG_SERVICE_PORT:-8007} --reload --workers 2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8007/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   # ============================================
   # MODEL INFERENCE SERVICE - Hot Reload
   # ============================================
   model-inference-service:
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 3G
+        reservations:
+          memory: 1.5G
     volumes:
-      # Zaten main.py mount edilmiş, tüm servisi mount et
       - ./services/model_inference_service:/app
-      # Mevcut volume'ları koru
       - ollama_cache:/root/.ollama
     command: >
       sh -c "echo 'Using external Ollama at ${OLLAMA_HOST}' &&
-             uvicorn main:app --host 0.0.0.0 --port ${MODEL_INFERENCE_PORT:-8002} --reload"
+             uvicorn main:app --host 0.0.0.0 --port ${MODEL_INFERENCE_PORT:-8002} --reload --workers 2"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:{MODEL_INFERENCE_PORT:-8002}/health').read()"]
+
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ============================================
   # EVALUATION SERVICE - Hot Reload
   # ============================================
-  evaluation-service:
-    volumes:
-      # Kod değişikliklerini direkt mount et
-      - ./services/evaluation_service:/app
-    command: python -m uvicorn main:app --host 0.0.0.0 --port ${EVALUATION_SERVICE_PORT:-8010} --reload
+  # evaluation-service:
+  #   volumes:
+  #     # Kod değişikliklerini direkt mount et
+  #     - ./services/evaluation_service:/app
+  #   command: python -m uvicorn main:app --host 0.0.0.0 --port ${EVALUATION_SERVICE_PORT:-8010} --reload
 
   # ============================================
   # FRONTEND - Hot Reload (Next.js Dev Server)
   # ============================================
   frontend:
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1.5G
+        reservations:
+          memory: 512M
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
     volumes:
-      # Kod değişikliklerini direkt mount et
       - ./frontend:/app
-      # node_modules ve .next container'da kalır (performans için)
       - /app/node_modules
       - /app/.next
+    working_dir: /app
     environment:
-      # Development mode
       - NODE_ENV=development
       - DOCKER_ENV=true
+      - NEXT_TELERY_DISABLED=1
       # API Gateway configuration for Docker
       - API_GATEWAY_HOST=api-gateway
       - API_GATEWAY_PORT=8000
@@ -106,7 +164,12 @@ services:
       - NEXT_PUBLIC_AUTH_URL=/api
       - API_GATEWAY_INTERNAL_URL=http://api-gateway:8000
       - AUTH_SERVICE_INTERNAL_URL=http://auth-service:8006
-    command: npm run dev
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    command: sh -c "npm install && npm run dev"
 
   # ============================================
   # HARİCİ SERVİSLER - Değişiklik yok
@@ -114,4 +177,3 @@ services:
   # chromadb-service, marker-api, docstrange-service, reranker-service
   # Bunlar için volume mount gerekmez, olduğu gibi kalır
   # (docker-compose.yml'deki ayarlar kullanılır)
-

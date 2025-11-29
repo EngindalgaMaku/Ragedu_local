@@ -38,17 +38,16 @@ except ImportError:
         
         config = Config()
 
-# Import semantic chunking functionality with safe fallback
+# DISABLED: Old semantic chunking - use lightweight system instead
 SEMANTIC_CHUNKING_AVAILABLE = False
-try:
-    from .semantic_chunker import create_semantic_chunks
-    SEMANTIC_CHUNKING_AVAILABLE = True
-    logger.info("✅ Semantic chunking functionality available")
-except ImportError:
-    logger.warning("⚠️ Semantic chunking not available - using enhanced markdown fallback")
-    # Create safe fallback function
-    def create_semantic_chunks(text, target_size=1000, overlap_ratio=0.1, language="auto", fallback_strategy="markdown"):
-        """Fallback semantic chunking using enhanced markdown strategy."""
+logger.info("ℹ️ Old semantic chunking disabled - using lightweight system")
+
+# Create safe fallback function that redirects to lightweight
+def create_semantic_chunks(text, target_size=1000, overlap_ratio=0.1, language="auto", fallback_strategy="lightweight"):
+    """Redirect to lightweight chunking system."""
+    if LIGHTWEIGHT_CHUNKING_AVAILABLE:
+        return create_lightweight_chunks(text, target_size, overlap_ratio, language)
+    else:
         chunk_overlap = int(target_size * overlap_ratio)
         return _chunk_by_markdown_structure(text, target_size, chunk_overlap)
 
@@ -565,72 +564,17 @@ def chunk_text(
             return _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
     
     elif strategy == "semantic":
-        # Legacy semantic chunking with safe fallback
-        if SEMANTIC_CHUNKING_AVAILABLE and not use_lightweight_chunker:
-            try:
-                overlap_ratio = chunk_overlap / chunk_size if chunk_overlap > 0 else 0.1
-                chunks = create_semantic_chunks(
-                    text=normalized,
-                    target_size=chunk_size,
-                    overlap_ratio=overlap_ratio,
-                    language=language,
-                    fallback_strategy="markdown"
-                )
-                logger.info(f"✅ Legacy semantic chunking successful: {len(chunks)} chunks")
-                return chunks
-            except Exception as e:
-                logger.error(f"❌ Legacy semantic chunking failed: {e}")
-                logger.info("⚠️ Falling back to enhanced markdown strategy")
-                return _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
-        else:
-            logger.info("⚠️ Using lightweight chunker instead of legacy semantic chunking")
-            return chunk_text(text, chunk_size, chunk_overlap, "lightweight", language, use_embedding_refinement, True, use_llm_post_processing, llm_model_name, model_inference_url)
+        # Redirect semantic strategy to lightweight chunker
+        logger.info("⚠️ Redirecting 'semantic' strategy to 'lightweight' chunker (better performance)")
+        return chunk_text(text, chunk_size, chunk_overlap, "lightweight", language, use_embedding_refinement, True, use_llm_post_processing, llm_model_name, model_inference_url)
     
     elif strategy == "hybrid":
         # Hybrid strategy: Start with markdown, enhance with semantic analysis if available
         logger.info("Applying hybrid chunking strategy (markdown + semantic)")
         
-        try:
-            # Get initial structural chunks using enhanced markdown
-            structural_chunks = _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
-            
-            if not SEMANTIC_CHUNKING_AVAILABLE:
-                logger.info("⚠️ Semantic analysis not available for hybrid, using pure enhanced markdown")
-                return structural_chunks
-            
-            # Apply semantic refinement to large chunks only
-            refined_chunks = []
-            
-            for chunk in structural_chunks:
-                if len(chunk) > chunk_size * 0.7:  # Only refine larger chunks
-                    try:
-                        overlap_ratio = chunk_overlap / chunk_size if chunk_overlap > 0 else 0.1
-                        semantic_sub_chunks = create_semantic_chunks(
-                            text=chunk,
-                            target_size=chunk_size,
-                            overlap_ratio=overlap_ratio,
-                            language=language,
-                            fallback_strategy="markdown"
-                        )
-                        
-                        if len(semantic_sub_chunks) > 1 and all(len(sc) >= 100 for sc in semantic_sub_chunks):
-                            refined_chunks.extend(semantic_sub_chunks)
-                            logger.debug(f"Refined chunk into {len(semantic_sub_chunks)} semantic sub-chunks")
-                        else:
-                            refined_chunks.append(chunk)
-                    except Exception as e:
-                        logger.warning(f"Semantic refinement failed: {e}")
-                        refined_chunks.append(chunk)
-                else:
-                    refined_chunks.append(chunk)
-            
-            logger.info(f"✅ Hybrid strategy: {len(structural_chunks)} structural -> {len(refined_chunks)} refined chunks")
-            return refined_chunks
-            
-        except Exception as e:
-            logger.error(f"❌ Hybrid chunking strategy failed: {e}")
-            logger.info("⚠️ Falling back to pure enhanced markdown strategy")
-            return _chunk_by_markdown_structure(normalized, chunk_size, chunk_overlap)
+        # Redirect hybrid strategy to lightweight chunker
+        logger.info("⚠️ Redirecting 'hybrid' strategy to 'lightweight' chunker (better performance)")
+        return chunk_text(text, chunk_size, chunk_overlap, "lightweight", language, use_embedding_refinement, True, use_llm_post_processing, llm_model_name, model_inference_url)
     
     else:
         logger.warning(f"Unknown chunking strategy '{strategy}', falling back to lightweight chunker.")

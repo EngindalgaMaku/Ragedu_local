@@ -28,13 +28,63 @@ except ImportError:
             return os.getenv("APRAG_ENABLED", "true").lower() == "true"
         
         @staticmethod
+        def is_egitsel_kbrag_enabled(session_id=None):
+            """Fallback for Eğitsel-KBRAG"""
+            return os.getenv("EGITSEL_KBRAG_ENABLED", "false").lower() == "true"
+        
+        @staticmethod
+        def is_module_extraction_enabled(session_id=None):
+            """Fallback for module extraction"""
+            return os.getenv("MODULE_EXTRACTION_ENABLED", "true").lower() == "true"
+        
+        @staticmethod
+        def is_cacs_enabled(session_id=None):
+            """Fallback for CACS"""
+            return os.getenv("CACS_ENABLED", "false").lower() == "true"
+        
+        @staticmethod
+        def is_zpd_enabled(session_id=None):
+            """Fallback for ZPD"""
+            return os.getenv("ZPD_ENABLED", "false").lower() == "true"
+        
+        @staticmethod
+        def is_bloom_enabled(session_id=None):
+            """Fallback for Bloom taxonomy"""
+            return os.getenv("BLOOM_ENABLED", "false").lower() == "true"
+        
+        @staticmethod
+        def is_cognitive_load_enabled(session_id=None):
+            """Fallback for cognitive load"""
+            return os.getenv("COGNITIVE_LOAD_ENABLED", "false").lower() == "true"
+        
+        @staticmethod
+        def is_emoji_feedback_enabled(session_id=None):
+            """Fallback for emoji feedback"""
+            return os.getenv("EMOJI_FEEDBACK_ENABLED", "false").lower() == "true"
+        
+        @staticmethod
+        def is_progressive_assessment_enabled(session_id=None):
+            """Fallback for progressive assessment"""
+            return os.getenv("PROGRESSIVE_ASSESSMENT_ENABLED", "false").lower() == "true"
+        
+        @staticmethod
+        def is_module_quality_validation_enabled(session_id=None):
+            """Fallback for module quality validation"""
+            return os.getenv("MODULE_QUALITY_VALIDATION_ENABLED", "true").lower() == "true"
+        
+        @staticmethod
+        def is_module_curriculum_alignment_enabled(session_id=None):
+            """Fallback for module curriculum alignment"""
+            return os.getenv("MODULE_CURRICULUM_ALIGNMENT_ENABLED", "true").lower() == "true"
+        
+        @staticmethod
         def load_from_database(db_manager):
             """Fallback method for database loading"""
             pass
 
 # Import database and API modules
 from database.database import DatabaseManager
-from api import interactions, feedback, profiles, personalization, recommendations, analytics, settings, topics, knowledge_extraction, hybrid_rag_query, session_settings
+from api import interactions, feedback, profiles, personalization, recommendations, analytics, settings, topics, knowledge_extraction, hybrid_rag_query, session_settings, modules, async_hybrid_rag_query
 
 # Import CACS scoring (Faz 2 - Eğitsel-KBRAG)
 try:
@@ -51,6 +101,14 @@ try:
 except ImportError as e:
     logger.warning(f"Emoji feedback module not available: {e}")
     EMOJI_FEEDBACK_AVAILABLE = False
+
+# Import EBARS (Emoji-Based Adaptive Response System)
+try:
+    from ebars import router as ebars_router
+    EBARS_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"EBARS module not available: {e}")
+    EBARS_AVAILABLE = False
 
 # Import Progressive Assessment (ADIM 3 - Progressive Assessment Flow)
 try:
@@ -174,13 +232,18 @@ async def health_check():
         "version": "1.0.0",
         "aprag_enabled": FeatureFlags.is_aprag_enabled(),
         "egitsel_kbrag_enabled": FeatureFlags.is_egitsel_kbrag_enabled(),
+        "module_extraction_enabled": FeatureFlags.is_module_extraction_enabled(),
         "features": {
             "cacs": FeatureFlags.is_cacs_enabled(),
             "zpd": FeatureFlags.is_zpd_enabled(),
             "bloom": FeatureFlags.is_bloom_enabled(),
             "cognitive_load": FeatureFlags.is_cognitive_load_enabled(),
             "emoji_feedback": FeatureFlags.is_emoji_feedback_enabled(),
-            "progressive_assessment": FeatureFlags.is_progressive_assessment_enabled()
+            "progressive_assessment": FeatureFlags.is_progressive_assessment_enabled(),
+            "ebars": FeatureFlags.is_ebars_enabled(),
+            "module_extraction": FeatureFlags.is_module_extraction_enabled(),
+            "module_quality_validation": FeatureFlags.is_module_quality_validation_enabled(),
+            "module_curriculum_alignment": FeatureFlags.is_module_curriculum_alignment_enabled()
         }
     }
 
@@ -194,8 +257,10 @@ app.include_router(recommendations.router, prefix="/api/aprag/recommendations", 
 app.include_router(analytics.router, prefix="/api/aprag/analytics", tags=["Analytics"])
 app.include_router(settings.router, prefix="/api/aprag/settings", tags=["Settings"])
 app.include_router(topics.router, prefix="/api/aprag/topics", tags=["Topics"])
+app.include_router(modules.router, prefix="/api/aprag/modules", tags=["Modules"])
 app.include_router(knowledge_extraction.router, prefix="/api/aprag/knowledge", tags=["Knowledge Extraction"])
 app.include_router(hybrid_rag_query.router, prefix="/api/aprag/hybrid-rag", tags=["Hybrid RAG"])
+app.include_router(async_hybrid_rag_query.router, prefix="/api/aprag/async-rag", tags=["Async Hybrid RAG"])
 app.include_router(session_settings.router, prefix="/api/aprag/session-settings", tags=["Session Settings"])
 
 # Include Eğitsel-KBRAG routers (use Depends(get_db) for db access)
@@ -214,6 +279,11 @@ if PROGRESSIVE_ASSESSMENT_AVAILABLE and FeatureFlags.is_progressive_assessment_e
 if ADAPTIVE_QUERY_AVAILABLE and FeatureFlags.is_egitsel_kbrag_enabled():
     app.include_router(adaptive_query.router, prefix="/api/aprag/adaptive-query", tags=["Adaptive Query"])
     logger.info("Adaptive Query (Full Pipeline) endpoints enabled")
+
+# Include EBARS router (Emoji-Based Adaptive Response System)
+if EBARS_AVAILABLE:
+    app.include_router(ebars_router.router, prefix="/api/aprag", tags=["EBARS"])
+    logger.info("EBARS (Emoji-Based Adaptive Response System) endpoints enabled")
 
 
 if __name__ == "__main__":

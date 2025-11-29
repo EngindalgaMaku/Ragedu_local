@@ -216,12 +216,28 @@ class ProfessionalSessionManager:
             try:
                 cursor.execute("PRAGMA table_info(sessions)")
                 cols = {row[1] for row in cursor.fetchall()}
+                self.logger.info(f"Existing columns in sessions table: {cols}")
+                
                 if "rag_settings" not in cols:
+                    self.logger.info("Adding missing column: rag_settings")
                     cursor.execute("ALTER TABLE sessions ADD COLUMN rag_settings TEXT")
+                    conn.commit()
+                    self.logger.info("Successfully added rag_settings column")
+                
                 if "student_entry_count" not in cols:
+                    self.logger.info("Adding missing column: student_entry_count")
                     cursor.execute("ALTER TABLE sessions ADD COLUMN student_entry_count INTEGER DEFAULT 0")
+                    conn.commit()
+                    self.logger.info("Successfully added student_entry_count column")
+                    
+                # Verify columns after migration
+                cursor.execute("PRAGMA table_info(sessions)")
+                cols_after = {row[1] for row in cursor.fetchall()}
+                self.logger.info(f"Columns after migration: {cols_after}")
             except Exception as e:
-                self.logger.warning(f"Failed to ensure missing columns: {e}")
+                self.logger.error(f"Failed to ensure missing columns: {e}", exc_info=True)
+                conn.rollback()
+                raise
             
             # Session backups table
             cursor.execute("""
@@ -395,13 +411,76 @@ class ProfessionalSessionManager:
         """Oturum metadatasını getir"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,))
+            
+            # First, ensure rag_settings column exists
+            try:
+                cursor.execute("PRAGMA table_info(sessions)")
+                cols = {row[1] for row in cursor.fetchall()}
+                if "rag_settings" not in cols:
+                    self.logger.warning("rag_settings column missing, adding it now")
+                    cursor.execute("ALTER TABLE sessions ADD COLUMN rag_settings TEXT")
+                    conn.commit()
+                    self.logger.info("Successfully added rag_settings column")
+            except Exception as e:
+                self.logger.error(f"Failed to ensure rag_settings column: {e}")
+                # Continue anyway, we'll handle it in the query
+            
+            # Use explicit column list to handle missing columns gracefully
+            try:
+                cursor.execute("""
+                    SELECT session_id, name, description, category, status, created_by, 
+                           created_at, updated_at, last_accessed, grade_level, subject_area,
+                           learning_objectives, tags, document_count, total_chunks, query_count,
+                           student_entry_count, avg_response_time, user_rating, notes, 
+                           is_public, collaborators, backup_count,
+                           COALESCE(rag_settings, '') as rag_settings
+                    FROM sessions WHERE session_id = ?
+                """, (session_id,))
+            except sqlite3.OperationalError as e:
+                if "no such column: rag_settings" in str(e):
+                    # Column still missing, try to add it again
+                    self.logger.warning("rag_settings column still missing, attempting to add again")
+                    try:
+                        cursor.execute("ALTER TABLE sessions ADD COLUMN rag_settings TEXT")
+                        conn.commit()
+                        # Retry the query
+                        cursor.execute("""
+                            SELECT session_id, name, description, category, status, created_by, 
+                                   created_at, updated_at, last_accessed, grade_level, subject_area,
+                                   learning_objectives, tags, document_count, total_chunks, query_count,
+                                   student_entry_count, avg_response_time, user_rating, notes, 
+                                   is_public, collaborators, backup_count,
+                                   COALESCE(rag_settings, '') as rag_settings
+                            FROM sessions WHERE session_id = ?
+                        """, (session_id,))
+                    except Exception as e2:
+                        self.logger.error(f"Failed to add rag_settings column: {e2}")
+                        # Fallback: query without rag_settings
+                        cursor.execute("""
+                            SELECT session_id, name, description, category, status, created_by, 
+                                   created_at, updated_at, last_accessed, grade_level, subject_area,
+                                   learning_objectives, tags, document_count, total_chunks, query_count,
+                                   student_entry_count, avg_response_time, user_rating, notes, 
+                                   is_public, collaborators, backup_count
+                            FROM sessions WHERE session_id = ?
+                        """, (session_id,))
+                else:
+                    raise
+            
             row = cursor.fetchone()
             
             if not row:
                 return None
+            
+            # Convert to dict with column names
+            columns = [desc[0] for desc in cursor.description]
+            row_dict = dict(zip(columns, row))
+            
+            # Ensure rag_settings key exists even if column was missing
+            if 'rag_settings' not in row_dict:
+                row_dict['rag_settings'] = ''
                 
-            return self._row_to_metadata(row)
+            return self._row_to_metadata(row_dict)
     
     def update_session_metadata(self, session_id: str, **updates) -> bool:
         """Oturum metadatasını güncelle"""
@@ -493,7 +572,15 @@ class ProfessionalSessionManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            query = "SELECT * FROM sessions WHERE 1=1"
+            query = """
+                SELECT session_id, name, description, category, status, created_by, 
+                       created_at, updated_at, last_accessed, grade_level, subject_area,
+                       learning_objectives, tags, document_count, total_chunks, query_count,
+                       student_entry_count, avg_response_time, user_rating, notes, 
+                       is_public, collaborators, backup_count,
+                       COALESCE(rag_settings, '') as rag_settings
+                FROM sessions WHERE 1=1
+            """
             params = []
             
             if created_by:
@@ -514,7 +601,11 @@ class ProfessionalSessionManager:
             cursor.execute(query, params)
             rows = cursor.fetchall()
             
-            return [self._row_to_metadata(row) for row in rows]
+            # Convert rows to dicts
+            columns = [desc[0] for desc in cursor.description]
+            row_dicts = [dict(zip(columns, row)) for row in rows]
+            
+            return [self._row_to_metadata(row_dict) for row_dict in row_dicts]
     
     def search_sessions(self, query: str, created_by: Optional[str] = None) -> List[SessionMetadata]:
         """Oturumlarda arama yap"""
@@ -522,7 +613,13 @@ class ProfessionalSessionManager:
             cursor = conn.cursor()
             
             search_query = """
-                SELECT * FROM sessions 
+                SELECT session_id, name, description, category, status, created_by, 
+                       created_at, updated_at, last_accessed, grade_level, subject_area,
+                       learning_objectives, tags, document_count, total_chunks, query_count,
+                       student_entry_count, avg_response_time, user_rating, notes, 
+                       is_public, collaborators, backup_count,
+                       COALESCE(rag_settings, '') as rag_settings
+                FROM sessions 
                 WHERE (name LIKE ? OR description LIKE ? OR tags LIKE ? OR notes LIKE ?)
             """
             params = [f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%"]
@@ -536,7 +633,11 @@ class ProfessionalSessionManager:
             cursor.execute(search_query, params)
             rows = cursor.fetchall()
             
-            return [self._row_to_metadata(row) for row in rows]
+            # Convert rows to dicts
+            columns = [desc[0] for desc in cursor.description]
+            row_dicts = [dict(zip(columns, row)) for row in rows]
+            
+            return [self._row_to_metadata(row_dict) for row_dict in row_dicts]
     
     def create_backup(self, session_id: str, description: str = "", 
                      auto_created: bool = False) -> SessionBackup:
@@ -812,31 +913,51 @@ class ProfessionalSessionManager:
     
     def _row_to_metadata(self, row) -> SessionMetadata:
         """Database row'unu SessionMetadata'ya çevir"""
+        # row is already a dict from get_session_metadata
+        if isinstance(row, dict):
+            row_dict = row
+        else:
+            # Fallback: if it's a tuple or Row object, convert to dict
+            row_dict = dict(row) if hasattr(row, 'keys') else {}
+        
+        # Safely handle rag_settings - use .get() to avoid KeyError
+        rag_settings_value = row_dict.get('rag_settings', '')
+        if rag_settings_value:
+            try:
+                if isinstance(rag_settings_value, str):
+                    rag_settings = json.loads(rag_settings_value) if rag_settings_value.strip() else None
+                else:
+                    rag_settings = rag_settings_value
+            except (json.JSONDecodeError, TypeError):
+                rag_settings = None
+        else:
+            rag_settings = None
+        
         return SessionMetadata(
-            session_id=row['session_id'],
-            name=row['name'],
-            description=row['description'] or "",
-            category=SessionCategory(row['category']),
-            status=SessionStatus(row['status']),
-            created_by=row['created_by'],
-            created_at=row['created_at'],
-            updated_at=row['updated_at'],
-            last_accessed=row['last_accessed'],
-            grade_level=row['grade_level'] or "",
-            subject_area=row['subject_area'] or "",
-            learning_objectives=json.loads(row['learning_objectives'] or '[]'),
-            tags=json.loads(row['tags'] or '[]'),
-            document_count=row['document_count'],
-            total_chunks=row['total_chunks'],
-            query_count=row['query_count'],
-            avg_response_time=row['avg_response_time'],
-            user_rating=row['user_rating'],
-            notes=row['notes'] or "",
-            is_public=bool(row['is_public']),
-            collaborators=json.loads(row['collaborators'] or '[]'),
-            backup_count=row['backup_count'],
-            rag_settings=json.loads(row['rag_settings']) if row['rag_settings'] else None,
-            student_entry_count=dict(row).get('student_entry_count', 0)
+            session_id=row_dict['session_id'],
+            name=row_dict['name'],
+            description=row_dict.get('description') or "",
+            category=SessionCategory(row_dict['category']),
+            status=SessionStatus(row_dict['status']),
+            created_by=row_dict['created_by'],
+            created_at=row_dict['created_at'],
+            updated_at=row_dict['updated_at'],
+            last_accessed=row_dict.get('last_accessed') or row_dict.get('updated_at'),
+            grade_level=row_dict.get('grade_level') or "",
+            subject_area=row_dict.get('subject_area') or "",
+            learning_objectives=json.loads(row_dict.get('learning_objectives') or '[]'),
+            tags=json.loads(row_dict.get('tags') or '[]'),
+            document_count=row_dict.get('document_count', 0),
+            total_chunks=row_dict.get('total_chunks', 0),
+            query_count=row_dict.get('query_count', 0),
+            avg_response_time=row_dict.get('avg_response_time', 0.0),
+            user_rating=row_dict.get('user_rating', 0.0),
+            notes=row_dict.get('notes') or "",
+            is_public=bool(row_dict.get('is_public', 0)),
+            collaborators=json.loads(row_dict.get('collaborators') or '[]'),
+            backup_count=row_dict.get('backup_count', 0),
+            rag_settings=rag_settings,
+            student_entry_count=row_dict.get('student_entry_count', 0)
         )
     
     def _log_activity(self, session_id: str, activity_type: str, description: str,

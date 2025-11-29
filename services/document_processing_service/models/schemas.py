@@ -40,8 +40,9 @@ class RAGQueryRequest(BaseModel):
     embedding_model: Optional[str] = None
     max_tokens: Optional[int] = 2048  # Answer length: 1024 (short), 2048 (normal), 4096 (detailed)
     conversation_history: Optional[List[Dict[str, str]]] = None  # [{"role": "user", "content": "..."}]
-    use_hybrid_search: Optional[bool] = True  # Enable hybrid search (semantic + BM25)
+    use_hybrid_search: Optional[bool] = False  # Disabled: Alibaba embedding + reranker is sufficient
     bm25_weight: Optional[float] = 0.3  # Weight for BM25 score (0.3 = 30% keyword, 70% semantic)
+    skip_llm: Optional[bool] = False  # If True, skip LLM generation and return only chunks (for hybrid retriever)
 
 
 class RAGQueryResponse(BaseModel):
@@ -52,17 +53,20 @@ class RAGQueryResponse(BaseModel):
     correction: Optional[Dict[str, Any]] = None  # For self-correction details
 
 
-class CRAGEvaluationRequest(BaseModel):
-    """Request model for CRAG evaluation"""
+class RerankRequest(BaseModel):
+    """Request model for document reranking"""
     query: str
-    retrieved_docs: List[Dict[str, Any]]
+    documents: List[Dict[str, Any]]
 
 
-class CRAGEvaluationResponse(BaseModel):
-    """Response model for CRAG evaluation"""
+class RerankResponse(BaseModel):
+    """Response model for document reranking"""
     success: bool
-    evaluation: Dict[str, Any]
-    filtered_docs: List[Dict[str, Any]]
+    reranked_docs: List[Dict[str, Any]]
+    scores: List[Dict[str, Any]]
+    max_score: float
+    avg_score: float
+    reranker_type: str
 
 
 class ImproveSingleChunkRequest(BaseModel):

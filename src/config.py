@@ -98,6 +98,7 @@ class RAGConfig:
             'model_cache_path': '/app/models' if self.is_cloud else 'models/',
             'max_memory_mb': int(os.getenv('MARKER_MAX_MEMORY_MB', '3500')),
             'timeout_seconds': int(os.getenv('MARKER_TIMEOUT_SECONDS', '900')),
+            'embedding_batch_size': int(os.getenv('EMBEDDING_BATCH_SIZE', '25')),  # Default batch size of 25
             
             # CRAG Retrieval Evaluator Settings (2025 Best Practice)
             'enable_retrieval_evaluation': os.getenv('ENABLE_RETRIEVAL_EVALUATION', 'true').lower() == 'true',

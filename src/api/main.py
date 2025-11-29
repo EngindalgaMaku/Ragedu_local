@@ -11,12 +11,13 @@ import logging
 from pathlib import Path
 from datetime import datetime
 import time
+import sqlite3
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response, BackgroundTasks
 from fastapi.responses import FileResponse
 from fastapi import Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +42,11 @@ from src.services.session_manager import (
 
 # Cloud Storage Manager Import
 from src.utils.cloud_storage_manager import cloud_storage_manager
+
+# SQLite database manager for markdown categories
+from src.database.database import get_db_manager
+
+db_manager = get_db_manager()
 
 app = FastAPI(title="RAG3 API Gateway", version="1.0.0",
               description="Pure API Gateway - Routes requests to microservices")
@@ -133,18 +139,6 @@ except (ImportError, Exception) as e:
         }
         return service_map.get(service_name, f"http://localhost:{API_GATEWAY_PORT}")
 
-# Marker API URL
-MARKER_API_URL = os.getenv('MARKER_API_URL', None)
-if not MARKER_API_URL:
-    MARKER_API_PORT = int(os.getenv('MARKER_API_PORT', '8090'))
-    MARKER_API_HOST = os.getenv('MARKER_API_HOST', 'marker-api')
-    if MARKER_API_HOST.startswith('http://') or MARKER_API_HOST.startswith('https://'):
-        MARKER_API_URL = MARKER_API_HOST
-    else:
-        MARKER_API_URL = f'http://{MARKER_API_HOST}:{MARKER_API_PORT}'
-
-logger.info(f"[API GATEWAY] MARKER_API_URL: {MARKER_API_URL}")
-
 # Model Inference Service - Google Cloud Run compatible
 # If MODEL_INFERENCE_URL is set (Cloud Run), use it directly
 # Otherwise, construct from host and port (Docker)
@@ -157,17 +151,6 @@ if not MODEL_INFERENCE_URL:
         MODEL_INFERENCE_URL = MODEL_INFERENCE_HOST
     else:
         MODEL_INFERENCE_URL = f'http://{MODEL_INFERENCE_HOST}:{MODEL_INFERENCE_PORT}'
-
-RERANKER_SERVICE_URL = os.getenv('RERANKER_SERVICE_URL', None)
-if not RERANKER_SERVICE_URL:
-    RERANKER_SERVICE_PORT = int(os.getenv('RERANKER_SERVICE_PORT', '8008'))
-    RERANKER_SERVICE_HOST = os.getenv('RERANKER_SERVICE_HOST', 'reranker-service')
-    if RERANKER_SERVICE_HOST.startswith('http://') or RERANKER_SERVICE_HOST.startswith('https://'):
-        RERANKER_SERVICE_URL = RERANKER_SERVICE_HOST
-    else:
-        RERANKER_SERVICE_URL = f'http://{RERANKER_SERVICE_HOST}:{RERANKER_SERVICE_PORT}'
-
-ALIBABA_API_KEY = os.getenv('ALIBABA_API_KEY', os.getenv('DASHSCOPE_API_KEY'))
 
 # Auth Service - Google Cloud Run compatible
 # If AUTH_SERVICE_URL is set (Cloud Run), use it directly
@@ -281,6 +264,23 @@ class MarkdownListResponse(BaseModel):
     markdown_files: List[str]
     count: int
 
+
+class MarkdownCategory(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+
+
+class MarkdownCategoryCreateUpdate(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class MarkdownFileWithCategory(BaseModel):
+    filename: str
+    category_id: Optional[int] = None
+    category_name: Optional[str] = None
+
 @app.get("/")
 def root():
     return {
@@ -342,7 +342,7 @@ def _convert_metadata_to_response(metadata: SessionMetadata) -> SessionResponse:
         "model": None,
         "chain_type": None,
         "use_direct_llm": False,
-        "embedding_model": "nomic-embed-text"
+        "embedding_model": os.getenv("DEFAULT_EMBEDDING_MODEL", "text-embedding-v4")
     }
     rag_settings = metadata.rag_settings or default_rag_settings
     
@@ -546,9 +546,6 @@ def delete_session(session_id: str, create_backup: bool = True, deleted_by: Opti
 class StatusUpdateRequest(BaseModel):
     status: str
 
-class NameUpdateRequest(BaseModel):
-    name: str
-
 @app.patch("/sessions/{session_id}/status")
 def update_session_status(session_id: str, request: StatusUpdateRequest, req: Request):
     """Update session status (active/inactive)"""
@@ -585,43 +582,6 @@ def update_session_status(session_id: str, request: StatusUpdateRequest, req: Re
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update session status: {str(e)}")
-
-@app.patch("/sessions/{session_id}/name")
-def update_session_name(session_id: str, request: NameUpdateRequest, req: Request):
-    """Update session name"""
-    try:
-        # Validate name
-        name = request.name.strip()
-        if not name:
-            raise HTTPException(
-                status_code=400,
-                detail="Session name cannot be empty"
-            )
-        if len(name) > 200:
-            raise HTTPException(
-                status_code=400,
-                detail="Session name cannot exceed 200 characters"
-            )
-        # Access control
-        _require_owner_or_admin(req, session_id)
-        # Update session name
-        success = professional_session_manager.update_session_metadata(session_id, name=name)
-        if not success:
-            raise HTTPException(status_code=404, detail="Session not found")
-        # Get updated session
-        updated_metadata = professional_session_manager.get_session_metadata(session_id)
-        if not updated_metadata:
-            raise HTTPException(status_code=404, detail="Session not found after update")
-        return {
-            "success": True,
-            "session_id": session_id,
-            "new_name": name,
-            "updated_session": _convert_metadata_to_response(updated_metadata)
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update session name: {str(e)}")
 
 @app.get("/sessions/{session_id}/chunks")
 def get_session_chunks(session_id: str):
@@ -907,6 +867,7 @@ async def reprocess_session_documents(session_id: str, request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to re-process documents: {str(e)}")
 
 # Document Processing - Route to PDF Processor Service
+@app.post("/api/documents/convert-document-to-markdown", response_model=PDFToMarkdownResponse)
 @app.post("/documents/convert-document-to-markdown", response_model=PDFToMarkdownResponse)
 async def convert_document_to_markdown(file: UploadFile = File(...)):
     """Convert document to markdown - Route to PDF Processing Service"""
@@ -997,8 +958,11 @@ async def convert_document_to_markdown(file: UploadFile = File(...)):
             detail=f"Failed to communicate with PDF Processing Service: {str(e)}"
         )
 
+# Batch Processing Jobs Tracking (similar to KB extraction)
+BATCH_PROCESSING_JOBS: Dict[str, Any] = {}
+
 # Document Processing - Route to Document Processor Service  
-@app.post("/documents/process-and-store")
+@app.post("/api/documents/process-and-store")
 async def process_and_store_documents(
     session_id: str = Form(...),
     markdown_files: str = Form(...),  # JSON string of file list
@@ -1020,6 +984,26 @@ async def process_and_store_documents(
             logger.info(f"Using embedding_model from session rag_settings: {embedding_model}")
         else:
             logger.info(f"Using embedding_model from Form parameter: {embedding_model}")
+        
+        # Adjust chunk sizes for Alibaba embedding models (they handle larger chunks better)
+        is_alibaba_embedding = (
+            embedding_model and (
+                embedding_model.startswith("text-embedding-") or
+                "alibaba" in embedding_model.lower() or
+                "dashscope" in embedding_model.lower()
+            )
+        )
+        
+        if is_alibaba_embedding:
+            # Alibaba embeddings can handle larger chunks - adjust if not explicitly set
+            if chunk_size == 500:  # Only adjust if using default value
+                chunk_size = 2500
+                logger.info(f"🔵 Alibaba embedding detected ({embedding_model}): Adjusted chunk_size to {chunk_size}")
+            if chunk_overlap == 100:  # Only adjust if using default value
+                chunk_overlap = 500
+                logger.info(f"🔵 Alibaba embedding detected ({embedding_model}): Adjusted chunk_overlap to {chunk_overlap}")
+        else:
+            logger.info(f"⚪ Standard embedding model ({embedding_model}): Using provided chunk sizes (size={chunk_size}, overlap={chunk_overlap})")
         
         # Parse markdown files list
         files_list = json.loads(markdown_files)
@@ -1142,6 +1126,270 @@ async def process_and_store_documents(
             status_code=500,
             detail=f"Failed to communicate with Document Processing Service: {str(e)}"
         )
+
+
+# Batch Processing Jobs Tracking (similar to KB extraction)
+BATCH_PROCESSING_JOBS: Dict[str, Any] = {}
+
+
+# Batch Processing Endpoint - Background Job
+@app.post("/api/documents/process-and-store-batch")
+async def process_and_store_documents_batch(
+    session_id: str = Form(...),
+    markdown_files: str = Form(...),  # JSON string of file list
+    chunk_strategy: str = Form("lightweight"),
+    chunk_size: int = Form(500),
+    chunk_overlap: int = Form(100),
+    embedding_model: str = Form("mixedbread-ai/mxbai-embed-large-v1"),
+    use_llm_post_processing: bool = Form(False),
+    llm_model_name: str = Form("llama-3.1-8b-instant"),
+    model_inference_url: str = Form(None),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Process markdown files in batch with background job tracking.
+    Returns job_id immediately; progress can be tracked via GET /api/documents/process-and-store-batch/status/{job_id}
+    """
+    try:
+        # Parse markdown files list
+        files_list = json.loads(markdown_files)
+        
+        if not files_list or len(files_list) == 0:
+            raise HTTPException(status_code=400, detail="No markdown files provided")
+        
+        # Get session rag_settings for embedding_model
+        session_rag_settings = professional_session_manager.get_session_rag_settings(session_id)
+        if session_rag_settings and session_rag_settings.get("embedding_model"):
+            embedding_model = session_rag_settings["embedding_model"]
+            logger.info(f"Using embedding_model from session rag_settings: {embedding_model}")
+        
+        # Adjust chunk sizes for Alibaba embedding models
+        is_alibaba_embedding = (
+            embedding_model and (
+                embedding_model.startswith("text-embedding-") or
+                "alibaba" in embedding_model.lower() or
+                "dashscope" in embedding_model.lower()
+            )
+        )
+        
+        if is_alibaba_embedding:
+            if chunk_size == 500:
+                chunk_size = 2500
+            if chunk_overlap == 100:
+                chunk_overlap = 500
+        
+        # Generate job ID
+        job_id = str(uuid.uuid4())
+        
+        # Initialize job status
+        BATCH_PROCESSING_JOBS[job_id] = {
+            "job_id": job_id,
+            "session_id": session_id,
+            "status": "running",  # running | completed | failed
+            "started_at": datetime.now().isoformat(),
+            "completed_at": None,
+            "total_files": len(files_list),
+            "processed_successfully": 0,
+            "errors_count": 0,
+            "current_file": None,
+            "current_batch": 0,
+            "total_batches": 0,
+            "total_chunks": 0,
+            "results": [],
+            "errors": [],
+        }
+        
+        # Prepare job data
+        job_data = {
+            "session_id": session_id,
+            "files_list": files_list,
+            "chunk_strategy": chunk_strategy,
+            "chunk_size": chunk_size,
+            "chunk_overlap": chunk_overlap,
+            "embedding_model": embedding_model,
+            "use_llm_post_processing": use_llm_post_processing,
+            "llm_model_name": llm_model_name,
+            "model_inference_url": model_inference_url or MODEL_INFERENCE_URL,
+        }
+        
+        # Schedule background job
+        if background_tasks:
+            background_tasks.add_task(
+                _run_batch_processing_job,
+                job_id,
+                job_data
+            )
+        else:
+            # Fallback: run inline (for testing)
+            await _run_batch_processing_job(job_id, job_data)
+        
+        return {
+            "success": True,
+            "message": "Batch processing started in background",
+            "job_id": job_id,
+            "total_files": len(files_list),
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to start batch processing: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start batch processing: {str(e)}")
+
+
+async def _run_batch_processing_job(job_id: str, job_data: Dict[str, Any]):
+    """
+    Internal background job that performs batch markdown processing.
+    Updates BATCH_PROCESSING_JOBS[job_id] with progress.
+    """
+    job = BATCH_PROCESSING_JOBS.get(job_id)
+    if not job:
+        logger.warning(f"[BATCH PROCESSING JOB] Job {job_id} not found at start")
+        return
+    
+    try:
+        files_list = job_data["files_list"]
+        session_id = job_data["session_id"]
+        results = []
+        errors = []
+        total_chunks = 0
+        
+        # Process files in batches (e.g., 10 files per batch)
+        BATCH_SIZE = 10
+        total_batches = (len(files_list) + BATCH_SIZE - 1) // BATCH_SIZE
+        current_batch = 0
+        
+        for idx, filename in enumerate(files_list):
+            # Calculate current batch number (1-indexed)
+            if idx % BATCH_SIZE == 0:
+                current_batch += 1
+                job["current_batch"] = current_batch
+                job["total_batches"] = total_batches
+                logger.info(f"[BATCH PROCESSING JOB {job_id}] Starting batch {current_batch}/{total_batches}")
+            try:
+                job["current_file"] = filename
+                logger.info(f"[BATCH PROCESSING JOB {job_id}] Processing file: {filename}")
+                
+                # Get file content
+                content = cloud_storage_manager.get_markdown_file_content(filename)
+                if not content or not content.strip():
+                    errors.append({
+                        "filename": filename,
+                        "error": "File is empty or not found"
+                    })
+                    job["errors_count"] = len(errors)
+                    continue
+                
+                # Process file
+                payload = {
+                    "text": content,
+                    "metadata": {
+                        "session_id": session_id,
+                        "source_file": filename,
+                        "filename": filename,
+                        "embedding_model": job_data["embedding_model"],
+                        "chunk_strategy": job_data["chunk_strategy"]
+                    },
+                    "collection_name": f"session_{session_id}",
+                    "chunk_size": job_data["chunk_size"],
+                    "chunk_overlap": job_data["chunk_overlap"],
+                    "chunk_strategy": job_data["chunk_strategy"],
+                    "use_llm_post_processing": job_data["use_llm_post_processing"],
+                    "llm_model_name": job_data["llm_model_name"],
+                    "model_inference_url": job_data["model_inference_url"]
+                }
+                
+                file_response = requests.post(
+                    f"{DOCUMENT_PROCESSOR_URL}/process-and-store",
+                    json=payload,
+                    timeout=600
+                )
+                
+                if file_response.status_code == 200:
+                    file_result = file_response.json()
+                    chunks_processed = file_result.get("chunks_processed", 0)
+                    total_chunks += chunks_processed
+                    
+                    results.append({
+                        "filename": filename,
+                        "chunks_processed": chunks_processed,
+                        "success": True
+                    })
+                    
+                    job["processed_successfully"] = len(results)
+                    job["total_chunks"] = total_chunks
+                    job["results"] = results[-10:]  # Keep last 10 results
+                else:
+                    error_msg = file_response.text
+                    errors.append({
+                        "filename": filename,
+                        "error": error_msg
+                    })
+                    job["errors_count"] = len(errors)
+                    job["errors"] = errors[-10:]  # Keep last 10 errors
+                    
+            except Exception as e:
+                import traceback
+                error_detail = traceback.format_exc()
+                logger.error(f"[BATCH PROCESSING JOB {job_id}] Error processing file {filename}: {e}")
+                
+                errors.append({
+                    "filename": filename,
+                    "error": str(e)
+                })
+                job["errors_count"] = len(errors)
+                job["errors"] = errors[-10:]
+        
+        # Update session metadata
+        if len(results) > 0:
+            try:
+                session_metadata = professional_session_manager.get_session_metadata(session_id)
+                if session_metadata:
+                    new_document_count = session_metadata.document_count + len(results)
+                    new_total_chunks = session_metadata.total_chunks + total_chunks
+                    
+                    professional_session_manager.update_session_counts(
+                        session_id=session_id,
+                        document_count=new_document_count,
+                        total_chunks=new_total_chunks
+                    )
+                    
+                    # Save embedding model to session rag_settings
+                    current_settings = professional_session_manager.get_session_rag_settings(session_id) or {}
+                    current_settings["embedding_model"] = job_data["embedding_model"]
+                    professional_session_manager.save_session_rag_settings(
+                        session_id=session_id,
+                        settings=current_settings,
+                        user_id=None
+                    )
+            except Exception as update_error:
+                logger.error(f"Failed to update session metadata: {str(update_error)}")
+        
+        # Mark job as completed
+        job["status"] = "completed" if len(errors) == 0 else "completed_with_errors"
+        job["completed_at"] = datetime.now().isoformat()
+        job["current_file"] = None
+        
+        logger.info(f"[BATCH PROCESSING JOB {job_id}] Completed: {len(results)} successful, {len(errors)} errors, {total_chunks} total chunks")
+        
+    except Exception as e:
+        logger.error(f"[BATCH PROCESSING JOB {job_id}] Fatal error: {e}")
+        job["status"] = "failed"
+        job["completed_at"] = datetime.now().isoformat()
+        job["current_file"] = None
+
+
+@app.get("/api/documents/process-and-store-batch/status/{job_id}")
+async def get_batch_processing_status(job_id: str):
+    """Get status of a batch processing job"""
+    job = BATCH_PROCESSING_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return {
+        "success": True,
+        "job": job
+    }
 
 # Helper to fetch current user from Auth Service using the incoming Authorization header
 def _get_current_user(request: Request) -> Optional[Dict[str, Any]]:
@@ -1482,12 +1730,12 @@ async def generate_suggestions(req: SuggestionRequest) -> Dict[str, Any]:
         logger.warning(f"/rag/suggestions failed: {e}")
         return {"suggestions": []}
 
-# RAG Query with CRAG Evaluation
+# RAG Query with Reranking
 @app.post("/rag/query", response_model=RAGQueryResponse)
 async def rag_query(req: RAGQueryRequest, request: Request):
     """
-    RAG Query with CRAG (Corrective RAG) evaluation to filter irrelevant queries
-    and improve response quality by rejecting off-topic questions.
+    RAG Query with reranking to improve document relevance ordering.
+    Uses reranker service to sort retrieved documents by relevance.
     """
     # Start timing from the very beginning of the request
     request_start_time = time.time()
@@ -1658,8 +1906,8 @@ async def rag_query(req: RAGQueryRequest, request: Request):
             )
             return RAGQueryResponse(answer=final_answer, sources=[], processing_time_ms=elapsed_ms, suggestions=suggestions)
         
-        # RAG Query with CRAG Evaluation
-        logger.info(f"🔍 Processing RAG query with CRAG evaluation: '{req.query}'")
+        # RAG Query with Reranking
+        logger.info(f"🔍 Processing RAG query with reranking: '{req.query}'")
         
         # Step 1: Perform retrieval
         collection_name = f"session_{req.session_id}"
@@ -1669,7 +1917,7 @@ async def rag_query(req: RAGQueryRequest, request: Request):
                 json={
                     "query": req.query,
                     "collection_name": collection_name,
-                    "top_k": effective["top_k"] * 2,  # Get more docs for CRAG evaluation
+                    "top_k": effective["top_k"] * 2,  # Get more docs for reranking
                     "embedding_model": effective["embedding_model"]
                 },
                 timeout=30
@@ -1894,6 +2142,7 @@ async def rag_query(req: RAGQueryRequest, request: Request):
         )
 
 # Simple endpoints that don't require microservices
+@app.get("/api/documents/list-markdown", response_model=MarkdownListResponse)
 @app.get("/documents/list-markdown", response_model=MarkdownListResponse)
 def list_markdown_files():
     """List markdown files - using cloud storage manager"""
@@ -1904,6 +2153,209 @@ def list_markdown_files():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list markdown files: {str(e)}")
 
+
+@app.get("/api/markdown-categories", response_model=List[MarkdownCategory])
+def get_markdown_categories():
+    """Return all markdown categories from SQLite, ordered by name."""
+    try:
+        with db_manager.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT id, name, description
+                FROM markdown_categories
+                ORDER BY name COLLATE NOCASE
+                """
+            )
+            rows = cursor.fetchall()
+            return [MarkdownCategory(id=row["id"], name=row["name"], description=row["description"]) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to list markdown categories: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list markdown categories")
+
+
+@app.post("/api/markdown-categories", response_model=MarkdownCategory)
+def create_markdown_category(payload: MarkdownCategoryCreateUpdate):
+    """Create a new markdown category."""
+    try:
+        with db_manager.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO markdown_categories (name, description)
+                VALUES (?, ?)
+                """,
+                (payload.name.strip(), payload.description or None),
+            )
+            conn.commit()
+            new_id = cursor.lastrowid
+
+            row = conn.execute(
+                "SELECT id, name, description FROM markdown_categories WHERE id = ?",
+                (new_id,),
+            ).fetchone()
+            return MarkdownCategory(id=row["id"], name=row["name"], description=row["description"])
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Kategori adı zaten kullanılıyor")
+    except Exception as e:
+        logger.error(f"Failed to create markdown category: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create markdown category")
+
+
+@app.put("/api/markdown-categories/{category_id}", response_model=MarkdownCategory)
+def update_markdown_category(category_id: int, payload: MarkdownCategoryCreateUpdate):
+    """Update an existing markdown category."""
+    try:
+        with db_manager.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE markdown_categories
+                SET name = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (payload.name.strip(), payload.description or None, category_id),
+            )
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Kategori bulunamadı")
+
+            row = conn.execute(
+                "SELECT id, name, description FROM markdown_categories WHERE id = ?",
+                (category_id,),
+            ).fetchone()
+            return MarkdownCategory(id=row["id"], name=row["name"], description=row["description"])
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Kategori adı zaten kullanılıyor")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update markdown category: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update markdown category")
+
+
+@app.delete("/api/markdown-categories/{category_id}")
+def delete_markdown_category(category_id: int):
+    """Delete a markdown category.
+
+    markdown_file_categories has a foreign key with ON DELETE SET NULL,
+    so linked markdown files will keep their filenames but lose category.
+    """
+    try:
+        with db_manager.get_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM markdown_categories WHERE id = ?",
+                (category_id,),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Kategori bulunamadı")
+            return {"deleted": True, "category_id": category_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete markdown category: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete markdown category")
+
+
+class AssignMarkdownCategoryRequest(BaseModel):
+    filenames: List[str]
+    category_id: Optional[int] = None
+
+
+@app.post("/api/markdown-files/assign-category")
+def assign_markdown_category(payload: AssignMarkdownCategoryRequest):
+    """Assign or clear category for one or more markdown files.
+
+    - If category_id is provided, upsert mapping for given filenames.
+    - If category_id is null, clear category mapping for given filenames.
+    """
+    if not payload.filenames:
+        raise HTTPException(status_code=400, detail="En az bir dosya adı gerekli")
+
+    safe_filenames = [os.path.basename(f) for f in payload.filenames]
+
+    try:
+        with db_manager.get_connection() as conn:
+            if payload.category_id is None:
+                # Clear category: delete mappings
+                conn.executemany(
+                    "DELETE FROM markdown_file_categories WHERE filename = ?",
+                    [(name,) for name in safe_filenames],
+                )
+            else:
+                # Ensure category exists
+                exists = conn.execute(
+                    "SELECT 1 FROM markdown_categories WHERE id = ?",
+                    (payload.category_id,),
+                ).fetchone()
+                if not exists:
+                    raise HTTPException(status_code=404, detail="Kategori bulunamadı")
+
+                # Upsert mappings
+                conn.executemany(
+                    """
+                    INSERT INTO markdown_file_categories (filename, category_id, created_at, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT(filename) DO UPDATE SET
+                        category_id = excluded.category_id,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    [(name, payload.category_id) for name in safe_filenames],
+                )
+
+            conn.commit()
+
+        return {"success": True, "filenames": safe_filenames, "category_id": payload.category_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to assign markdown category: {e}")
+        raise HTTPException(status_code=500, detail="Failed to assign markdown category")
+
+
+@app.get("/api/markdown-files/with-categories", response_model=List[MarkdownFileWithCategory])
+def list_markdown_files_with_categories(category_id: Optional[int] = None):
+    """List markdown files together with optional category metadata.
+
+    Data source for admin UIs that need both filename and category name.
+    """
+    try:
+        # Base list of markdown files from storage
+        md_files = cloud_storage_manager.list_markdown_files()
+
+        # Prepare mapping from filename -> (category_id, category_name)
+        category_map: Dict[str, Dict[str, Any]] = {}
+        with db_manager.get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT mfc.filename, mfc.category_id, mc.name as category_name
+                FROM markdown_file_categories mfc
+                LEFT JOIN markdown_categories mc ON mc.id = mfc.category_id
+                """
+            )
+            for row in cursor.fetchall():
+                category_map[row["filename"]] = {
+                    "category_id": row["category_id"],
+                    "category_name": row["category_name"],
+                }
+
+        results: List[MarkdownFileWithCategory] = []
+        for name in md_files:
+            meta = category_map.get(name, {})
+            item = MarkdownFileWithCategory(
+                filename=name,
+                category_id=meta.get("category_id"),
+                category_name=meta.get("category_name"),
+            )
+            results.append(item)
+
+        # Optional filtering by category_id
+        if category_id is not None:
+            results = [r for r in results if r.category_id == category_id]
+
+        return results
+    except Exception as e:
+        logger.error(f"Failed to list markdown files with categories: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list markdown files with categories")
+
+@app.get("/api/documents/markdown/{filename}")
 @app.get("/documents/markdown/{filename}")
 def get_markdown_file_content(filename: str):
     """Get markdown file content - using cloud storage manager"""
@@ -1925,6 +2377,7 @@ def get_markdown_file_content(filename: str):
         raise HTTPException(status_code=500, detail=f"Failed to read markdown file: {str(e)}")
 
 # Delete one markdown file
+@app.delete("/api/documents/markdown/{filename}")
 @app.delete("/documents/markdown/{filename}")
 def delete_markdown_file(filename: str):
     try:
@@ -1939,6 +2392,7 @@ def delete_markdown_file(filename: str):
         raise HTTPException(status_code=500, detail=f"Failed to delete markdown file: {str(e)}")
 
 # Delete many (bulk) or all markdown files
+@app.delete("/api/documents/markdown")
 @app.delete("/documents/markdown")
 def delete_markdown_bulk(filenames: list[str] | None = Body(default=None), delete_all: bool = False):
     try:
@@ -2134,9 +2588,10 @@ async def import_session(file: UploadFile = File(...), auto_reindex: bool = True
         processed = 0
         if auto_reindex and markdown_files:
             # Use embedding model from RAG settings if available
-            embedding_model = "nomic-embed-text"
+            default_embedding = os.getenv("DEFAULT_EMBEDDING_MODEL", "text-embedding-v4")
+            embedding_model = default_embedding
             if rag_settings and isinstance(rag_settings, dict):
-                embedding_model = rag_settings.get("embedding_model", "nomic-embed-text")
+                embedding_model = rag_settings.get("embedding_model", default_embedding)
             
             # simpler: call our own function by HTTP form, mimic frontend
             try:
@@ -2159,41 +2614,12 @@ async def import_session(file: UploadFile = File(...), auto_reindex: bool = True
         raise HTTPException(status_code=500, detail=f"Failed to import session: {str(e)}")
 
 # Model endpoints - Route to Model Inference Service
-# IMPORTANT: /models/available must be defined BEFORE /models to avoid route conflicts
-@app.get("/models/available")
-def get_models_available():
-    """Get available models directly from model inference service - raw format"""
-    try:
-        response = requests.get(f"{MODEL_INFERENCE_URL}/models/available", timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            # Fallback
-            return {
-                "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
-                "ollama": [],
-                "huggingface": [],
-                "openrouter": [],
-                "deepseek": [],
-                "alibaba": []
-            }
-    except Exception as e:
-        logger.error(f"Error fetching models from inference service: {e}")
-        return {
-            "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
-            "ollama": [],
-            "huggingface": [],
-            "openrouter": [],
-            "deepseek": [],
-            "alibaba": []
-        }
-
 @app.get("/models")
 def get_models():
     """Get available models with provider categorization - Route to Model Inference Service"""
     try:
         # Try to get structured model list from Model Inference Service
-        response = requests.get(f"{MODEL_INFERENCE_URL}/models/available", timeout=10)
+        response = requests.get(f"{MODEL_INFERENCE_URL}/models/available", timeout=30)
         if response.status_code == 200:
             model_data = response.json()
             
@@ -2252,11 +2678,11 @@ def get_models():
                     "description": "DeepSeek (Premium)"
                 })
             
-            # Add Alibaba models
+            # Add Alibaba DashScope models
             for model in model_data.get("alibaba", []):
                 all_models.append({
                     "id": model,
-                    "name": model,
+                    "name": model.replace("qwen-", "Qwen ").title(),  # Clean up model names
                     "provider": "alibaba",
                     "type": "cloud",
                     "description": "Alibaba DashScope (Qwen)"
@@ -2296,8 +2722,8 @@ def get_models():
                         "models": model_data.get("deepseek", [])
                     },
                     "alibaba": {
-                        "name": "Alibaba",
-                        "description": "Alibaba DashScope (Qwen)",
+                        "name": "Alibaba (Cloud - Qwen)",
+                        "description": "Alibaba Cloud DashScope Qwen Modelleri",
                         "icon": "🛒",
                         "models": model_data.get("alibaba", [])
                     }
@@ -2336,9 +2762,9 @@ def get_models():
 
 @app.get("/models/embedding")
 def get_embedding_models():
-    """Get available embedding models from Ollama and HuggingFace"""
+    """Get available embedding models from Ollama, HuggingFace, and Alibaba"""
     try:
-        response = requests.get(f"{MODEL_INFERENCE_URL}/models/embedding", timeout=10)
+        response = requests.get(f"{MODEL_INFERENCE_URL}/models/embedding", timeout=30)
         if response.status_code == 200:
             return response.json()
         else:
@@ -2350,8 +2776,7 @@ def get_embedding_models():
 @app.post("/documents/convert-document-to-markdown")
 async def convert_document_to_markdown(
     file: UploadFile = File(...),
-    use_fallback: str = Form(default="false"),
-    session_id: str = Form(default="")
+    use_fallback: str = Form(default="false")
 ):
     """
     Convert PDF/DOCX/PPTX to Markdown using DocStrange service
@@ -2408,37 +2833,15 @@ async def convert_document_to_markdown(
         markdown_dir = Path("data/markdown")
         markdown_dir.mkdir(parents=True, exist_ok=True)
         
-        # Generate safe filename with session prefix if session_id is provided
+        # Generate safe filename
         base_filename = os.path.splitext(os.path.basename(file.filename))[0]
-        base_filename = base_filename.replace('..', '').replace('/', '').replace('\\', '')
-        
-        # If session_id is provided, get session name and prefix filename
-        session_prefix = ""
-        if session_id:
-            try:
-                # Get session name from database
-                session = professional_session_manager.get_session(session_id)
-                if session:
-                    # Create safe session name prefix (remove special chars, spaces -> hyphens)
-                    session_name = session.name
-                    session_prefix = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in session_name)
-                    session_prefix = session_prefix.replace(' ', '-').replace('_', '-')
-                    # Remove multiple consecutive hyphens
-                    while '--' in session_prefix:
-                        session_prefix = session_prefix.replace('--', '-')
-                    session_prefix = session_prefix.strip('-').lower()
-                    if session_prefix:
-                        session_prefix = f"{session_prefix}-"
-            except Exception as e:
-                logger.warning(f"[DocConverter] Could not get session name for {session_id}: {e}")
-        
-        safe_filename = f"{session_prefix}{base_filename}.md"
+        safe_filename = base_filename.replace('..', '').replace('/', '').replace('\\', '') + '.md'
         
         # Handle duplicate filenames
         counter = 1
         final_filename = safe_filename
         while (markdown_dir / final_filename).exists():
-            final_filename = f"{session_prefix}{base_filename}_{counter}.md"
+            final_filename = f"{base_filename}_{counter}.md"
             counter += 1
         
         # Save file using cloud storage manager
@@ -2455,30 +2858,19 @@ async def convert_document_to_markdown(
         }
         
     except requests.exceptions.Timeout:
-        logger.error(f"[DocConverter] Timeout error for {file.filename}")
         raise HTTPException(
             status_code=504,
             detail="Document conversion timeout. Please try with 'Fast' method or use smaller files."
         )
-    except requests.exceptions.ConnectionError as e:
-        logger.error(f"[DocConverter] Connection error to PDF_PROCESSOR_URL={PDF_PROCESSOR_URL}: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail=f"Cannot connect to document processing service. Please check if docstrange-service is running. URL: {PDF_PROCESSOR_URL}"
-        )
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        logger.error(f"[DocConverter] Unexpected error for {file.filename}: {e}")
-        logger.error(f"[DocConverter] Traceback: {traceback.format_exc()}")
+        logger.error(f"[DocConverter] Unexpected error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to convert document: {str(e)}")
 
+@app.post("/api/documents/convert-marker")
 @app.post("/documents/convert-marker")
-async def convert_document_marker(
-    file: UploadFile = File(...),
-    session_id: str = Form(default="")
-):
+async def convert_document_marker(file: UploadFile = File(...)):
     """
     Convert PDF/DOC/PPT to Markdown using Marker API
     Highest quality conversion with OCR and layout preservation
@@ -2528,34 +2920,25 @@ async def convert_document_marker(
         def call_marker(pdf_bytes: bytes) -> str:
             # Ensure service is up before calling
             if not _marker_ready(10):
-                logger.error(f"[Marker] Service not ready at {MARKER_API_URL}")
                 raise requests.exceptions.RequestException("Marker service not ready")
             local_files = {'pdf_file': (file.filename, pdf_bytes, file.content_type or 'application/pdf')}
             last_err: Exception | None = None
             for attempt in range(3):
                 try:
-                    logger.info(f"[Marker] Attempt {attempt + 1}/3: Calling {MARKER_API_URL}/convert")
                     resp = requests.post(f"{MARKER_API_URL}/convert", files=local_files, timeout=900)
                     if not resp.ok:
-                        error_text = resp.text[:500]  # Limit error text length
-                        logger.error(f"[Marker] HTTP {resp.status_code} error: {error_text}")
-                        raise requests.exceptions.RequestException(f"HTTP {resp.status_code}: {error_text}")
+                        raise requests.exceptions.RequestException(resp.text)
                     data = resp.json()
                     md = None
                     if isinstance(data, dict):
                         md = data.get('markdown') or data.get('content') or data.get('text')
                     if not md or not str(md).strip():
-                        logger.error(f"[Marker] Empty content returned. Response keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
                         raise requests.exceptions.RequestException("Marker returned empty content")
-                    logger.info(f"[Marker] Successfully converted, content length: {len(str(md))}")
                     return str(md)
                 except Exception as e:
                     last_err = e
-                    logger.warning(f"[Marker] Attempt {attempt + 1} failed: {e}")
                     # brief backoff then retry
-                    if attempt < 2:  # Don't sleep on last attempt
-                        time.sleep(1 + attempt)
-            logger.error(f"[Marker] All 3 attempts failed. Last error: {last_err}")
+                    time.sleep(1 + attempt)
             raise requests.exceptions.RequestException(f"Marker failed after retries: {last_err}")
 
         markdown_content = None
@@ -2605,37 +2988,15 @@ async def convert_document_marker(
         markdown_dir = Path("data/markdown")
         markdown_dir.mkdir(parents=True, exist_ok=True)
         
-        # Generate safe filename with session prefix if session_id is provided
+        # Generate safe filename
         base_filename = os.path.splitext(os.path.basename(file.filename))[0]
-        base_filename = base_filename.replace('..', '').replace('/', '').replace('\\', '')
-        
-        # If session_id is provided, get session name and prefix filename
-        session_prefix = ""
-        if session_id:
-            try:
-                # Get session name from database
-                session = professional_session_manager.get_session(session_id)
-                if session:
-                    # Create safe session name prefix (remove special chars, spaces -> hyphens)
-                    session_name = session.name
-                    session_prefix = "".join(c if c.isalnum() or c in (' ', '-', '_') else '' for c in session_name)
-                    session_prefix = session_prefix.replace(' ', '-').replace('_', '-')
-                    # Remove multiple consecutive hyphens
-                    while '--' in session_prefix:
-                        session_prefix = session_prefix.replace('--', '-')
-                    session_prefix = session_prefix.strip('-').lower()
-                    if session_prefix:
-                        session_prefix = f"{session_prefix}-"
-            except Exception as e:
-                logger.warning(f"[Marker] Could not get session name for {session_id}: {e}")
-        
-        safe_filename = f"{session_prefix}{base_filename}.md"
+        safe_filename = base_filename.replace('..', '').replace('/', '').replace('\\', '') + '.md'
         
         # Handle duplicate filenames
         counter = 1
         final_filename = safe_filename
         while (markdown_dir / final_filename).exists():
-            final_filename = f"{session_prefix}{base_filename}_{counter}.md"
+            final_filename = f"{base_filename}_{counter}.md"
             counter += 1
         
         # Save file using cloud storage manager
@@ -2651,23 +3012,11 @@ async def convert_document_marker(
             "content_preview": markdown_content[:200] + "..." if len(markdown_content) > 200 else markdown_content
         }
     except requests.exceptions.Timeout:
-        logger.error(f"[Marker] Timeout error for {file.filename}")
         raise HTTPException(
             status_code=504,
             detail="Marker conversion timeout (15 min). Document may be too complex. Try 'Fast' method."
         )
-    except requests.exceptions.ConnectionError as e:
-        import traceback
-        logger.error(f"[Marker] Connection error to MARKER_API_URL={MARKER_API_URL}: {e}")
-        logger.error(f"[Marker] Traceback: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=503,
-            detail=f"Cannot connect to Marker API service. Please check if marker-api is running. URL: {MARKER_API_URL}"
-        )
     except Exception as e:
-        import traceback
-        logger.error(f"[Marker] Unexpected error for {file.filename}: {e}")
-        logger.error(f"[Marker] Traceback: {traceback.format_exc()}")
         # Fallback to DocStrange (pdfplumber) on any Marker failure (OOM/connection closed/etc.)
         try:
             logger.warning(f"[Marker] Failed ({e}). Falling back to pdfplumber via DocStrange.")
@@ -2719,6 +3068,7 @@ async def convert_document_marker(
             logger.error(f"[Marker] Fallback also failed: {fb_err}")
             raise HTTPException(status_code=500, detail=f"Failed to convert document with Marker: {str(e)}; Fallback error: {str(fb_err)}")
 
+@app.post("/api/documents/upload-markdown")
 @app.post("/documents/upload-markdown")
 async def upload_markdown_file(file: UploadFile = File(...)):
     """Upload markdown file directly - no conversion needed"""
@@ -2982,59 +3332,6 @@ def get_available_models(request: Request):
     # Use the same function as /models endpoint which has provider categorization
     return get_models()
 
-@app.get("/api/models/available")
-def get_available_models_direct(request: Request):
-    """
-    Get available models directly from model inference service - raw format
-    This is what frontend calls via Next.js proxy
-    """
-    try:
-        response = requests.get(f"{MODEL_INFERENCE_URL}/models/available", timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            # Fallback
-            return {
-                "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
-                "ollama": [],
-                "huggingface": [],
-                "openrouter": [],
-                "deepseek": [],
-                "alibaba": []
-            }
-    except Exception as e:
-        logger.error(f"Error fetching models from inference service: {e}")
-        return {
-            "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
-            "ollama": [],
-            "huggingface": [],
-            "openrouter": [],
-            "deepseek": [],
-            "alibaba": []
-        }
-
-@app.get("/models/embedding")
-def get_embedding_models():
-    """Get available embedding models from model inference service"""
-    try:
-        response = requests.get(f"{MODEL_INFERENCE_URL}/models/embedding", timeout=10)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            # Fallback
-            return {
-                "ollama": [],
-                "huggingface": [],
-                "alibaba": []
-            }
-    except Exception as e:
-        logger.error(f"Error fetching embedding models: {e}")
-        return {
-            "ollama": [],
-            "huggingface": [],
-            "alibaba": []
-        }
-
 @app.get("/api/models/embedding")
 def get_available_embedding_models(request: Request):
     """
@@ -3044,69 +3341,143 @@ def get_available_embedding_models(request: Request):
     # Use the same function as /models/embedding endpoint
     return get_embedding_models()
 
-@app.get("/models/reranker")
-def get_reranker_models():
-    """Get available reranker models"""
+# ==================== API PREFIX ENDPOINTS (for Next.js rewrites) ====================
+
+@app.get("/api/sessions", response_model=List[SessionResponse])
+def api_list_sessions(created_by: Optional[str] = None, category: Optional[str] = None,
+                     status: Optional[str] = None, limit: int = 50, request: Request = None):
+    """List sessions from SQLite database - API prefix version"""
+    return list_sessions(created_by, category, status, limit, request)
+
+@app.post("/api/sessions", response_model=SessionResponse)
+def api_create_session(req: CreateSessionRequest, request: Request):
+    """Create new session in SQLite database - API prefix version"""
+    return create_session(req, request)
+
+@app.get("/api/sessions/{session_id}", response_model=SessionResponse)
+def api_get_session(session_id: str, request: Request):
+    """Get session details from SQLite database - API prefix version"""
+    return get_session(session_id, request)
+
+@app.delete("/api/sessions/{session_id}")
+def api_delete_session(session_id: str, create_backup: bool = True, deleted_by: Optional[str] = None, request: Request = None):
+    """Delete session from SQLite database - API prefix version"""
+    return delete_session(session_id, create_backup, deleted_by, request)
+
+@app.patch("/api/sessions/{session_id}/status")
+def api_update_session_status(session_id: str, request: StatusUpdateRequest, req: Request):
+    """Update session status (active/inactive) - API prefix version"""
+    return update_session_status(session_id, request, req)
+
+@app.get("/api/sessions/{session_id}/chunks")
+def api_get_session_chunks(session_id: str):
+    """Get chunks for a session from Document Processing Service - API prefix version"""
+    return get_session_chunks(session_id)
+
+@app.get("/api/sessions/{session_id}/stats")
+def get_session_stats(session_id: str):
+    """Get lightweight session statistics without loading full chunks data"""
     try:
-        # Get info from reranker service
-        response = requests.get(f"{RERANKER_SERVICE_URL}/info", timeout=10)
-        reranker_info = response.json() if response.status_code == 200 else {}
+        logger.info(f"🔍 [STATS API] Getting lightweight stats for session {session_id}")
         
-        # Build available reranker models list
-        reranker_models = {
-            "local": [
-                {
-                    "id": "bge-reranker-v2-m3",
-                    "name": "BGE-Reranker-V2-M3 (Türkçe Optimize)",
-                    "description": "BAAI BGE Reranker - Çok dilli destek, Türkçe optimize",
-                    "provider": "local",
-                    "supports_multilingual": True
-                },
-                {
-                    "id": "ms-marco-minilm-l6",
-                    "name": "MS-MARCO MiniLM-L6",
-                    "description": "Microsoft MS-MARCO - Hızlı ve hafif",
-                    "provider": "local",
-                    "supports_multilingual": False
+        # Get session metadata first for basic counts
+        session_metadata = professional_session_manager.get_session_metadata(session_id)
+        if not session_metadata:
+            logger.warning(f"⚠️ [STATS API] Session {session_id} not found in database")
+            return {
+                "total_documents": 0,
+                "total_chunks": 0,
+                "total_characters": 0,
+                "llm_improved": 0,
+                "session_id": session_id,
+                "source": "empty_session"
+            }
+        
+        # Try to get basic stats from document processor without full chunk data
+        try:
+            # Use a lightweight stats endpoint if available
+            stats_response = requests.get(
+                f"{DOCUMENT_PROCESSOR_URL}/sessions/{session_id}/stats",
+                timeout=10
+            )
+            
+            if stats_response.status_code == 200:
+                stats_data = stats_response.json()
+                logger.info(f"✅ [STATS API] Got stats from document processor: {stats_data}")
+                return {
+                    "total_documents": stats_data.get("document_count", session_metadata.document_count),
+                    "total_chunks": stats_data.get("chunk_count", session_metadata.total_chunks),
+                    "total_characters": stats_data.get("total_characters", 0),
+                    "llm_improved": stats_data.get("llm_improved_count", 0),
+                    "session_id": session_id,
+                    "source": "document_processor_stats"
                 }
-            ],
-            "alibaba": []
+            else:
+                logger.info(f"📊 [STATS API] Document processor stats endpoint returned {stats_response.status_code}")
+        except requests.exceptions.RequestException as e:
+            logger.info(f"📊 [STATS API] Document processor unavailable for stats: {e}")
+        
+        # Fallback: Use session metadata counts
+        logger.info(f"📊 [STATS API] Using session metadata fallback for {session_id}")
+        return {
+            "total_documents": session_metadata.document_count,
+            "total_chunks": session_metadata.total_chunks,
+            "total_characters": 0,  # Not available in metadata, will show 0 until chunks loaded
+            "llm_improved": 0,      # Not available in metadata, will show 0 until chunks loaded
+            "session_id": session_id,
+            "source": "session_metadata"
         }
         
-        # Add Alibaba reranker if API key is available
-        if ALIBABA_API_KEY:
-            reranker_models["alibaba"] = [
-                {
-                    "id": "gte-rerank-v2",
-                    "name": "GTE-Rerank-V2 (Alibaba)",
-                    "description": "Alibaba DashScope - 50+ dil desteği, yüksek performans",
-                    "provider": "alibaba",
-                    "supports_multilingual": True
-                }
-            ]
-        
-        return reranker_models
     except Exception as e:
-        logger.error(f"Error fetching reranker models: {e}")
+        logger.error(f"❌ [STATS API] Error getting session stats: {e}")
         return {
-            "local": [
-                {
-                    "id": "bge-reranker-v2-m3",
-                    "name": "BGE-Reranker-V2-M3 (Türkçe Optimize)",
-                    "description": "BAAI BGE Reranker - Çok dilli destek",
-                    "provider": "local",
-                    "supports_multilingual": True
-                }
-            ],
-            "alibaba": []
+            "total_documents": 0,
+            "total_chunks": 0,
+            "total_characters": 0,
+            "llm_improved": 0,
+            "session_id": session_id,
+            "source": "error"
         }
 
-@app.get("/api/models/reranker")
-def get_available_reranker_models(request: Request):
-    """
-    Get available reranker models - API endpoint for frontend
-    """
-    return get_reranker_models()
+@app.post("/api/sessions/{session_id}/generate-questions")
+async def api_generate_course_questions(session_id: str, request: Request, req: GenerateQuestionsRequest):
+    """Generate course-specific questions - API prefix version"""
+    return await generate_course_questions(session_id, request, req)
+
+@app.post("/api/sessions/{session_id}/reprocess")
+async def api_reprocess_session_documents(session_id: str, request: Request):
+    """Re-process existing documents in a session - API prefix version"""
+    return await reprocess_session_documents(session_id, request)
+
+@app.get("/api/sessions/{session_id}/rag-settings")
+def api_get_rag_settings(session_id: str, request: Request):
+    """Get RAG settings - API prefix version"""
+    return get_rag_settings(session_id, request)
+
+@app.patch("/api/sessions/{session_id}/rag-settings")
+def api_update_rag_settings(session_id: str, req: RAGSettings, request: Request):
+    """Update RAG settings - API prefix version"""
+    return update_rag_settings(session_id, req, request)
+
+@app.get("/api/sessions/{session_id}/export")
+def api_export_session(session_id: str, format: str = "zip", request: Request = None):
+    """Export session - API prefix version"""
+    return export_session(session_id, format, request)
+
+@app.post("/api/sessions/import")
+async def api_import_session(file: UploadFile = File(...), auto_reindex: bool = True, request: Request = None):
+    """Import session - API prefix version"""
+    return await import_session(file, auto_reindex, request)
+
+@app.post("/api/rag/query", response_model=RAGQueryResponse)
+async def api_rag_query(req: RAGQueryRequest, request: Request):
+    """RAG Query with CRAG evaluation - API prefix version"""
+    return await rag_query(req, request)
+
+@app.post("/api/rag/suggestions")
+async def api_generate_suggestions(req: SuggestionRequest) -> Dict[str, Any]:
+    """Generate follow-up question suggestions - API prefix version"""
+    return await generate_suggestions(req)
 
 # Include RAG Tests Router
 from src.api.rag_tests_routes import router as rag_tests_router
@@ -3198,6 +3569,63 @@ async def aprag_adaptive_query_proxy(request: Request):
                 "cognitive_load": "moderate"
             },
             "cacs_applied": False
+        }
+
+@app.get("/api/aprag/profiles/{user_id}/{session_id}")
+async def get_student_profile_proxy(user_id: str, session_id: str):
+    """Proxy to APRAG service for getting student profile"""
+    try:
+        response = requests.get(
+            f"{APRAG_SERVICE_URL}/api/aprag/profiles/{user_id}/{session_id}",
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.warning(f"APRAG profile error: {response.status_code} - {response.text}")
+            # Return default profile
+            return {
+                "user_id": user_id,
+                "session_id": session_id,
+                "average_understanding": None,
+                "average_satisfaction": None,
+                "total_interactions": 0,
+                "total_feedback_count": 0,
+                "strong_topics": None,
+                "weak_topics": None,
+                "preferred_explanation_style": None,
+                "preferred_difficulty_level": None
+            }
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"APRAG service unavailable for profile: {e}")
+        # Return default profile
+        return {
+            "user_id": user_id,
+            "session_id": session_id,
+            "average_understanding": None,
+            "average_satisfaction": None,
+            "total_interactions": 0,
+            "total_feedback_count": 0,
+            "strong_topics": None,
+            "weak_topics": None,
+            "preferred_explanation_style": None,
+            "preferred_difficulty_level": None
+        }
+    except Exception as e:
+        logger.warning(f"Error in APRAG profile proxy: {e}")
+        # Return default profile
+        return {
+            "user_id": user_id,
+            "session_id": session_id,
+            "average_understanding": None,
+            "average_satisfaction": None,
+            "total_interactions": 0,
+            "total_feedback_count": 0,
+            "strong_topics": None,
+            "weak_topics": None,
+            "preferred_explanation_style": None,
+            "preferred_difficulty_level": None
         }
 
 @app.get("/api/aprag/interactions/session/{session_id}")
@@ -3548,8 +3976,10 @@ async def update_topic_proxy(topic_id: int, request: Request):
 @app.post("/api/aprag/topics/classify-question")
 async def classify_question_proxy(request: Request):
     """Proxy to APRAG service for question classification"""
+    logger.info(f"✅ [ROUTE MATCH] classify-question endpoint matched")
     try:
         body = await request.json()
+        logger.info(f"📤 Proxying classify-question request to APRAG service: {APRAG_SERVICE_URL}/api/aprag/topics/classify-question")
         
         # Forward directly to APRAG service (let it handle availability checks)
         response = requests.post(
@@ -3557,9 +3987,11 @@ async def classify_question_proxy(request: Request):
             json=body,
             timeout=60  # LLM classification can take time
         )
+        logger.info(f"📥 APRAG service response: status={response.status_code}")
         if response.status_code == 200:
             return response.json()
         else:
+            logger.error(f"❌ APRAG service returned {response.status_code}: {response.text}")
             raise HTTPException(status_code=response.status_code, detail=response.text)
     except HTTPException:
         raise
@@ -3648,11 +4080,6 @@ async def improve_all_chunks_proxy(session_id: str, request: Request):
 
 # ==================== Student Chat History Endpoints ====================
 
-class TopicInfo(BaseModel):
-    topic_id: int
-    topic_title: str
-    confidence_score: float
-
 class StudentChatMessageCreate(BaseModel):
     user: str
     bot: str
@@ -3661,8 +4088,6 @@ class StudentChatMessageCreate(BaseModel):
     session_id: str
     suggestions: Optional[List[str]] = None
     aprag_interaction_id: Optional[int] = None
-    emoji_feedback: Optional[str] = None
-    topic: Optional[TopicInfo] = None
 
 class StudentChatMessageResponse(BaseModel):
     id: int
@@ -3674,8 +4099,6 @@ class StudentChatMessageResponse(BaseModel):
     timestamp: str
     suggestions: Optional[List[str]] = None
     aprag_interaction_id: Optional[int] = None
-    emoji_feedback: Optional[str] = None
-    topic: Optional[TopicInfo] = None
 
 import sqlite3
 
@@ -3702,33 +4125,9 @@ def init_student_chat_table():
                 timestamp TEXT NOT NULL,
                 suggestions TEXT,
                 aprag_interaction_id INTEGER,
-                emoji_feedback TEXT,
-                topic_id INTEGER,
-                topic_title TEXT,
-                topic_confidence_score REAL,
                 FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
             )
         """)
-        
-        # Add emoji_feedback column if it doesn't exist
-        try:
-            cursor.execute("ALTER TABLE student_chat_history ADD COLUMN emoji_feedback TEXT")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-        
-        # Add topic columns if they don't exist (for existing tables)
-        try:
-            cursor.execute("ALTER TABLE student_chat_history ADD COLUMN topic_id INTEGER")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-        try:
-            cursor.execute("ALTER TABLE student_chat_history ADD COLUMN topic_title TEXT")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-        try:
-            cursor.execute("ALTER TABLE student_chat_history ADD COLUMN topic_confidence_score REAL")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_student_chat_session 
             ON student_chat_history(session_id)
@@ -3751,8 +4150,7 @@ async def get_student_chat_history(session_id: str, request: Request):
         
         cursor.execute("""
             SELECT id, user_message as user, bot_message as bot, sources, duration_ms as durationMs,
-                   session_id, timestamp, suggestions, aprag_interaction_id, emoji_feedback,
-                   topic_id, topic_title, topic_confidence_score
+                   session_id, timestamp, suggestions, aprag_interaction_id
             FROM student_chat_history
             WHERE session_id = ?
             ORDER BY timestamp ASC
@@ -3772,22 +4170,9 @@ async def get_student_chat_history(session_id: str, request: Request):
                     message['sources'] = None
             if message.get('suggestions'):
                 try:
-                    suggestions_parsed = json.loads(message['suggestions'])
-                    # Only keep non-empty suggestions
-                    message['suggestions'] = suggestions_parsed if isinstance(suggestions_parsed, list) and len(suggestions_parsed) > 0 else None
+                    message['suggestions'] = json.loads(message['suggestions'])
                 except:
                     message['suggestions'] = None
-            # Build topic object if topic data exists (check topic_title too, not just topic_id)
-            if message.get('topic_id') is not None or message.get('topic_title'):
-                message['topic'] = {
-                    'topic_id': message.get('topic_id', 0),
-                    'topic_title': message.get('topic_title', ''),
-                    'confidence_score': message.get('topic_confidence_score', 0.0) or 0.0
-                }
-            # Remove individual topic fields
-            message.pop('topic_id', None)
-            message.pop('topic_title', None)
-            message.pop('topic_confidence_score', None)
             history.append(message)
         
         return history
@@ -3797,191 +4182,49 @@ async def get_student_chat_history(session_id: str, request: Request):
 
 @app.post("/api/students/chat-message", response_model=StudentChatMessageResponse)
 async def save_student_chat_message(message: StudentChatMessageCreate, request: Request):
-    """Save or update a student chat message"""
+    """Save a student chat message"""
     try:
         conn = get_student_db_connection()
         cursor = conn.cursor()
-        
-        # Check if message already exists (by aprag_interaction_id)
-        existing_message = None
-        if message.aprag_interaction_id:
-            cursor.execute("""
-                SELECT id, timestamp FROM student_chat_history 
-                WHERE aprag_interaction_id = ? AND session_id = ?
-            """, (message.aprag_interaction_id, message.session_id))
-            existing_message = cursor.fetchone()
         
         timestamp = datetime.utcnow().isoformat() + "Z"
         sources_json = json.dumps(message.sources) if message.sources else None
         suggestions_json = json.dumps(message.suggestions) if message.suggestions else None
         
-        # Extract topic information - handle both TopicInfo object and None
-        topic_id = None
-        topic_title = None
-        topic_confidence = None
-        if message.topic:
-            if hasattr(message.topic, 'topic_id'):
-                topic_id = message.topic.topic_id
-                topic_title = message.topic.topic_title
-                topic_confidence = message.topic.confidence_score
-            elif isinstance(message.topic, dict):
-                topic_id = message.topic.get('topic_id')
-                topic_title = message.topic.get('topic_title')
-                topic_confidence = message.topic.get('confidence_score')
+        cursor.execute("""
+            INSERT INTO student_chat_history 
+            (user_message, bot_message, sources, duration_ms, session_id, timestamp, suggestions, aprag_interaction_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            message.user,
+            message.bot,
+            sources_json,
+            message.durationMs,
+            message.session_id,
+            timestamp,
+            suggestions_json,
+            message.aprag_interaction_id
+        ))
         
-        if existing_message:
-            # Update existing message (for emoji feedback updates)
-            message_id = existing_message['id']
-            original_timestamp = existing_message['timestamp']
-            
-            # Update existing message - preserve all fields, update what's provided
-            update_fields = []
-            update_values = []
-            
-            if hasattr(message, 'emoji_feedback') and message.emoji_feedback is not None:
-                update_fields.append("emoji_feedback = ?")
-                update_values.append(message.emoji_feedback)
-            
-            # Always update topic if provided (even if None, to clear it)
-            if hasattr(message, 'topic') and message.topic is not None:
-                # Extract topic info again in case it's a dict
-                update_topic_id = None
-                update_topic_title = None
-                update_topic_confidence = None
-                if hasattr(message.topic, 'topic_id'):
-                    update_topic_id = message.topic.topic_id
-                    update_topic_title = message.topic.topic_title
-                    update_topic_confidence = message.topic.confidence_score
-                elif isinstance(message.topic, dict):
-                    update_topic_id = message.topic.get('topic_id')
-                    update_topic_title = message.topic.get('topic_title')
-                    update_topic_confidence = message.topic.get('confidence_score')
-                
-                if update_topic_id is not None or update_topic_title:
-                    update_fields.append("topic_id = ?")
-                    update_values.append(update_topic_id)
-                    update_fields.append("topic_title = ?")
-                    update_values.append(update_topic_title)
-                    update_fields.append("topic_confidence_score = ?")
-                    update_values.append(update_topic_confidence)
-            
-            # Update suggestions if provided and not empty
-            if message.suggestions is not None:
-                # Check if it's a list with items or empty
-                if isinstance(message.suggestions, list) and len(message.suggestions) > 0:
-                    update_fields.append("suggestions = ?")
-                    update_values.append(suggestions_json)
-                elif not isinstance(message.suggestions, list):
-                    # If it's not a list, still update it
-                    update_fields.append("suggestions = ?")
-                    update_values.append(suggestions_json)
-            
-            if update_fields:
-                update_values.append(message_id)
-                cursor.execute(f"""
-                    UPDATE student_chat_history 
-                    SET {', '.join(update_fields)}
-                    WHERE id = ?
-                """, update_values)
-            
-            # Get updated message
-            cursor.execute("""
-                SELECT id, user_message as user, bot_message as bot, sources, duration_ms as durationMs,
-                       session_id, timestamp, suggestions, aprag_interaction_id, emoji_feedback,
-                       topic_id, topic_title, topic_confidence_score
-                FROM student_chat_history
-                WHERE id = ?
-            """, (message_id,))
-            updated_row = cursor.fetchone()
-            
-            conn.commit()
-            conn.close()
-            
-            # Parse response
-            response = dict(updated_row)
-            if response.get('sources'):
-                try:
-                    response['sources'] = json.loads(response['sources'])
-                except:
-                    response['sources'] = None
-            if response.get('suggestions'):
-                try:
-                    suggestions_parsed = json.loads(response['suggestions'])
-                    response['suggestions'] = suggestions_parsed if isinstance(suggestions_parsed, list) and len(suggestions_parsed) > 0 else None
-                except:
-                    response['suggestions'] = None
-            # Build topic object if topic data exists (check topic_title too, not just topic_id)
-            if response.get('topic_id') is not None or response.get('topic_title'):
-                response['topic'] = {
-                    'topic_id': response.get('topic_id', 0),
-                    'topic_title': response.get('topic_title', ''),
-                    'confidence_score': response.get('topic_confidence_score', 0.0) or 0.0
-                }
-            response.pop('topic_id', None)
-            response.pop('topic_title', None)
-            response.pop('topic_confidence_score', None)
-            
-            logger.info(f"✅ Updated chat message {message_id} with emoji feedback")
-            return response
-        else:
-            # Insert new message
-            cursor.execute("""
-                INSERT INTO student_chat_history 
-                (user_message, bot_message, sources, duration_ms, session_id, timestamp, suggestions, aprag_interaction_id,
-                 emoji_feedback, topic_id, topic_title, topic_confidence_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                message.user,
-                message.bot,
-                sources_json,
-                message.durationMs,
-                message.session_id,
-                timestamp,
-                suggestions_json,
-                message.aprag_interaction_id,
-                getattr(message, 'emoji_feedback', None),
-                topic_id,
-                topic_title,
-                topic_confidence
-            ))
-            
-            message_id = cursor.lastrowid
-            conn.commit()
-            conn.close()
-            
-            # Return the saved message - parse suggestions if it's a JSON string
-            suggestions_parsed = message.suggestions
-            if isinstance(suggestions_parsed, str):
-                try:
-                    suggestions_parsed = json.loads(suggestions_parsed)
-                except:
-                    suggestions_parsed = None
-            
-            # Build topic object if exists
-            topic_obj = None
-            if topic_id is not None or topic_title:
-                topic_obj = {
-                    'topic_id': topic_id or 0,
-                    'topic_title': topic_title or '',
-                    'confidence_score': topic_confidence or 0.0
-                }
-            
-            response = {
-                "id": message_id,
-                "user": message.user,
-                "bot": message.bot,
-                "sources": message.sources,
-                "durationMs": message.durationMs,
-                "session_id": message.session_id,
-                "timestamp": timestamp,
-                "suggestions": suggestions_parsed if isinstance(suggestions_parsed, list) and len(suggestions_parsed) > 0 else None,
-                "aprag_interaction_id": message.aprag_interaction_id,
-                "emoji_feedback": getattr(message, 'emoji_feedback', None),
-                "topic": topic_obj
-            }
-            
-            logger.info(f"✅ Saved chat message for session {message.session_id}")
-            return response
+        message_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        
+        # Return the saved message
+        response = {
+            "id": message_id,
+            "user": message.user,
+            "bot": message.bot,
+            "sources": message.sources,
+            "durationMs": message.durationMs,
+            "session_id": message.session_id,
+            "timestamp": timestamp,
+            "suggestions": message.suggestions,
+            "aprag_interaction_id": message.aprag_interaction_id
+        }
+        
+        logger.info(f"✅ Saved chat message for session {message.session_id}")
+        return response
     except Exception as e:
         logger.error(f"Failed to save chat message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -4004,60 +4247,6 @@ async def clear_student_chat_history(session_id: str, request: Request):
     except Exception as e:
         logger.error(f"Failed to clear chat history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/students/sessions")
-async def get_student_sessions(request: Request):
-    """Get all student sessions with their latest activity"""
-    try:
-        current_user = _get_current_user(request)
-        if not current_user:
-            raise HTTPException(status_code=401, detail="Authentication required")
-        
-        # Students can see all active sessions
-        sessions = professional_session_manager.list_sessions(
-            created_by=None,
-            category=None,
-            status=SessionStatus.ACTIVE,
-            limit=100
-        )
-        
-        # Get chat history counts for each session
-        conn = get_student_db_connection()
-        cursor = conn.cursor()
-        
-        result = []
-        for session in sessions:
-            # Get message count and last message time for this session
-            cursor.execute("""
-                SELECT COUNT(*) as message_count, MAX(timestamp) as last_message_time
-                FROM student_chat_history
-                WHERE session_id = ?
-            """, (session.session_id,))
-            
-            row = cursor.fetchone()
-            message_count = row["message_count"] if row else 0
-            last_message_time = row["last_message_time"] if row else None
-            
-            result.append({
-                "session": _convert_metadata_to_response(session),
-                "last_message_time": last_message_time,
-                "message_count": message_count
-            })
-        
-        conn.close()
-        logger.info(f"✅ Returned {len(result)} sessions for student")
-        return result
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get student sessions: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/students/sessions")
-async def get_student_sessions_no_prefix(request: Request):
-    """Get all student sessions (for Next.js rewrites that strip /api prefix)"""
-    return await get_student_sessions(request)
 
 
 # ==================== Backup and Restore Routes ====================
@@ -4112,14 +4301,24 @@ async def proxy_aprag_service(path: str, request: Request):
     """
     Proxy all APRAG service requests to the APRAG microservice
     Handles emoji-feedback, adaptive-query, personalization, etc.
+    
+    NOTE: This is a catch-all route. Specific routes (like /api/aprag/topics/classify-question)
+    should be defined BEFORE this route to take precedence.
     """
+    # Skip if this is a route that should be handled by a specific endpoint
+    if path == "topics/classify-question" and request.method == "POST":
+        # This should have been handled by the specific route above
+        # If we reach here, the specific route wasn't matched
+        logger.warning(f"⚠️ [ROUTE WARNING] classify-question caught by catch-all route. This shouldn't happen!")
+    
     try:
         # Get request body if present
         body = None
         if request.method in ["POST", "PUT", "PATCH"]:
             try:
                 body = await request.body()
-            except Exception:
+            except Exception as body_err:
+                logger.warning(f"Could not read request body: {body_err}")
                 body = None
         
         # Forward headers (including Authorization)
@@ -4142,22 +4341,74 @@ async def proxy_aprag_service(path: str, request: Request):
                 params=request.query_params
             )
         
+        # Log response details for debugging
+        content_length = len(response.content) if response.content else 0
+        content_type = response.headers.get("content-type", "application/json")
+        logger.info(f"APRAG service response: status={response.status_code}, content_length={content_length}, content_type={content_type}")
+        
+        # Prepare response headers (exclude content-encoding to avoid issues)
+        response_headers = {}
+        # Copy only safe headers
+        safe_headers = ["content-type", "cache-control", "expires"]
+        for header_name in safe_headers:
+            if header_name in response.headers:
+                response_headers[header_name] = response.headers[header_name]
+        
+        # Ensure content-type is set
+        if "content-type" not in response_headers:
+            response_headers["content-type"] = "application/json"
+        
         # Return response from APRAG service
-        return Response(
-            content=response.content,
-            status_code=response.status_code,
-            headers=dict(response.headers),
-            media_type=response.headers.get("content-type")
-        )
+        try:
+            # Use JSONResponse for JSON content to avoid encoding issues
+            if content_type and "json" in content_type.lower():
+                from fastapi.responses import JSONResponse
+                import json
+                try:
+                    json_data = response.json()
+                    return JSONResponse(
+                        content=json_data,
+                        status_code=response.status_code,
+                        headers=response_headers
+                    )
+                except Exception as json_err:
+                    logger.warning(f"Could not parse as JSON, returning raw content: {json_err}")
+                    # Fallback to raw content
+                    return Response(
+                        content=response.content,
+                        status_code=response.status_code,
+                        headers=response_headers,
+                        media_type=content_type
+                    )
+            else:
+                # For non-JSON content, use Response
+                return Response(
+                    content=response.content,
+                    status_code=response.status_code,
+                    headers=response_headers,
+                    media_type=content_type
+                )
+        except Exception as response_err:
+            logger.error(f"Error creating Response object: {response_err}")
+            logger.error(f"Response status: {response.status_code}")
+            logger.error(f"Response content type: {content_type}")
+            logger.error(f"Response content length: {content_length}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Failed to create response: {str(response_err)}")
         
     except httpx.TimeoutException:
         logger.error(f"APRAG service timeout for path: {path}")
         raise HTTPException(status_code=504, detail="APRAG service timeout")
     except httpx.RequestError as e:
         logger.error(f"APRAG service request error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=503, detail=f"APRAG service unavailable: {str(e)}")
     except Exception as e:
         logger.error(f"APRAG service proxy error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"APRAG service proxy failed: {str(e)}")
 
 

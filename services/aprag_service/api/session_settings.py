@@ -45,6 +45,7 @@ class SessionSettings(BaseModel):
     enable_bloom: bool = Field(True, description="Bloom Taxonomy Detection")
     enable_cognitive_load: bool = Field(True, description="Cognitive Load Management")
     enable_emoji_feedback: bool = Field(True, description="Emoji-Based Feedback")
+    enable_ebars: bool = Field(False, description="EBARS - Emoji-Based Adaptive Response System")
 
 
 class SessionSettingsUpdate(BaseModel):
@@ -58,6 +59,7 @@ class SessionSettingsUpdate(BaseModel):
     enable_bloom: Optional[bool] = None
     enable_cognitive_load: Optional[bool] = None
     enable_emoji_feedback: Optional[bool] = None
+    enable_ebars: Optional[bool] = None
 
 
 class SessionSettingsResponse(BaseModel):
@@ -111,7 +113,8 @@ async def get_session_settings(
                 enable_zpd=bool(settings_data['enable_zpd']),
                 enable_bloom=bool(settings_data['enable_bloom']),
                 enable_cognitive_load=bool(settings_data['enable_cognitive_load']),
-                enable_emoji_feedback=bool(settings_data['enable_emoji_feedback'])
+                enable_emoji_feedback=bool(settings_data['enable_emoji_feedback']),
+                enable_ebars=bool(settings_data.get('enable_ebars', False))
             )
             
             return SessionSettingsResponse(
@@ -170,15 +173,27 @@ async def get_session_settings(
             # 3. We still try to get valid user_id from session metadata or use admin
             
             # Create default settings
+            # First check if enable_ebars column exists, if not add it
+            try:
+                with db.get_connection() as conn:
+                    cursor = conn.execute("PRAGMA table_info(session_settings)")
+                    columns = [row[1] for row in cursor.fetchall()]
+                    if 'enable_ebars' not in columns:
+                        conn.execute("ALTER TABLE session_settings ADD COLUMN enable_ebars BOOLEAN DEFAULT 0")
+                        conn.commit()
+                        logger.info("Added enable_ebars column to session_settings table")
+            except Exception as e:
+                logger.warning(f"Could not add enable_ebars column: {e}")
+            
             db.execute_insert(
                 """
                 INSERT INTO session_settings 
                 (session_id, user_id, enable_progressive_assessment, enable_personalized_responses,
                  enable_multi_dimensional_feedback, enable_topic_analytics, enable_cacs, enable_zpd,
-                 enable_bloom, enable_cognitive_load, enable_emoji_feedback)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 enable_bloom, enable_cognitive_load, enable_emoji_feedback, enable_ebars)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, default_user_id, False, False, False, True, True, True, True, True, True)
+                (session_id, default_user_id, False, False, False, True, True, True, True, True, True, False)
             )
             
             settings = SessionSettings(
@@ -192,7 +207,8 @@ async def get_session_settings(
                 enable_zpd=True,
                 enable_bloom=True,
                 enable_cognitive_load=True,
-                enable_emoji_feedback=True
+                enable_emoji_feedback=True,
+                enable_ebars=False
             )
             
             return SessionSettingsResponse(
@@ -276,6 +292,22 @@ async def update_session_settings(
                 update_fields.append("enable_emoji_feedback = ?")
                 update_values.append(updates.enable_emoji_feedback)
             
+            if updates.enable_ebars is not None:
+                # Ensure column exists
+                try:
+                    with db.get_connection() as conn:
+                        cursor = conn.execute("PRAGMA table_info(session_settings)")
+                        columns = [row[1] for row in cursor.fetchall()]
+                        if 'enable_ebars' not in columns:
+                            conn.execute("ALTER TABLE session_settings ADD COLUMN enable_ebars BOOLEAN DEFAULT 0")
+                            conn.commit()
+                            logger.info("Added enable_ebars column to session_settings table")
+                except Exception as e:
+                    logger.warning(f"Could not add enable_ebars column: {e}")
+                
+                update_fields.append("enable_ebars = ?")
+                update_values.append(updates.enable_ebars)
+            
             if not update_fields:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -298,13 +330,25 @@ async def update_session_settings(
             
         else:
             # Create new settings with provided updates
+            # Ensure enable_ebars column exists
+            try:
+                with db.get_connection() as conn:
+                    cursor = conn.execute("PRAGMA table_info(session_settings)")
+                    columns = [row[1] for row in cursor.fetchall()]
+                    if 'enable_ebars' not in columns:
+                        conn.execute("ALTER TABLE session_settings ADD COLUMN enable_ebars BOOLEAN DEFAULT 0")
+                        conn.commit()
+                        logger.info("Added enable_ebars column to session_settings table")
+            except Exception as e:
+                logger.warning(f"Could not add enable_ebars column: {e}")
+            
             db.execute_insert(
                 """
                 INSERT INTO session_settings 
                 (session_id, user_id, enable_progressive_assessment, enable_personalized_responses,
                  enable_multi_dimensional_feedback, enable_topic_analytics, enable_cacs, enable_zpd,
-                 enable_bloom, enable_cognitive_load, enable_emoji_feedback)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 enable_bloom, enable_cognitive_load, enable_emoji_feedback, enable_ebars)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id, 
@@ -317,7 +361,8 @@ async def update_session_settings(
                     updates.enable_zpd if updates.enable_zpd is not None else True,
                     updates.enable_bloom if updates.enable_bloom is not None else True,
                     updates.enable_cognitive_load if updates.enable_cognitive_load is not None else True,
-                    updates.enable_emoji_feedback if updates.enable_emoji_feedback is not None else True
+                    updates.enable_emoji_feedback if updates.enable_emoji_feedback is not None else True,
+                    updates.enable_ebars if updates.enable_ebars is not None else False
                 )
             )
         
@@ -355,16 +400,28 @@ async def reset_session_settings(
             (session_id,)
         )
         
+        # Ensure enable_ebars column exists
+        try:
+            with db.get_connection() as conn:
+                cursor = conn.execute("PRAGMA table_info(session_settings)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if 'enable_ebars' not in columns:
+                    conn.execute("ALTER TABLE session_settings ADD COLUMN enable_ebars BOOLEAN DEFAULT 0")
+                    conn.commit()
+                    logger.info("Added enable_ebars column to session_settings table")
+        except Exception as e:
+            logger.warning(f"Could not add enable_ebars column: {e}")
+        
         # Create default settings
         db.execute_insert(
             """
             INSERT INTO session_settings 
             (session_id, user_id, enable_progressive_assessment, enable_personalized_responses,
              enable_multi_dimensional_feedback, enable_topic_analytics, enable_cacs, enable_zpd,
-             enable_bloom, enable_cognitive_load, enable_emoji_feedback)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             enable_bloom, enable_cognitive_load, enable_emoji_feedback, enable_ebars)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (session_id, user_id, False, False, False, True, True, True, True, True, True)
+            (session_id, user_id, False, False, False, True, True, True, True, True, True, False)
         )
         
         # Return new default settings
@@ -399,7 +456,8 @@ async def get_settings_presets():
                 "enable_zpd": False,
                 "enable_bloom": False,
                 "enable_cognitive_load": False,
-                "enable_emoji_feedback": True
+                "enable_emoji_feedback": True,
+                "enable_ebars": False
             }
         },
         "balanced": {
@@ -414,7 +472,8 @@ async def get_settings_presets():
                 "enable_zpd": True,
                 "enable_bloom": True,
                 "enable_cognitive_load": True,
-                "enable_emoji_feedback": True
+                "enable_emoji_feedback": True,
+                "enable_ebars": False
             }
         },
         "advanced": {
@@ -429,7 +488,8 @@ async def get_settings_presets():
                 "enable_zpd": True,
                 "enable_bloom": True,
                 "enable_cognitive_load": True,
-                "enable_emoji_feedback": True
+                "enable_emoji_feedback": True,
+                "enable_ebars": True
             }
         }
     }

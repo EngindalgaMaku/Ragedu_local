@@ -22,7 +22,7 @@ from src.vector_store.chroma_store import ChromaVectorStore
 from src.embedding.embedding_generator import generate_embeddings
 from src.utils.prompt_templates import BilingualPromptManager
 from src.utils.language_detector import detect_language
-from src.rag.re_ranker import ReRanker
+# from src.rag.re_ranker import ReRanker  # DISABLED: Using reranker-service instead
 
 class BaseRAGChain(ABC):
     """
@@ -48,15 +48,10 @@ class BaseRAGChain(ABC):
         self.prompt_manager = BilingualPromptManager()
         
         # Initialize re-ranker for improved document relevance
-        self.use_reranking = config.get("enable_reranking", True)
+        # DISABLED: Use new reranker-service instead of local ReRanker
+        self.use_reranking = False  # Disable local reranker
         self.reranker = None
-        if self.use_reranking:
-            try:
-                self.reranker = ReRanker()
-                self.logger.info("Re-ranker initialized successfully")
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize re-ranker: {e}")
-                self.use_reranking = False
+        self.logger.info("Local re-ranker disabled - using reranker-service instead")
         
         # Performance tracking
         self.performance_stats = {
@@ -97,26 +92,31 @@ class BaseRAGChain(ABC):
         """
         pass
     
-    def _retrieve_documents(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def _retrieve_documents(self, queries: List[str], top_k: int = 5) -> List[List[Dict[str, Any]]]:
         """
         Retrieve relevant documents from vector store with optional re-ranking.
         
         Args:
-            query: User query
+            queries: List of user queries
             top_k: Number of documents to retrieve
             
         Returns:
-            List of retrieved documents with metadata, potentially re-ranked
+            List of lists of retrieved documents with metadata, potentially re-ranked
         """
         try:
-            query_embedding = generate_embeddings(
-                [query],
+            # Get batch size from config or use default of 25
+            batch_size = self.config.get("model_config", {}).get("embedding_batch_size", 25)
+            self.logger.info(f"Using batch size of {batch_size} for embedding generation")
+            
+            query_embeddings = generate_embeddings(
+                queries,
                 model=self.config.get("ollama_embedding_model"),
-                use_cache=self.config.get("enable_cache", True)
+                use_cache=self.config.get("enable_cache", True),
+                batch_size=batch_size
             )
             
-            if not query_embedding:
-                self.logger.error("Failed to generate query embedding.")
+            if not query_embeddings:
+                self.logger.error("Failed to generate query embeddings.")
                 return []
             
             # Step 1: Initial retrieval - get more documents if re-ranking is enabled
@@ -128,7 +128,10 @@ class BaseRAGChain(ABC):
             else:
                 initial_k = top_k
             
-            search_results = self.chroma_store.search(query_embedding, initial_k)
+            search_results = []
+            for query_embedding in query_embeddings:
+                search_result = self.chroma_store.search(query_embedding, initial_k)
+                search_results.append(search_result)
             
             # Convert to the format expected by re-ranker
             retrieved_chunks = []

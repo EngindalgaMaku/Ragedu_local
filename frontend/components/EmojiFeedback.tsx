@@ -5,6 +5,34 @@ import { submitEmojiFeedback, EmojiFeedbackCreate } from "@/lib/api";
 import { useAPRAGSettings } from "@/hooks/useAPRAGSettings";
 import DetailedFeedbackModal from "./DetailedFeedbackModal";
 
+// EBARS helper functions
+async function checkEBARSEnabled(sessionId: string): Promise<{ isEnabled: boolean }> {
+  try {
+    const response = await fetch(`/api/aprag/session-settings/${sessionId}`);
+    if (!response.ok) return { isEnabled: false };
+    const data = await response.json();
+    return { isEnabled: data.settings?.enable_ebars ?? false };
+  } catch {
+    return { isEnabled: false };
+  }
+}
+
+async function submitEBARSFeedback(data: {
+  user_id: string;
+  session_id: string;
+  emoji: string;
+  interaction_id?: number;
+}): Promise<void> {
+  const response = await fetch("/api/aprag/ebars/feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!response.ok) {
+    throw new Error("EBARS feedback failed");
+  }
+}
+
 interface EmojiFeedbackProps {
   interactionId: number;
   userId: string;
@@ -63,11 +91,36 @@ export default function EmojiFeedback({
   const [pendingEmoji, setPendingEmoji] = useState<
     "😊" | "👍" | "😐" | "❌" | null
   >(null);
-  const { isEnabled, features } = useAPRAGSettings(sessionId);
+  const { isEnabled, features, isLoading } = useAPRAGSettings(sessionId);
+
+  // Debug logging
+  if (typeof window !== 'undefined') {
+    console.log('[EmojiFeedback] Debug:', {
+      sessionId,
+      isEnabled,
+      feedback_collection: features.feedback_collection,
+      isLoading,
+      interactionId,
+      userId,
+      compact,
+      showDetailedModal
+    });
+  }
 
   // Don't render if APRAG or emoji feedback is disabled
-  if (!isEnabled || !features.feedback_collection) {
-    return null;
+  // TEMPORARY: Allow rendering even if disabled for debugging
+  const allowRender = isEnabled && features.feedback_collection;
+  if (!isLoading && !allowRender) {
+    if (typeof window !== 'undefined') {
+      console.warn('[EmojiFeedback] Not rendering:', {
+        reason: !isEnabled ? 'APRAG disabled' : 'feedback_collection disabled',
+        isEnabled,
+        feedback_collection: features.feedback_collection,
+        isLoading
+      });
+    }
+    // TEMPORARY: Still render for debugging, but show a warning
+    console.warn('[EmojiFeedback] FORCING RENDER FOR DEBUGGING - Remove this after fixing!');
   }
 
   const handleEmojiClick = async (
@@ -76,10 +129,19 @@ export default function EmojiFeedback({
   ) => {
     if (submitting || selectedEmoji) return;
 
+    console.log('[EmojiFeedback] handleEmojiClick called:', {
+      emoji,
+      skipDetailed,
+      compact,
+      willShowModal: !skipDetailed && !compact
+    });
+
     // If we want to show detailed feedback and it's not being skipped
     if (!skipDetailed && !compact) {
+      console.log('[EmojiFeedback] Opening detailed feedback modal...');
       setPendingEmoji(emoji);
       setShowDetailedModal(true);
+      console.log('[EmojiFeedback] showDetailedModal set to true');
       return;
     }
 
@@ -96,6 +158,23 @@ export default function EmojiFeedback({
       };
 
       await submitEmojiFeedback(feedback);
+      
+      // Send feedback to EBARS if enabled
+      try {
+        const { isEnabled: ebarsEnabled } = await checkEBARSEnabled(sessionId);
+        if (ebarsEnabled) {
+          await submitEBARSFeedback({
+            user_id: userId,
+            session_id: sessionId,
+            emoji,
+            interaction_id: interactionId,
+          });
+        }
+      } catch (ebarsError) {
+        // Non-critical: EBARS feedback failed, but emoji feedback succeeded
+        console.warn("EBARS feedback failed (non-critical):", ebarsError);
+      }
+      
       setSelectedEmoji(emoji);
       setShowSuccess(true);
 
@@ -287,7 +366,24 @@ export default function EmojiFeedback({
         </div>
       )}
 
-      {/* Detailed Feedback Modal */}
+      {/* Debug: Show modal state */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="mt-2 text-xs text-gray-400 p-2 bg-gray-50 rounded">
+          Modal Debug: showDetailedModal={showDetailedModal ? '✅ true' : '❌ false'}, 
+          pendingEmoji={pendingEmoji || 'none'}
+        </div>
+      )}
+
+      {/* Debug logs - only in development */}
+      {process.env.NODE_ENV === 'development' && (
+        <>
+          {console.log('[EmojiFeedback] Rendering DetailedFeedbackModal:', {
+            showDetailedModal,
+            pendingEmoji,
+            interactionId
+          })}
+        </>
+      )}
       <DetailedFeedbackModal
         isOpen={showDetailedModal}
         onClose={handleDetailedModalClose}
@@ -306,7 +402,6 @@ interface QuickEmojiFeedbackProps {
   interactionId: number;
   userId: string;
   sessionId: string;
-  initialEmoji?: string; // Emoji feedback from chat message
   onFeedbackSubmitted?: () => void;
 }
 
@@ -314,22 +409,15 @@ export function QuickEmojiFeedback({
   interactionId,
   userId,
   sessionId,
-  initialEmoji,
   onFeedbackSubmitted,
 }: QuickEmojiFeedbackProps) {
-  const [selectedEmoji, setSelectedEmoji] = useState<string | null>(initialEmoji || null);
+  const [selectedEmoji, setSelectedEmoji] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [showDetailedModal, setShowDetailedModal] = useState(false);
   const [pendingEmoji, setPendingEmoji] = useState<
     "😊" | "👍" | "😐" | "❌" | null
   >(null);
-
-  // Update selectedEmoji when initialEmoji changes (from chat history)
-  React.useEffect(() => {
-    if (initialEmoji) {
-      setSelectedEmoji(initialEmoji);
-    }
-  }, [initialEmoji]);
+  const [hoveredEmoji, setHoveredEmoji] = useState<string | null>(null);
 
   const handleEmojiClick = async (emoji: "😊" | "👍" | "😐" | "❌") => {
     if (submitting || selectedEmoji) return;
@@ -337,56 +425,35 @@ export function QuickEmojiFeedback({
     setSubmitting(true);
 
     try {
-      const result = await submitEmojiFeedback({
+      await submitEmojiFeedback({
         interaction_id: interactionId,
         user_id: userId,
         session_id: sessionId,
         emoji,
       });
-      console.log("✅ Emoji feedback submitted:", result);
-      setSelectedEmoji(emoji);
       
-      // Update chat message with emoji feedback
+      // Send feedback to EBARS if enabled
       try {
-        const { getStudentChatHistory, saveStudentChatMessage } = await import("@/lib/api");
-        const chatHistory = await getStudentChatHistory(sessionId);
-        const messageToUpdate = chatHistory.find(
-          (msg) => msg.aprag_interaction_id === interactionId
-        );
-        if (messageToUpdate) {
-          // CRITICAL: Preserve ALL fields including topic and suggestions
-          await saveStudentChatMessage({
-            user: messageToUpdate.user,
-            bot: messageToUpdate.bot,
-            sources: messageToUpdate.sources || [],
-            durationMs: messageToUpdate.durationMs || 0,
-            session_id: messageToUpdate.session_id,
-            suggestions: messageToUpdate.suggestions || [], // Preserve suggestions
-            aprag_interaction_id: messageToUpdate.aprag_interaction_id,
-            emoji_feedback: emoji, // Update emoji
-            topic: messageToUpdate.topic || undefined, // Preserve topic
-          });
-          console.log("✅ Chat message updated with emoji feedback", { 
+        const { isEnabled: ebarsEnabled } = await checkEBARSEnabled(sessionId);
+        if (ebarsEnabled) {
+          await submitEBARSFeedback({
+            user_id: userId,
+            session_id: sessionId,
             emoji,
-            topic: messageToUpdate.topic,
-            hasSuggestions: !!messageToUpdate.suggestions 
+            interaction_id: interactionId,
           });
-        } else {
-          console.warn("⚠️ Message not found for emoji update", { interactionId });
         }
-      } catch (updateErr) {
-        console.error("❌ Failed to update chat message with emoji:", updateErr);
-        // Non-critical, don't fail the whole operation
+      } catch (ebarsError) {
+        // Non-critical: EBARS feedback failed, but emoji feedback succeeded
+        console.warn("EBARS feedback failed (non-critical):", ebarsError);
       }
       
+      setSelectedEmoji(emoji);
       if (onFeedbackSubmitted) {
         onFeedbackSubmitted();
       }
-    } catch (err: any) {
-      console.error("❌ Failed to submit emoji feedback:", err);
-      alert(`Geri bildirim gönderilemedi: ${err.message || "Bilinmeyen hata"}`);
-      setSubmitting(false);
-      return;
+    } catch (err) {
+      console.error("Failed to submit emoji feedback:", err);
     } finally {
       setSubmitting(false);
     }
@@ -414,29 +481,35 @@ export function QuickEmojiFeedback({
   }
 
   return (
-    <div className="flex flex-col gap-2 w-full">
-      {/* Emoji buttons row with labels */}
-      <div className="flex items-center justify-between bg-white rounded-lg px-2 py-3 border border-gray-200">
-        {EMOJI_OPTIONS.map((option) => (
-          <button
-            key={option.emoji}
-            onClick={() => handleEmojiClick(option.emoji)}
-            disabled={submitting}
-            className="flex-1 flex flex-col items-center gap-1.5 p-2 rounded-lg 
-                     hover:bg-gray-50 transition-all transform hover:scale-110
-                     disabled:opacity-50 disabled:cursor-not-allowed
-                     focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1
-                     active:scale-95"
-            aria-label={option.name}
-            title={option.description}
-          >
-            <span className="text-3xl leading-none">{option.emoji}</span>
-            <span className="text-[10px] font-medium text-gray-600 text-center leading-tight">
-              {option.shortDescription}
-            </span>
-          </button>
-        ))}
-      </div>
+    <div className="inline-flex items-center gap-1">
+      {EMOJI_OPTIONS.map((option) => (
+        <button
+          key={option.emoji}
+          onClick={() => handleEmojiClick(option.emoji)}
+          onMouseEnter={() => setHoveredEmoji(option.emoji)}
+          onMouseLeave={() => setHoveredEmoji(null)}
+          disabled={submitting}
+          className="text-lg hover:scale-125 transition-all transform disabled:opacity-50
+                   hover:shadow-md rounded-full p-1 hover:bg-gray-100 relative"
+        >
+          {option.emoji}
+          {hoveredEmoji === option.emoji && (
+            <div
+              className="absolute bottom-full mb-2 left-1/2 transform -translate-x-1/2
+                           bg-gray-800 text-white text-xs rounded-lg px-2 py-1
+                           whitespace-nowrap z-50 pointer-events-none"
+            >
+              <div className="text-center">
+                <div className="font-semibold">{option.shortDescription}</div>
+              </div>
+              <div
+                className="absolute top-full left-1/2 transform -translate-x-1/2
+                             border-4 border-transparent border-t-gray-800"
+              ></div>
+            </div>
+          )}
+        </button>
+      ))}
       {/* Detailed Feedback Modal */}
       <DetailedFeedbackModal
         isOpen={showDetailedModal}

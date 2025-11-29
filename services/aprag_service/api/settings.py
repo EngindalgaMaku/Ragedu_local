@@ -66,13 +66,50 @@ async def get_status(session_id: Optional[str] = None):
         session_enabled = enabled if session_id else None
         logger.info(f"[APRAG SETTINGS] session_enabled: {session_enabled}")
         
-        # Get feature flags from environment variables
+        # Get feature flags from environment variables and FeatureFlags
         feedback_enabled = os.getenv("APRAG_FEEDBACK_COLLECTION", "true").lower() == "true" if global_enabled else False
         personalization_enabled = os.getenv("APRAG_PERSONALIZATION", "true").lower() == "true" if global_enabled else False
         recommendations_enabled = os.getenv("APRAG_RECOMMENDATIONS", "true").lower() == "true" if global_enabled else False
         analytics_enabled = os.getenv("APRAG_ANALYTICS", "true").lower() == "true" if global_enabled else False
         
-        logger.info(f"[APRAG SETTINGS] Feature flags: feedback={feedback_enabled}, personalization={personalization_enabled}, recommendations={recommendations_enabled}, analytics={analytics_enabled}")
+        # Get Eğitsel-KBRAG feature flags
+        egitsel_kbrag_enabled = FeatureFlags.is_egitsel_kbrag_enabled() if global_enabled else False
+        cacs_enabled = FeatureFlags.is_cacs_enabled() if egitsel_kbrag_enabled else False
+        zpd_enabled = FeatureFlags.is_zpd_enabled() if egitsel_kbrag_enabled else False
+        bloom_enabled = FeatureFlags.is_bloom_enabled() if egitsel_kbrag_enabled else False
+        cognitive_load_enabled = FeatureFlags.is_cognitive_load_enabled() if egitsel_kbrag_enabled else False
+        emoji_feedback_enabled = FeatureFlags.is_emoji_feedback_enabled() if egitsel_kbrag_enabled else False
+        
+        # Check session-specific settings if session_id provided
+        if session_id:
+            try:
+                from database.database import DatabaseManager
+                db_path = os.getenv("APRAG_DB_PATH", "data/rag_assistant.db")
+                db = DatabaseManager(db_path)
+                session_settings = db.execute_query(
+                    "SELECT * FROM session_settings WHERE session_id = ?",
+                    (session_id,)
+                )
+                if session_settings and len(session_settings) > 0:
+                    row = session_settings[0]
+                    # Convert SQLite Row to dict
+                    row_dict = dict(row) if hasattr(row, 'keys') else row
+                    # Override with session-specific settings
+                    if 'enable_cacs' in row_dict and row_dict['enable_cacs'] is not None:
+                        cacs_enabled = bool(row_dict['enable_cacs'])
+                    if 'enable_zpd' in row_dict and row_dict['enable_zpd'] is not None:
+                        zpd_enabled = bool(row_dict['enable_zpd'])
+                    if 'enable_bloom' in row_dict and row_dict['enable_bloom'] is not None:
+                        bloom_enabled = bool(row_dict['enable_bloom'])
+                    if 'enable_cognitive_load' in row_dict and row_dict['enable_cognitive_load'] is not None:
+                        cognitive_load_enabled = bool(row_dict['enable_cognitive_load'])
+                    if 'enable_emoji_feedback' in row_dict and row_dict['enable_emoji_feedback'] is not None:
+                        emoji_feedback_enabled = bool(row_dict['enable_emoji_feedback'])
+                    logger.info(f"[APRAG SETTINGS] Session-specific overrides loaded for {session_id}: cacs={cacs_enabled}, zpd={zpd_enabled}, bloom={bloom_enabled}")
+            except Exception as e:
+                logger.warning(f"[APRAG SETTINGS] Could not load session-specific settings: {e}")
+        
+        logger.info(f"[APRAG SETTINGS] Feature flags: feedback={feedback_enabled}, personalization={personalization_enabled}, recommendations={recommendations_enabled}, analytics={analytics_enabled}, cacs={cacs_enabled}, zpd={zpd_enabled}, bloom={bloom_enabled}, cognitive_load={cognitive_load_enabled}, emoji_feedback={emoji_feedback_enabled}")
         
         return {
             "enabled": enabled,
@@ -83,6 +120,11 @@ async def get_status(session_id: Optional[str] = None):
                 "personalization": personalization_enabled,
                 "recommendations": recommendations_enabled,
                 "analytics": analytics_enabled,
+                "cacs": cacs_enabled,
+                "zpd": zpd_enabled,
+                "bloom": bloom_enabled,
+                "cognitive_load": cognitive_load_enabled,
+                "emoji_feedback": emoji_feedback_enabled,
             }
         }
     except Exception as e:

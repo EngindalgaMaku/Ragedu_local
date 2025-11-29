@@ -8,12 +8,14 @@ import {
   getSessionTopics,
   listSessions,
   getAPRAGSettings,
+  getStudentProfile,
   SessionMeta,
   APRAGAnalyticsSummary,
   StudentProgressResponse,
   Topic,
   APRAGSettings,
   TopicProgress,
+  StudentProfile,
 } from "@/lib/api";
 import {
   BookOpen,
@@ -48,6 +50,9 @@ export default function StudentDashboard({ userId }: StudentDashboardProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [apragSettings, setApragSettings] = useState<APRAGSettings | null>(
+    null
+  );
+  const [studentProfile, setStudentProfile] = useState<StudentProfile | null>(
     null
   );
   const [topicPage, setTopicPage] = useState(1);
@@ -92,6 +97,15 @@ export default function StudentDashboard({ userId }: StudentDashboardProps) {
         // Check APRAG settings first
         const settings = await getAPRAGSettings(selectedSession);
         setApragSettings(settings);
+
+        // Load student profile (always, even if APRAG is disabled)
+        try {
+          const profileData = await getStudentProfile(userId, selectedSession);
+          setStudentProfile(profileData);
+        } catch (profileError) {
+          console.warn("Failed to load student profile:", profileError);
+          // Profile will be auto-created on next interaction
+        }
 
         // Only load APRAG data if enabled
         if (settings.enabled) {
@@ -308,24 +322,26 @@ export default function StudentDashboard({ userId }: StudentDashboardProps) {
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {/* Total Questions */}
+        {/* Total Questions - Use student profile data */}
         <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg shadow-lg p-6 text-white">
           <div className="flex items-center justify-between mb-3">
             <BookOpen className="w-8 h-8 opacity-80" />
             <span className="text-3xl font-bold">
-              {analytics?.total_interactions || 0}
+              {studentProfile?.total_interactions || analytics?.total_interactions || 0}
             </span>
           </div>
           <h3 className="text-sm font-medium opacity-90">Toplam Soru</h3>
           <p className="text-xs opacity-75 mt-1">Sorduğun soru sayısı</p>
         </div>
 
-        {/* Average Understanding */}
+        {/* Average Understanding - Use student profile data */}
         <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-lg shadow-lg p-6 text-white">
           <div className="flex items-center justify-between mb-3">
             <Brain className="w-8 h-8 opacity-80" />
             <span className="text-3xl font-bold">
-              {analytics?.average_understanding
+              {studentProfile?.average_understanding
+                ? studentProfile.average_understanding.toFixed(1)
+                : analytics?.average_understanding
                 ? analytics.average_understanding.toFixed(1)
                 : "-"}
             </span>
@@ -348,89 +364,170 @@ export default function StudentDashboard({ userId }: StudentDashboardProps) {
           </p>
         </div>
 
-        {/* Engagement Level */}
+        {/* Satisfaction Level - Use student profile data ONLY */}
         <div className="bg-gradient-to-br from-orange-500 to-orange-600 rounded-lg shadow-lg p-6 text-white">
           <div className="flex items-center justify-between mb-3">
-            {TrendIcon && (
-              <TrendIcon className={`w-8 h-8 opacity-80 ${trendInfo?.color}`} />
-            )}
-            <span className="text-3xl font-bold capitalize">
-              {analytics?.engagement_level || "-"}
+            <Eye className="w-8 h-8 opacity-80" />
+            <span className="text-3xl font-bold">
+              {studentProfile?.average_satisfaction !== null && studentProfile?.average_satisfaction !== undefined
+                ? studentProfile.average_satisfaction.toFixed(1)
+                : "-"}
             </span>
           </div>
-          <h3 className="text-sm font-medium opacity-90">Katılım Seviyesi</h3>
-          <p className="text-xs opacity-75 mt-1">{trendInfo?.label}</p>
+          <h3 className="text-sm font-medium opacity-90">Memnuniyet Düzeyi</h3>
+          <p className="text-xs opacity-75 mt-1">5 üzerinden ortalama</p>
         </div>
       </div>
 
+      {/* Student Profile Details Section */}
+      {studentProfile && (
+        <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
+          <div className="flex items-center gap-2 mb-4">
+            <Info className="w-5 h-5 text-blue-500" />
+            <h2 className="text-xl font-bold text-gray-900">Öğrenci Profil Bilgileri</h2>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-gray-50 rounded-lg p-4">
+              <div className="text-sm text-gray-600 mb-1">Toplam Etkileşim</div>
+              <div className="text-2xl font-bold text-gray-900">
+                {studentProfile.total_interactions}
+              </div>
+            </div>
+            <div className="bg-gray-50 rounded-lg p-4">
+              <div className="text-sm text-gray-600 mb-1">Geri Bildirim Sayısı</div>
+              <div className="text-2xl font-bold text-gray-900">
+                {studentProfile.total_feedback_count}
+              </div>
+            </div>
+            {studentProfile.preferred_explanation_style && (
+              <div className="bg-gray-50 rounded-lg p-4">
+                <div className="text-sm text-gray-600 mb-1">Tercih Edilen Açıklama Stili</div>
+                <div className="text-lg font-semibold text-gray-900 capitalize">
+                  {studentProfile.preferred_explanation_style}
+                </div>
+              </div>
+            )}
+            {studentProfile.preferred_difficulty_level && (
+              <div className="bg-gray-50 rounded-lg p-4">
+                <div className="text-sm text-gray-600 mb-1">Tercih Edilen Zorluk Seviyesi</div>
+                <div className="text-lg font-semibold text-gray-900 capitalize">
+                  {studentProfile.preferred_difficulty_level}
+                </div>
+              </div>
+            )}
+          </div>
+          {(studentProfile.strong_topics || studentProfile.weak_topics) && (
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+              {studentProfile.strong_topics && Object.keys(studentProfile.strong_topics).length > 0 && (
+                <div className="bg-green-50 rounded-lg p-4 border border-green-200">
+                  <h3 className="font-semibold text-green-900 mb-2">Güçlü Olduğun Konular</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.keys(studentProfile.strong_topics).slice(0, 5).map((topic, idx) => (
+                      <span
+                        key={idx}
+                        className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-medium"
+                      >
+                        {topic}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {studentProfile.weak_topics && Object.keys(studentProfile.weak_topics).length > 0 && (
+                <div className="bg-red-50 rounded-lg p-4 border border-red-200">
+                  <h3 className="font-semibold text-red-900 mb-2">Geliştirilmesi Gereken Konular</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.keys(studentProfile.weak_topics).slice(0, 5).map((topic, idx) => (
+                      <span
+                        key={idx}
+                        className="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm font-medium"
+                      >
+                        {topic}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Current Topic & Recommendations */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Current Topic */}
-        {progress?.current_topic ? (
-          <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
-            <div className="flex items-center gap-2 mb-4">
-              <Clock className="w-5 h-5 text-blue-500" />
-              <h2 className="text-xl font-bold text-gray-900">Şu Anki Konum</h2>
+        {/* Current Topic - Enhanced Card */}
+        {progress?.current_topic && (
+          <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl shadow-lg p-6 border-2 border-blue-200 hover:border-blue-300 transition-all">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center shadow-md">
+                  <Clock className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900">Şu Anki Konum</h2>
+                  <p className="text-xs text-gray-600">Aktif öğrenme konusu</p>
+                </div>
+              </div>
+              {progress.current_topic.mastery_level && (
+                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                  progress.current_topic.mastery_level === "mastered" ? "bg-green-100 text-green-700" :
+                  progress.current_topic.mastery_level === "learning" ? "bg-yellow-100 text-yellow-700" :
+                  progress.current_topic.mastery_level === "needs_review" ? "bg-orange-100 text-orange-700" :
+                  "bg-gray-100 text-gray-700"
+                }`}>
+                  {progress.current_topic.mastery_level === "mastered" ? "✓ Ustalaştı" :
+                   progress.current_topic.mastery_level === "learning" ? "📚 Öğreniyor" :
+                   progress.current_topic.mastery_level === "needs_review" ? "🔄 Tekrar Gerekli" :
+                   "⏸️ Başlanmadı"}
+                </span>
+              )}
             </div>
-            <div className="bg-blue-50 rounded-lg p-4 border border-blue-100">
-              <h3 className="font-semibold text-lg text-gray-900 mb-2">
+            <div className="bg-white rounded-lg p-5 border border-blue-100 shadow-sm">
+              <h3 className="font-bold text-xl text-gray-900 mb-4">
                 {progress.current_topic.topic_title}
               </h3>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Sorular:</span>
-                  <span className="font-medium">
-                    {progress.current_topic.questions_asked || 0}
-                  </span>
+              <div className="grid grid-cols-2 gap-4 mb-4">
+                <div className="bg-blue-50 rounded-lg p-3 border border-blue-100">
+                  <div className="text-xs text-gray-600 mb-1">Sorulan Sorular</div>
+                  <div className="text-2xl font-bold text-blue-600">
+                    {progress.current_topic.questions_asked}
+                  </div>
                 </div>
                 {progress.current_topic.average_understanding && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Anlama:</span>
-                    <span className="font-medium">
-                      {progress.current_topic.average_understanding.toFixed(1)}{" "}
-                      / 5.0
-                    </span>
-                  </div>
-                )}
-                {progress.current_topic.mastery_level && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Seviye:</span>
-                    <span className="font-medium capitalize">
-                      {progress.current_topic.mastery_level}
-                    </span>
+                  <div className="bg-green-50 rounded-lg p-3 border border-green-100">
+                    <div className="text-xs text-gray-600 mb-1">Anlama Seviyesi</div>
+                    <div className="text-2xl font-bold text-green-600">
+                      {progress.current_topic.average_understanding.toFixed(1)}
+                      <span className="text-sm text-gray-500">/5.0</span>
+                    </div>
                   </div>
                 )}
               </div>
+              {progress.current_topic.mastery_score !== null && progress.current_topic.mastery_score !== undefined && (
+                <div className="mt-4">
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-sm font-semibold text-gray-700">İlerleme Durumu</span>
+                    <span className="text-sm font-bold text-gray-900">
+                      {Math.round((progress.current_topic.mastery_score || 0) * 100)}%
+                    </span>
+                  </div>
+                  <div className="w-full bg-gray-200 rounded-full h-3 shadow-inner">
+                    <div
+                      className={`h-3 rounded-full transition-all duration-500 shadow-sm ${
+                        progress.current_topic.mastery_score >= 0.8 ? "bg-gradient-to-r from-green-500 to-green-600" :
+                        progress.current_topic.mastery_score >= 0.5 ? "bg-gradient-to-r from-yellow-500 to-yellow-600" :
+                        "bg-gradient-to-r from-blue-500 to-blue-600"
+                      }`}
+                      style={{
+                        width: `${Math.min((progress.current_topic.mastery_score || 0) * 100, 100)}%`,
+                      }}
+                    ></div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-        ) : progress?.progress && progress.progress.length > 0 ? (
-          // Show first topic if no current topic is set
-          <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-200">
-            <div className="flex items-center gap-2 mb-4">
-              <Clock className="w-5 h-5 text-blue-500" />
-              <h2 className="text-xl font-bold text-gray-900">Şu Anki Konum</h2>
-            </div>
-            <div className="bg-blue-50 rounded-lg p-4 border border-blue-100">
-              <h3 className="font-semibold text-lg text-gray-900 mb-2">
-                {progress.progress[0].topic_title}
-              </h3>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Sorular:</span>
-                  <span className="font-medium">
-                    {progress.progress[0].questions_asked || 0}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Seviye:</span>
-                  <span className="font-medium capitalize">
-                    {progress.progress[0].mastery_level || "not_started"}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : null}
+        )}
 
         {/* Next Recommended Topic */}
         {progress?.next_recommended_topic && (
@@ -588,7 +685,7 @@ export default function StudentDashboard({ userId }: StudentDashboardProps) {
                       {mainTopic.keywords && mainTopic.keywords.length > 0 && (
                         <span className="flex items-center gap-1 text-purple-600">
                           <span className="w-2 h-2 bg-purple-400 rounded-full"></span>
-                          {mainTopic.keywords.length} keyword
+                          {mainTopic.keywords.length} anahtar kelime
                         </span>
                       )}
                     </div>

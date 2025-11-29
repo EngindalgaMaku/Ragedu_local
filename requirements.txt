@@ -34,5 +34,9 @@ cachetools>=5.3.0            # For intelligent caching mechanisms
 # System monitoring (lightweight)
 psutil>=5.9.0                # For system resource monitoring
 
+# Authentication dependencies
+bcrypt>=4.0.0                # For password hashing in database modules
+passlib>=1.7.4              # For password context management
+
 # Basic dependencies only - ChromaDB, FAISS moved to microservices
 # CRAG evaluation moved to Document Processing Service

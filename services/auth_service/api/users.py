@@ -386,6 +386,58 @@ async def get_user_by_username(
         )
 
 
+@router.get("/by-id/{user_id}", response_model=UserResponse, summary="Get User by ID")
+async def get_user_by_id_internal(
+    user_id: int,
+    auth_manager=Depends(get_auth_manager)
+) -> UserResponse:
+    """
+    Get user by ID (internal service endpoint - no auth required)
+    Used by other microservices to lookup user information
+    
+    Args:
+        user_id: User ID to lookup
+        auth_manager: AuthManager instance
+        
+    Returns:
+        User information
+        
+    Raises:
+        HTTPException: If user not found
+    """
+    try:
+        user = auth_manager.user_model.get_user_by_id(user_id)
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        return UserResponse(
+            id=user['id'],
+            username=user['username'],
+            email=user['email'],
+            first_name=user['first_name'],
+            last_name=user['last_name'],
+            is_active=user['is_active'],
+            role_id=user['role_id'],
+            role_name=user['role_name'],
+            created_at=datetime.fromisoformat(user['created_at'].replace('Z', '+00:00')),
+            updated_at=datetime.fromisoformat(user['updated_at'].replace('Z', '+00:00')),
+            last_login=datetime.fromisoformat(user['last_login'].replace('Z', '+00:00')) if user.get('last_login') else None
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"User retrieval by ID failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="User retrieval service error"
+        )
+
+
 @router.get("/{user_id}", response_model=UserResponse, summary="Get User")
 async def get_user(
     user_id: int,

@@ -28,6 +28,20 @@ class FeatureFlags:
     APRAG_RECOMMENDATIONS = "aprag_recommendations"
     APRAG_ANALYTICS = "aprag_analytics"
     
+    # Eğitsel-KBRAG Feature flags
+    EGITSEL_KBRAG_ENABLED = "egitsel_kbrag_enabled"
+    CACS_ENABLED = "cacs_enabled"
+    ZPD_ENABLED = "zpd_enabled"
+    BLOOM_ENABLED = "bloom_enabled"
+    COGNITIVE_LOAD_ENABLED = "cognitive_load_enabled"
+    EMOJI_FEEDBACK_ENABLED = "emoji_feedback_enabled"
+    PROGRESSIVE_ASSESSMENT_ENABLED = "progressive_assessment_enabled"
+    
+    # Module Extraction Feature flags
+    MODULE_EXTRACTION_ENABLED = "module_extraction_enabled"
+    MODULE_QUALITY_VALIDATION_ENABLED = "module_quality_validation_enabled"
+    MODULE_CURRICULUM_ALIGNMENT_ENABLED = "module_curriculum_alignment_enabled"
+    
     # Default values (can be overridden by environment variables)
     _defaults = {
         APRAG_ENABLED: False,
@@ -35,6 +49,20 @@ class FeatureFlags:
         APRAG_PERSONALIZATION: False,
         APRAG_RECOMMENDATIONS: False,
         APRAG_ANALYTICS: False,
+        
+        # Eğitsel-KBRAG defaults
+        EGITSEL_KBRAG_ENABLED: False,
+        CACS_ENABLED: False,
+        ZPD_ENABLED: False,
+        BLOOM_ENABLED: False,
+        COGNITIVE_LOAD_ENABLED: False,
+        EMOJI_FEEDBACK_ENABLED: False,
+        PROGRESSIVE_ASSESSMENT_ENABLED: False,
+        
+        # Module extraction defaults
+        MODULE_EXTRACTION_ENABLED: True,  # Enabled by default for production readiness
+        MODULE_QUALITY_VALIDATION_ENABLED: True,
+        MODULE_CURRICULUM_ALIGNMENT_ENABLED: True,
     }
     
     # Cache for flags (will be populated from database)
@@ -125,6 +153,78 @@ class FeatureFlags:
             return False
         return cls.is_enabled(cls.APRAG_ANALYTICS, session_id=session_id)
     
+    # Eğitsel-KBRAG Feature Methods
+    @classmethod
+    def is_egitsel_kbrag_enabled(cls, session_id: Optional[str] = None) -> bool:
+        """Check if Eğitsel-KBRAG module is enabled"""
+        if not cls.is_aprag_enabled(session_id):
+            return False
+        return cls.is_enabled(cls.EGITSEL_KBRAG_ENABLED, session_id=session_id)
+    
+    @classmethod
+    def is_cacs_enabled(cls, session_id: Optional[str] = None) -> bool:
+        """Check if CACS scoring is enabled"""
+        if not cls.is_egitsel_kbrag_enabled(session_id):
+            return False
+        return cls.is_enabled(cls.CACS_ENABLED, session_id=session_id)
+    
+    @classmethod
+    def is_zpd_enabled(cls, session_id: Optional[str] = None) -> bool:
+        """Check if ZPD assessment is enabled"""
+        if not cls.is_egitsel_kbrag_enabled(session_id):
+            return False
+        return cls.is_enabled(cls.ZPD_ENABLED, session_id=session_id)
+    
+    @classmethod
+    def is_bloom_enabled(cls, session_id: Optional[str] = None) -> bool:
+        """Check if Bloom taxonomy is enabled"""
+        if not cls.is_egitsel_kbrag_enabled(session_id):
+            return False
+        return cls.is_enabled(cls.BLOOM_ENABLED, session_id=session_id)
+    
+    @classmethod
+    def is_cognitive_load_enabled(cls, session_id: Optional[str] = None) -> bool:
+        """Check if cognitive load theory is enabled"""
+        if not cls.is_egitsel_kbrag_enabled(session_id):
+            return False
+        return cls.is_enabled(cls.COGNITIVE_LOAD_ENABLED, session_id=session_id)
+    
+    @classmethod
+    def is_emoji_feedback_enabled(cls, session_id: Optional[str] = None) -> bool:
+        """Check if emoji feedback is enabled"""
+        if not cls.is_egitsel_kbrag_enabled(session_id):
+            return False
+        return cls.is_enabled(cls.EMOJI_FEEDBACK_ENABLED, session_id=session_id)
+    
+    @classmethod
+    def is_progressive_assessment_enabled(cls, session_id: Optional[str] = None) -> bool:
+        """Check if progressive assessment is enabled"""
+        if not cls.is_egitsel_kbrag_enabled(session_id):
+            return False
+        return cls.is_enabled(cls.PROGRESSIVE_ASSESSMENT_ENABLED, session_id=session_id)
+    
+    # Module Extraction Feature Methods
+    @classmethod
+    def is_module_extraction_enabled(cls, session_id: Optional[str] = None) -> bool:
+        """Check if module extraction is enabled"""
+        if not cls.is_aprag_enabled(session_id):
+            return False
+        return cls.is_enabled(cls.MODULE_EXTRACTION_ENABLED, session_id=session_id)
+    
+    @classmethod
+    def is_module_quality_validation_enabled(cls, session_id: Optional[str] = None) -> bool:
+        """Check if module quality validation is enabled"""
+        if not cls.is_module_extraction_enabled(session_id):
+            return False
+        return cls.is_enabled(cls.MODULE_QUALITY_VALIDATION_ENABLED, session_id=session_id)
+    
+    @classmethod
+    def is_module_curriculum_alignment_enabled(cls, session_id: Optional[str] = None) -> bool:
+        """Check if module curriculum alignment is enabled"""
+        if not cls.is_module_extraction_enabled(session_id):
+            return False
+        return cls.is_enabled(cls.MODULE_CURRICULUM_ALIGNMENT_ENABLED, session_id=session_id)
+    
     @classmethod
     def set_flag(
         cls, 
@@ -169,6 +269,18 @@ class FeatureFlags:
             cls.APRAG_PERSONALIZATION,
             cls.APRAG_RECOMMENDATIONS,
             cls.APRAG_ANALYTICS,
+            # Eğitsel-KBRAG flags
+            cls.EGITSEL_KBRAG_ENABLED,
+            cls.CACS_ENABLED,
+            cls.ZPD_ENABLED,
+            cls.BLOOM_ENABLED,
+            cls.COGNITIVE_LOAD_ENABLED,
+            cls.EMOJI_FEEDBACK_ENABLED,
+            cls.PROGRESSIVE_ASSESSMENT_ENABLED,
+            # Module extraction flags
+            cls.MODULE_EXTRACTION_ENABLED,
+            cls.MODULE_QUALITY_VALIDATION_ENABLED,
+            cls.MODULE_CURRICULUM_ALIGNMENT_ENABLED,
         ]:
             flags[flag_key] = cls.is_enabled(flag_key, session_id=session_id)
         return flags
@@ -214,4 +326,24 @@ def is_personalization_enabled(session_id: Optional[str] = None) -> bool:
 def is_recommendations_enabled(session_id: Optional[str] = None) -> bool:
     """Check if recommendations are enabled"""
     return FeatureFlags.is_recommendations_enabled(session_id)
+
+
+def is_egitsel_kbrag_enabled(session_id: Optional[str] = None) -> bool:
+    """Check if Eğitsel-KBRAG module is enabled"""
+    return FeatureFlags.is_egitsel_kbrag_enabled(session_id)
+
+
+def is_module_extraction_enabled(session_id: Optional[str] = None) -> bool:
+    """Check if module extraction is enabled"""
+    return FeatureFlags.is_module_extraction_enabled(session_id)
+
+
+def is_module_quality_validation_enabled(session_id: Optional[str] = None) -> bool:
+    """Check if module quality validation is enabled"""
+    return FeatureFlags.is_module_quality_validation_enabled(session_id)
+
+
+def is_module_curriculum_alignment_enabled(session_id: Optional[str] = None) -> bool:
+    """Check if module curriculum alignment is enabled"""
+    return FeatureFlags.is_module_curriculum_alignment_enabled(session_id)
 

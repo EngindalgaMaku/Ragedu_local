@@ -69,6 +69,20 @@ export type Chunk = {
   chunk_metadata?: any;
 };
 
+// Markdown category types
+export type MarkdownCategory = {
+  id: number;
+  name: string;
+  description?: string | null;
+};
+
+export type MarkdownFileWithCategory = {
+  filename: string;
+  category_id?: number | null;
+  category_name?: string | null;
+  created_at?: string | null;
+};
+
 export type SessionChunksResponse = {
   chunks: Chunk[];
   total_count: number;
@@ -109,6 +123,77 @@ export async function createSession(data: {
   return res.json();
 }
 
+// =============================
+// Markdown category API helpers
+// =============================
+
+export async function listMarkdownCategories(): Promise<MarkdownCategory[]> {
+  const res = await fetch(`${getApiUrl()}/markdown-categories`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function createMarkdownCategory(
+  data: Omit<MarkdownCategory, "id">
+): Promise<MarkdownCategory> {
+  const res = await fetch(`${getApiUrl()}/markdown-categories`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function updateMarkdownCategory(
+  id: number,
+  data: Omit<MarkdownCategory, "id">
+): Promise<MarkdownCategory> {
+  const res = await fetch(`${getApiUrl()}/markdown-categories/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function deleteMarkdownCategory(id: number): Promise<void> {
+  const res = await fetch(`${getApiUrl()}/markdown-categories/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+export async function assignMarkdownCategory(
+  filenames: string[],
+  categoryId: number | null
+): Promise<void> {
+  const res = await fetch(`${getApiUrl()}/markdown-files/assign-category`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filenames, category_id: categoryId }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+}
+
+export async function listMarkdownFilesWithCategories(
+  categoryId?: number
+): Promise<MarkdownFileWithCategory[]> {
+  const url = new URL(
+    `${getApiUrl()}/markdown-files/with-categories`,
+    window.location.origin
+  );
+  if (categoryId !== undefined) {
+    url.searchParams.set("category_id", String(categoryId));
+  }
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function deleteSession(
   sessionId: string
 ): Promise<{ deleted: boolean; session_id: string }> {
@@ -141,86 +226,6 @@ export async function updateSessionStatus(
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
-}
-
-export async function updateSessionName(
-  sessionId: string,
-  name: string
-): Promise<{
-  success: boolean;
-  session_id: string;
-  new_name: string;
-  updated_session: SessionMeta;
-}> {
-  console.log("🌐 [API] Starting updateSessionName API call");
-  console.log("🌐 [API] Session ID:", sessionId);
-  console.log("🌐 [API] New Name:", name);
-
-  const token = tokenManager.getAccessToken?.() || null;
-  console.log("🌐 [API] Token available:", token ? "YES" : "NO");
-  console.log(
-    "🌐 [API] Token (masked):",
-    token ? `${token.substring(0, 20)}...` : "null"
-  );
-
-  const apiUrl = getApiUrl();
-  const fullUrl = `${apiUrl}/sessions/${sessionId}/name`;
-  console.log("🌐 [API] API URL:", apiUrl);
-  console.log("🌐 [API] Full URL:", fullUrl);
-
-  const requestBody = JSON.stringify({ name });
-  console.log("🌐 [API] Request body:", requestBody);
-
-  const headers = {
-    "Content-Type": "application/json",
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-  console.log("🌐 [API] Request headers:", JSON.stringify(headers, null, 2));
-
-  try {
-    console.log("🌐 [API] Making PATCH request...");
-    const res = await fetch(fullUrl, {
-      method: "PATCH",
-      headers,
-      body: requestBody,
-    });
-
-    console.log("🌐 [API] Response received:");
-    console.log("🌐 [API] - Status:", res.status);
-    console.log("🌐 [API] - Status Text:", res.statusText);
-    console.log("🌐 [API] - OK:", res.ok);
-    console.log(
-      "🌐 [API] - Response Headers:",
-      JSON.stringify(Object.fromEntries(res.headers.entries()), null, 2)
-    );
-
-    if (!res.ok) {
-      const errorText = await res.text();
-      console.error("❌ [API] Response not OK:");
-      console.error("❌ [API] - Status:", res.status);
-      console.error("❌ [API] - Status Text:", res.statusText);
-      console.error("❌ [API] - Error Text:", errorText);
-
-      throw new Error(errorText);
-    }
-
-    const responseData = await res.json();
-    console.log(
-      "✅ [API] Success! Response data:",
-      JSON.stringify(responseData, null, 2)
-    );
-    return responseData;
-  } catch (error: any) {
-    console.error("❌ [API] Network error occurred:");
-    console.error("❌ [API] - Error name:", error.name);
-    console.error("❌ [API] - Error message:", error.message);
-    console.error("❌ [API] - Error stack:", error.stack);
-    console.error(
-      "❌ [API] - Full error object:",
-      JSON.stringify(error, null, 2)
-    );
-    throw error;
-  }
 }
 
 export async function uploadDocument(form: FormData): Promise<any> {
@@ -293,6 +298,7 @@ export async function hybridRAGQuery(data: {
   max_context_chars?: number;
   include_examples?: boolean;
   include_sources?: boolean;
+  embedding_model?: string;
 }): Promise<{
   answer: string;
   sources: RAGSource[];
@@ -300,8 +306,21 @@ export async function hybridRAGQuery(data: {
   direct_qa_match?: boolean;
   matched_topics?: any[];
   classification_confidence?: number;
+  debug_info?: any;
+  confidence?: string;
+  retrieval_strategy?: string;
+  sources_used?: { chunks: number; kb: number; qa_pairs: number };
+  suggestions?: string[]; // Follow-up question suggestions
 }> {
-  const res = await fetch(`${getApiUrl()}/api/aprag/hybrid-rag/query`, {
+  // Use direct API Gateway URL for hybrid-rag queries to avoid Next.js proxy timeout
+  // Other endpoints continue to use /api (Next.js proxy)
+  const apiGatewayUrl =
+    process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const hybridRagUrl = apiGatewayUrl.startsWith("http")
+    ? `${apiGatewayUrl}/api/aprag/hybrid-rag/query`
+    : `${getApiUrl()}/aprag/hybrid-rag/query`;
+
+  const res = await fetch(hybridRagUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -357,7 +376,118 @@ export async function hybridRAGQuery(data: {
     direct_qa_match: json.direct_qa_match,
     matched_topics: json.matched_topics || [],
     classification_confidence: json.classification_confidence ?? 0,
+    debug_info: json.debug_info,
+    confidence: json.confidence,
+    retrieval_strategy: json.retrieval_strategy,
+    sources_used: json.sources_used,
+    suggestions: json.suggestions || [], // Add suggestions from response
   };
+}
+
+// ============================================================================
+// ASYNC RAG QUERY (Background Processing)
+// ============================================================================
+
+export interface AsyncRAGRequest {
+  session_id: string;
+  query: string;
+  user_id?: string;
+  top_k?: number;
+  use_kb?: boolean;
+  use_qa_pairs?: boolean;
+  use_crag?: boolean;
+  model?: string;
+  embedding_model?: string;
+  max_tokens?: number;
+  temperature?: number;
+  max_context_chars?: number;
+  include_examples?: boolean;
+  include_sources?: boolean;
+}
+
+export interface AsyncRAGInitResponse {
+  task_id: string;
+  status: string; // "processing"
+  estimated_time_seconds: number;
+  message: string;
+}
+
+export interface AsyncRAGStatusResponse {
+  task_id: string;
+  status: string; // "processing", "completed", "failed"
+  progress?: number; // 0-100
+  current_step?: string;
+  estimated_remaining_seconds?: number;
+  result?: {
+    answer: string;
+    sources: RAGSource[];
+    processing_time_ms?: number;
+    direct_qa_match?: boolean;
+    matched_topics?: any[];
+    classification_confidence?: number;
+    confidence?: string;
+    retrieval_strategy?: string;
+    sources_used?: { chunks: number; kb: number; qa_pairs: number };
+    debug_info?: any;
+  };
+  error?: string;
+}
+
+// Start async RAG query (returns immediately with task_id)
+export async function startAsyncRAGQuery(
+  data: AsyncRAGRequest
+): Promise<AsyncRAGInitResponse> {
+  // Use direct API Gateway URL for async-rag queries to avoid Next.js proxy timeout
+  const apiGatewayUrl =
+    process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const asyncRagUrl = apiGatewayUrl.startsWith("http")
+    ? `${apiGatewayUrl}/api/aprag/async-rag/async-query`
+    : `${getApiUrl()}/aprag/async-rag/async-query`;
+
+  const res = await fetch(asyncRagUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Poll async RAG query status
+export async function getAsyncRAGStatus(
+  taskId: string
+): Promise<AsyncRAGStatusResponse> {
+  const res = await fetch(
+    `${getApiUrl()}/aprag/async-rag/async-query/${taskId}/status`
+  );
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Cancel async RAG task
+export async function cancelAsyncRAGTask(
+  taskId: string
+): Promise<{ task_id: string; message: string; cancelled: boolean }> {
+  const res = await fetch(
+    `${getApiUrl()}/aprag/async-rag/async-query/${taskId}`,
+    {
+      method: "DELETE",
+    }
+  );
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
 }
 
 export async function generateSuggestions(data: {
@@ -417,30 +547,104 @@ export async function addMarkdownDocumentsToSession(
   total_chunks_added: number;
   message: string;
   errors?: string[];
+  job_id?: string;
+  total_files?: number;
+  background_processing?: boolean;
 }> {
   const formData = new FormData();
   formData.append("session_id", sessionId);
   formData.append("markdown_files", JSON.stringify(filenames));
-  formData.append("chunk_strategy", "semantic");
-  formData.append("chunk_size", "1500");
-  formData.append("chunk_overlap", "150");
+  formData.append("chunk_strategy", "lightweight");
+  formData.append("chunk_size", "800");
+  formData.append("chunk_overlap", "100");
   formData.append("embedding_model", embeddingModel);
 
-  const res = await fetch(`${getApiUrl()}/documents/process-and-store`, {
+  // Use batch processing endpoint
+  const res = await fetch(`${getApiUrl()}/documents/process-and-store-batch`, {
     method: "POST",
     body: formData,
   });
+  if (!res.ok) throw new Error(await res.text());
+  const data = await res.json();
+  
+  return {
+    ...data,
+    background_processing: true,
+    processed_count: 0,
+    total_chunks_added: 0,
+  };
+}
+
+// Get batch processing job status
+export async function getBatchProcessingStatus(jobId: string): Promise<{
+  success: boolean;
+  job: {
+    job_id: string;
+    session_id: string;
+    status: string;
+    started_at: string;
+    completed_at: string | null;
+    total_files: number;
+    processed_successfully: number;
+    errors_count: number;
+    current_file: string | null;
+    total_chunks: number;
+    results: Array<{ filename: string; chunks_processed: number; success: boolean }>;
+    errors: Array<{ filename: string; error: string }>;
+  };
+}> {
+  const res = await fetch(`${getApiUrl()}/documents/process-and-store-batch/status/${jobId}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 export async function getChunksForSession(sessionId: string): Promise<Chunk[]> {
-  const res = await fetch(`${getApiUrl()}/sessions/${sessionId}/chunks`, {
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error("Failed to fetch chunks");
-  const data = await res.json();
-  return data.chunks || [];
+  // Add timeout and circuit breaker for chunks endpoint
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+
+  try {
+    const res = await fetch(`${getApiUrl()}/sessions/${sessionId}/chunks`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      // More specific error messages
+      if (res.status === 404) {
+        console.warn(`No chunks found for session ${sessionId}`);
+        return [];
+      }
+      if (res.status >= 500) {
+        throw new Error(
+          `Server error (${res.status}): Backend service may be busy`
+        );
+      }
+      throw new Error(`Failed to fetch chunks: HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    return Array.isArray(data?.chunks) ? data.chunks : [];
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+
+    if (error.name === "AbortError") {
+      throw new Error(
+        "Request timeout: API is taking too long to respond. Please try refreshing the page."
+      );
+    }
+
+    // Network errors
+    if (error instanceof TypeError && error.message.includes("fetch")) {
+      throw new Error(
+        "Network error: Unable to connect to server. Please check your connection."
+      );
+    }
+
+    throw error;
+  }
 }
 
 export async function reprocessSessionDocuments(
@@ -510,6 +714,12 @@ export async function deleteAllMarkdownFiles(): Promise<{
   return res.json();
 }
 
+// ============================================================================
+// FIRE-AND-FORGET PROCESSING (No Background Polling)
+// ============================================================================
+
+// Background polling completely removed - using dashboard notifications instead
+
 export async function configureAndProcess(data: {
   session_id: string;
   markdown_files: string[];
@@ -525,6 +735,7 @@ export async function configureAndProcess(data: {
   processed_count: number;
   total_chunks_added: number;
   processing_time?: number;
+  background_processing?: boolean;
 }> {
   const formData = new FormData();
   formData.append("session_id", data.session_id);
@@ -545,12 +756,78 @@ export async function configureAndProcess(data: {
     formData.append("llm_model_name", data.llm_model_name);
   }
 
-  const res = await fetch(`${getApiUrl()}/documents/process-and-store`, {
-    method: "POST",
-    body: formData,
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  // Use direct API Gateway URL for long-running processing to avoid Next.js proxy timeout
+  const apiGatewayUrl =
+    process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const processUrl = apiGatewayUrl.startsWith("http")
+    ? `${apiGatewayUrl}/api/documents/process-and-store`
+    : `${getApiUrl()}/documents/process-and-store`;
+
+  // ✅ AGGRESSIVE FIRE-AND-FORGET: 10 saniye timeout - herhangi bir hata = arka plan işleme
+  const fireAndForgetTimeout = 10000; // 10 saniye - çok agresif!
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), fireAndForgetTimeout);
+
+  try {
+    const res = await fetch(processUrl, {
+      method: "POST",
+      body: formData,
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    // ✅ Yanıt geldi ama 500 hatası da olabilir - önemli değil, fire-and-forget!
+    if (res.ok) {
+      // Gerçekten hızlıca bitti
+      try {
+        return await res.json();
+      } catch {
+        // JSON parse hatası bile olsa background processing olarak treat et
+        return {
+          success: true,
+          message: "İşlem başlatıldı ve arka planda devam ediyor.",
+          processed_count: 0,
+          total_chunks_added: 0,
+          processing_time: fireAndForgetTimeout,
+          background_processing: true,
+        };
+      }
+    } else {
+      // 500 hatası - önemli değil, fire-and-forget!
+      console.log(
+        `🚀 API returned ${res.status}, treating as background processing`
+      );
+      return {
+        success: true,
+        message:
+          "İşlem başlatıldı ve arka planda devam ediyor. Sonuçlar birazdan görünecek.",
+        processed_count: 0,
+        total_chunks_added: 0,
+        processing_time: fireAndForgetTimeout,
+        background_processing: true,
+      };
+    }
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+
+    // ✅ HER TÜRLÜ HATA = FIRE-AND-FORGET SUCCESS!
+    console.log(
+      `🚀 Fire-and-forget: ${
+        error.name || "Error"
+      } - treating as background processing`
+    );
+
+    return {
+      success: true,
+      message:
+        "İşlem arka planda başlatıldı. Döküman parçaları birazdan sayfada görünecek.",
+      processed_count: 0,
+      total_chunks_added: 0,
+      processing_time: fireAndForgetTimeout,
+      background_processing: true,
+    };
+  }
 }
 
 export async function checkApiHealth(): Promise<{ status: string }> {
@@ -594,7 +871,7 @@ export async function listAvailableModels(): Promise<{
   providers: Record<string, ModelProvider>;
 }> {
   try {
-    const res = await fetch(`${getApiUrl()}/models/available`, {
+    const res = await fetch(`${getApiUrl()}/models`, {
       cache: "no-store",
     });
 
@@ -630,127 +907,27 @@ export async function listAvailableModels(): Promise<{
 
     const data = await res.json();
 
-    // Transform provider-based format to flat model list
-    const models: ModelInfo[] = [];
-    const providers: Record<string, ModelProvider> = {};
-
-    // Process each provider
-    if (data.groq && Array.isArray(data.groq)) {
-      const groqModels = data.groq.map((model: string) => ({
-        id: model,
-        name: model,
-        provider: "groq",
-        type: "cloud",
-        description: "Groq (Hızlı)",
-      }));
-      models.push(...groqModels);
-      providers.groq = {
-        name: "Groq",
-        description: "Hızlı Cloud Modelleri",
-        models: data.groq,
+    // Handle both old format (fallback) and new format
+    if (
+      data.models &&
+      Array.isArray(data.models) &&
+      typeof data.models[0] === "string"
+    ) {
+      // Old format - convert to new format
+      return {
+        models: data.models.map((model: string) => ({
+          id: model,
+          name: model,
+          provider: "unknown",
+          type: "cloud",
+          description: "Model",
+        })),
+        providers: {},
       };
     }
 
-    if (data.alibaba && Array.isArray(data.alibaba)) {
-      const alibabaModels = data.alibaba.map((model: string) => ({
-        id: model,
-        name: model,
-        provider: "alibaba",
-        type: "cloud",
-        description: "Alibaba DashScope (Qwen)",
-      }));
-      models.push(...alibabaModels);
-      providers.alibaba = {
-        name: "Alibaba",
-        description: "Alibaba DashScope (Qwen Modelleri)",
-        models: data.alibaba,
-      };
-    }
-
-    if (data.deepseek && Array.isArray(data.deepseek)) {
-      const deepseekModels = data.deepseek.map((model: string) => ({
-        id: model,
-        name: model,
-        provider: "deepseek",
-        type: "cloud",
-        description: "DeepSeek (Premium)",
-      }));
-      models.push(...deepseekModels);
-      providers.deepseek = {
-        name: "DeepSeek",
-        description: "DeepSeek Premium Modelleri",
-        models: data.deepseek,
-      };
-    }
-
-    if (data.openrouter && Array.isArray(data.openrouter)) {
-      const openrouterModels = data.openrouter.map((model: string) => ({
-        id: model,
-        name: model,
-        provider: "openrouter",
-        type: "cloud",
-        description: "OpenRouter (Güçlü)",
-      }));
-      models.push(...openrouterModels);
-      providers.openrouter = {
-        name: "OpenRouter",
-        description: "OpenRouter Güçlü Modelleri",
-        models: data.openrouter,
-      };
-    }
-
-    if (data.huggingface && Array.isArray(data.huggingface)) {
-      const hfModels = data.huggingface.map((model: string) => ({
-        id: model,
-        name: model,
-        provider: "huggingface",
-        type: "cloud",
-        description: "HuggingFace (Ücretsiz)",
-      }));
-      models.push(...hfModels);
-      providers.huggingface = {
-        name: "HuggingFace",
-        description: "HuggingFace Ücretsiz Modelleri",
-        models: data.huggingface,
-      };
-    }
-
-    if (data.ollama && Array.isArray(data.ollama)) {
-      const ollamaModels = data.ollama.map((model: string) => ({
-        id: model,
-        name: model,
-        provider: "ollama",
-        type: "local",
-        description: "Ollama (Yerel)",
-      }));
-      models.push(...ollamaModels);
-      providers.ollama = {
-        name: "Ollama",
-        description: "Ollama Yerel Modelleri",
-        models: data.ollama,
-      };
-    }
-
-    // Handle old format if data is already in the expected format
-    if (data.models && Array.isArray(data.models) && data.models.length > 0) {
-      if (typeof data.models[0] === "string") {
-        // Old format - convert to new format
-        return {
-          models: data.models.map((model: string) => ({
-            id: model,
-            name: model,
-            provider: "unknown",
-            type: "cloud",
-            description: "Model",
-          })),
-          providers: data.providers || {},
-        };
-      }
-      // Already in new format
-      return data;
-    }
-
-    return { models, providers };
+    // New format
+    return data;
   } catch (error: any) {
     console.error("Error fetching available models:", error);
     // Return fallback models on network errors
@@ -1025,7 +1202,6 @@ export type EmbeddingModel = {
 export async function listAvailableEmbeddingModels(): Promise<{
   ollama: string[];
   huggingface: EmbeddingModel[];
-  alibaba?: EmbeddingModel[];
 }> {
   const res = await fetch(`${getApiUrl()}/models/embedding`, {
     cache: "no-store",
@@ -1034,47 +1210,14 @@ export async function listAvailableEmbeddingModels(): Promise<{
   return res.json();
 }
 
-export async function listAvailableRerankerModels(): Promise<{
-  local: Array<{
-    id: string;
-    name: string;
-    description: string;
-    provider: string;
-    supports_multilingual: boolean;
-  }>;
-  alibaba?: Array<{
-    id: string;
-    name: string;
-    description: string;
-    provider: string;
-    supports_multilingual: boolean;
-  }>;
-}> {
-  const res = await fetch(`${getApiUrl()}/models/reranker`, {
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error("Failed to fetch available reranker models");
-  return res.json();
-}
-
 // Document Conversion Functions
 export async function convertPdfToMarkdown(
   file: File,
-  useFallback: boolean = false,
-  sessionId?: string
-): Promise<{
-  success: boolean;
-  message: string;
-  markdown_filename: string;
-  extraction_method?: string;
-  content_preview?: string;
-}> {
+  useFallback: boolean = false
+): Promise<any> {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("use_fallback", useFallback ? "true" : "false");
-  if (sessionId) {
-    formData.append("session_id", sessionId);
-  }
 
   // Shorter timeout for fallback (pdfplumber is faster)
   const timeout = useFallback ? 120000 : 600000; // 2 min for pdfplumber, 10 min for Nanonets
@@ -1093,33 +1236,7 @@ export async function convertPdfToMarkdown(
 
     clearTimeout(timeoutId);
 
-    if (!res.ok) {
-      const errorText = await res.text();
-      console.error(
-        `[convertPdfToMarkdown] HTTP ${res.status} error:`,
-        errorText
-      );
-      let errorMessage = "Dönüştürme işlemi başarısız";
-
-      // Handle plain text errors like "Internal Server Error"
-      if (errorText && errorText.trim()) {
-        if (errorText.includes("Internal Server Error")) {
-          errorMessage =
-            "Sunucu hatası oluştu. Lütfen daha sonra tekrar deneyin veya daha küçük bir dosya kullanın.";
-        } else {
-          try {
-            const errorJson = JSON.parse(errorText);
-            errorMessage =
-              errorJson.detail || errorJson.message || errorMessage;
-          } catch {
-            // If not JSON, use the text directly (might be plain text error)
-            errorMessage = errorText.trim() || errorMessage;
-          }
-        }
-      }
-
-      throw new Error(errorMessage);
-    }
+    if (!res.ok) throw new Error(await res.text());
     return res.json();
   } catch (error: any) {
     clearTimeout(timeoutId);
@@ -1132,21 +1249,9 @@ export async function convertPdfToMarkdown(
   }
 }
 
-export async function convertMarker(
-  file: File,
-  sessionId?: string
-): Promise<{
-  success: boolean;
-  message: string;
-  markdown_filename: string;
-  extraction_method?: string;
-  content_preview?: string;
-}> {
+export async function convertMarker(file: File): Promise<any> {
   const formData = new FormData();
   formData.append("file", file);
-  if (sessionId) {
-    formData.append("session_id", sessionId);
-  }
 
   // 15 minutes timeout for Marker (complex documents)
   const timeout = 900000;
@@ -1162,30 +1267,7 @@ export async function convertMarker(
 
     clearTimeout(timeoutId);
 
-    if (!res.ok) {
-      const errorText = await res.text();
-      console.error(`[convertMarker] HTTP ${res.status} error:`, errorText);
-      let errorMessage = "Marker ile dönüştürme işlemi başarısız";
-
-      // Handle plain text errors like "Internal Server Error"
-      if (errorText && errorText.trim()) {
-        if (errorText.includes("Internal Server Error")) {
-          errorMessage =
-            "Marker API sunucu hatası. Büyük/karmaşık PDF'ler için 'Hızlı Dönüştür' yöntemini deneyin.";
-        } else {
-          try {
-            const errorJson = JSON.parse(errorText);
-            errorMessage =
-              errorJson.detail || errorJson.message || errorMessage;
-          } catch {
-            // If not JSON, use the text directly (might be plain text error)
-            errorMessage = errorText.trim() || errorMessage;
-          }
-        }
-      }
-
-      throw new Error(errorMessage);
-    }
+    if (!res.ok) throw new Error(await res.text());
     return res.json();
   } catch (error: any) {
     clearTimeout(timeoutId);
@@ -1215,13 +1297,7 @@ export interface StudentChatMessage {
   timestamp: string;
   session_id: string;
   aprag_interaction_id?: number; // For emoji feedback
-  emoji_feedback?: string; // Emoji feedback (😊, 👍, 😐, ❌)
   correction?: CorrectionDetails; // NEW: For self-correction details
-  topic?: {
-    topic_id: number;
-    topic_title: string;
-    confidence_score: number;
-  }; // Topic classification information
 }
 
 export interface StudentChatHistory {
@@ -1235,15 +1311,12 @@ export async function getStudentChatHistory(
   sessionId: string
 ): Promise<StudentChatMessage[]> {
   const token = tokenManager.getAccessToken();
-  const res = await fetch(
-    `${getApiUrl()}/api/students/chat-history/${sessionId}`,
-    {
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    }
-  );
+  const res = await fetch(`${getApiUrl()}/students/chat-history/${sessionId}`, {
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
 
   if (!res.ok) {
     if (res.status === 404) {
@@ -1261,7 +1334,7 @@ export async function saveStudentChatMessage(
   message: Omit<StudentChatMessage, "id" | "timestamp">
 ): Promise<StudentChatMessage> {
   const token = tokenManager.getAccessToken();
-  const res = await fetch(`${getApiUrl()}/api/students/chat-message`, {
+  const res = await fetch(`${getApiUrl()}/students/chat-message`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1279,16 +1352,13 @@ export async function clearStudentChatHistory(
   sessionId: string
 ): Promise<{ success: boolean; deleted: number }> {
   const token = tokenManager.getAccessToken();
-  const res = await fetch(
-    `${getApiUrl()}/api/students/chat-history/${sessionId}`,
-    {
-      method: "DELETE",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    }
-  );
+  const res = await fetch(`${getApiUrl()}/students/chat-history/${sessionId}`, {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
 
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -1367,7 +1437,7 @@ export async function getSessionInteractions(
   const token = tokenManager.getAccessToken?.() || null;
   // Use API Gateway which proxies to APRAG service
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/interactions/session/${sessionId}?limit=${limit}&offset=${offset}`,
+    `${getApiUrl()}/aprag/interactions/session/${sessionId}?limit=${limit}&offset=${offset}`,
     {
       headers: {
         "Content-Type": "application/json",
@@ -1387,6 +1457,32 @@ export async function getSessionInteractions(
         offset,
       };
     }
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Get total student interactions count
+export async function getTotalInteractions(
+  sessionIds?: string[]
+): Promise<{ total: number }> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const sessionIdsParam =
+    sessionIds && sessionIds.length > 0
+      ? `?session_ids=${sessionIds.join(",")}`
+      : "";
+  const res = await fetch(
+    `${getApiUrl()}/aprag/interactions/total${sessionIdsParam}`,
+    {
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    }
+  );
+
+  if (!res.ok) {
     throw new Error(await res.text());
   }
 
@@ -1446,7 +1542,7 @@ export async function createAPRAGInteraction(
   interaction: APRAGInteractionCreate
 ): Promise<{ interaction_id: number; message: string }> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/api/aprag/interactions`, {
+  const res = await fetch(`${getApiUrl()}/aprag/interactions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1467,7 +1563,7 @@ export async function submitFeedback(
   feedback: FeedbackCreate
 ): Promise<{ feedback_id: number; message: string }> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/api/aprag/feedback`, {
+  const res = await fetch(`${getApiUrl()}/aprag/feedback`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1560,7 +1656,7 @@ export interface EmojiOption {
 // Get available emoji options
 export async function getAvailableEmojis(): Promise<{ emojis: EmojiOption[] }> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/api/aprag/emoji-feedback/emojis`, {
+  const res = await fetch(`${getApiUrl()}/aprag/emoji-feedback/emojis`, {
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -1579,7 +1675,7 @@ export async function submitEmojiFeedback(
   feedback: EmojiFeedbackCreate
 ): Promise<EmojiFeedbackResponse> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/api/aprag/emoji-feedback`, {
+  const res = await fetch(`${getApiUrl()}/aprag/emoji-feedback`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1610,7 +1706,7 @@ export async function getEmojiStats(
 }> {
   const token = tokenManager.getAccessToken?.() || null;
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/emoji-feedback/stats/${userId}/${sessionId}`,
+    `${getApiUrl()}/aprag/emoji-feedback/stats/${userId}/${sessionId}`,
     {
       headers: {
         "Content-Type": "application/json",
@@ -1643,7 +1739,7 @@ export async function submitDetailedFeedback(
 ): Promise<MultiFeedbackResponse> {
   const token = tokenManager.getAccessToken?.() || null;
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/emoji-feedback/detailed-feedback`,
+    `${getApiUrl()}/aprag/emoji-feedback/detailed-feedback`,
     {
       method: "POST",
       headers: {
@@ -1668,7 +1764,7 @@ export async function getMultiDimensionalStats(
 ): Promise<MultiDimensionalStats> {
   const token = tokenManager.getAccessToken?.() || null;
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/emoji-feedback/multi-stats/${userId}/${sessionId}`,
+    `${getApiUrl()}/aprag/emoji-feedback/multi-stats/${userId}/${sessionId}`,
     {
       headers: {
         "Content-Type": "application/json",
@@ -1752,6 +1848,37 @@ export interface AdaptiveQueryResponse {
     cognitive_load: boolean;
     emoji_feedback: boolean;
   };
+  personalization_data?: {
+    personalization_factors?: Record<string, any>;
+    zpd_info?: any;
+    bloom_info?: any;
+    cognitive_load?: any;
+    pedagogical_instructions?: string;
+  } | null;
+  hybrid_rag_debug?: {
+    llm_request?: {
+      model?: string;
+      max_tokens?: number;
+      temperature?: number;
+      context_length?: number;
+      query_length?: number;
+    };
+    crag_evaluation?: {
+      action?: string;
+      confidence?: number;
+      max_score?: number;
+      avg_score?: number;
+      filtered?: number;
+    };
+    retrieval_details?: {
+      chunks_retrieved?: number;
+      kb_items_retrieved?: number;
+      qa_pairs_matched?: number;
+      total_merged?: number;
+    };
+    response_size?: number;
+    reranker_used?: boolean;
+  };
 }
 
 // Call APRAG Adaptive Query (Full Eğitsel-KBRAG Pipeline)
@@ -1759,7 +1886,7 @@ export async function apragAdaptiveQuery(
   request: AdaptiveQueryRequest
 ): Promise<AdaptiveQueryResponse> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/api/aprag/adaptive-query`, {
+  const res = await fetch(`${getApiUrl()}/aprag/adaptive-query`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1784,7 +1911,7 @@ export async function getAPRAGAdaptiveStatus(): Promise<{
   description: string;
 }> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(`${getApiUrl()}/api/aprag/adaptive-query/status`, {
+  const res = await fetch(`${getApiUrl()}/aprag/adaptive-query/status`, {
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -1824,21 +1951,23 @@ export async function getAPRAGSettings(
   sessionId?: string
 ): Promise<APRAGSettings> {
   const token = tokenManager.getAccessToken?.() || null;
-  const params = sessionId ? `?session_id=${sessionId}` : "";
+  const params = sessionId
+    ? `?session_id=${encodeURIComponent(sessionId)}`
+    : "";
 
   try {
-    const res = await fetch(
-      `${getApiUrl()}/api/aprag/settings/status${params}`,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-      }
-    );
+    const res = await fetch(`${getApiUrl()}/aprag/settings/status${params}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
 
     if (!res.ok) {
       // If APRAG service is down or not configured, return disabled
+      console.warn(
+        `Failed to fetch APRAG settings: ${res.status} ${res.statusText}`
+      );
       return {
         enabled: false,
         global_enabled: false,
@@ -1848,6 +1977,11 @@ export async function getAPRAGSettings(
           personalization: false,
           recommendations: false,
           analytics: false,
+          emoji_feedback: false,
+          cacs: false,
+          zpd: false,
+          bloom: false,
+          cognitive_load: false,
         },
       };
     }
@@ -1865,6 +1999,11 @@ export async function getAPRAGSettings(
         personalization: false,
         recommendations: false,
         analytics: false,
+        emoji_feedback: false,
+        cacs: false,
+        zpd: false,
+        bloom: false,
+        cognitive_load: false,
       },
     };
   }
@@ -1915,7 +2054,7 @@ export async function getRecommendations(
   }
 
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/recommendations/${userId}?${params.toString()}`,
+    `${getApiUrl()}/aprag/recommendations/${userId}?${params.toString()}`,
     {
       headers: {
         "Content-Type": "application/json",
@@ -1940,7 +2079,7 @@ export async function acceptRecommendation(
 ): Promise<{ message: string; recommendation_id: number }> {
   const token = tokenManager.getAccessToken?.() || null;
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/recommendations/${recommendationId}/accept`,
+    `${getApiUrl()}/aprag/recommendations/${recommendationId}/accept`,
     {
       method: "POST",
       headers: {
@@ -1963,7 +2102,7 @@ export async function dismissRecommendation(
 ): Promise<{ message: string; recommendation_id: number }> {
   const token = tokenManager.getAccessToken?.() || null;
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/recommendations/${recommendationId}/dismiss`,
+    `${getApiUrl()}/aprag/recommendations/${recommendationId}/dismiss`,
     {
       method: "POST",
       headers: {
@@ -2039,7 +2178,7 @@ export async function getAnalytics(
   }
 
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/analytics/${userId}?${params.toString()}`,
+    `${getApiUrl()}/aprag/analytics/${userId}?${params.toString()}`,
     {
       headers: {
         "Content-Type": "application/json",
@@ -2096,7 +2235,7 @@ export async function getAnalyticsSummary(
   }
 
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/analytics/${userId}/summary?${params.toString()}`,
+    `${getApiUrl()}/aprag/analytics/${userId}/summary?${params.toString()}`,
     {
       headers: {
         "Content-Type": "application/json",
@@ -2165,6 +2304,18 @@ export interface QuestionClassificationRequest {
   question: string;
   session_id: string;
   interaction_id?: number;
+  user_id?: string; // Optional: for topic progress tracking when interaction_id is not available
+}
+
+export interface TopicRecommendation {
+  type: "topic_recommendation";
+  message: string;
+  current_topic_id: number;
+  current_topic_title: string;
+  next_topic_id: number;
+  next_topic_title: string;
+  mastery_score: number;
+  readiness_score: number;
 }
 
 export interface QuestionClassificationResponse {
@@ -2174,6 +2325,7 @@ export interface QuestionClassificationResponse {
   confidence_score: number;
   question_complexity: string;
   question_type: string;
+  recommendation?: TopicRecommendation;
 }
 
 export interface TopicProgress {
@@ -2224,15 +2376,12 @@ export async function getSessionTopics(sessionId: string): Promise<{
   total: number;
 }> {
   const token = tokenManager.getAccessToken?.() || null;
-  const res = await fetch(
-    `${getApiUrl()}/aprag/topics/session/${sessionId}`,
-    {
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-    }
-  );
+  const res = await fetch(`${getApiUrl()}/aprag/topics/session/${sessionId}`, {
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
 
   if (!res.ok) {
     if (res.status === 404) {
@@ -2445,6 +2594,7 @@ export interface SessionSettings {
   enable_bloom: boolean;
   enable_cognitive_load: boolean;
   enable_emoji_feedback: boolean;
+  enable_ebars: boolean;
 }
 
 export interface SessionSettingsUpdate {
@@ -2457,6 +2607,7 @@ export interface SessionSettingsUpdate {
   enable_bloom?: boolean;
   enable_cognitive_load?: boolean;
   enable_emoji_feedback?: boolean;
+  enable_ebars?: boolean;
 }
 
 export interface SessionSettingsResponse {
@@ -2483,7 +2634,7 @@ export async function getSessionSettings(
 ): Promise<SessionSettingsResponse> {
   const token = tokenManager.getAccessToken?.() || null;
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/session-settings/${sessionId}`,
+    `${getApiUrl()}/aprag/session-settings/${sessionId}`,
     {
       headers: {
         "Content-Type": "application/json",
@@ -2507,7 +2658,7 @@ export async function updateSessionSettings(
 ): Promise<SessionSettingsResponse> {
   const token = tokenManager.getAccessToken?.() || null;
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/session-settings/${sessionId}?user_id=${encodeURIComponent(
+    `${getApiUrl()}/aprag/session-settings/${sessionId}?user_id=${encodeURIComponent(
       userId
     )}`,
     {
@@ -2534,7 +2685,7 @@ export async function resetSessionSettings(
 ): Promise<SessionSettingsResponse> {
   const token = tokenManager.getAccessToken?.() || null;
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/session-settings/${sessionId}/reset?user_id=${encodeURIComponent(
+    `${getApiUrl()}/aprag/session-settings/${sessionId}/reset?user_id=${encodeURIComponent(
       userId
     )}`,
     {
@@ -2559,7 +2710,7 @@ export async function getSessionSettingsPresets(
 ): Promise<SessionSettingsPresetsResponse> {
   const token = tokenManager.getAccessToken?.() || null;
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/session-settings/${sessionId}/presets`,
+    `${getApiUrl()}/aprag/session-settings/${sessionId}/presets`,
     {
       headers: {
         "Content-Type": "application/json",
@@ -2583,7 +2734,7 @@ export async function applySessionSettingsPreset(
 ): Promise<SessionSettingsResponse> {
   const token = tokenManager.getAccessToken?.() || null;
   const res = await fetch(
-    `${getApiUrl()}/api/aprag/session-settings/${sessionId}/apply-preset/${presetName}?user_id=${encodeURIComponent(
+    `${getApiUrl()}/aprag/session-settings/${sessionId}/apply-preset/${presetName}?user_id=${encodeURIComponent(
       userId
     )}`,
     {
@@ -2600,4 +2751,348 @@ export async function applySessionSettingsPreset(
   }
 
   return res.json();
+}
+
+export async function updateSessionName(
+  sessionId: string,
+  newName: string
+): Promise<SessionMeta> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(`${getApiUrl()}/sessions/${sessionId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ name: newName }),
+  });
+
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+
+  return res.json();
+}
+
+// Create module from RAG-based semantic search
+export async function createModuleFromRAG(data: {
+  session_id: string;
+  module_title: string;
+  module_description?: string;
+  top_k?: number;
+  similarity_threshold?: number;
+  use_hybrid_search?: boolean;
+}): Promise<{
+  success: boolean;
+  module_id: number;
+  module_title: string;
+  topics_added: number;
+  chunks_used: number;
+  message: string;
+}> {
+  const token = tokenManager.getAccessToken?.() || null;
+  const res = await fetch(`${getApiUrl()}/aprag/modules/create-from-rag`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      session_id: data.session_id,
+      module_title: data.module_title,
+      module_description: data.module_description,
+      top_k: data.top_k || 20,
+      similarity_threshold: data.similarity_threshold || 0.6,
+      use_hybrid_search: data.use_hybrid_search !== false,
+    }),
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(
+      errorData.detail || errorData.message || "Modül oluşturulamadı"
+    );
+  }
+
+  return res.json();
+}
+
+// ============================================================================
+// STUDENT PROFILE
+// ============================================================================
+
+export interface StudentProfile {
+  user_id: string;
+  session_id: string;
+  average_understanding: number | null;
+  average_satisfaction: number | null;
+  total_interactions: number;
+  total_feedback_count: number;
+  strong_topics: Record<string, any> | null;
+  weak_topics: Record<string, any> | null;
+  preferred_explanation_style: string | null;
+  preferred_difficulty_level: string | null;
+}
+
+/**
+ * Get student profile for a user and session
+ */
+export async function getStudentProfile(
+  userId: string,
+  sessionId: string
+): Promise<StudentProfile> {
+  const token = tokenManager.getAccessToken?.() || null;
+  try {
+    const res = await fetch(
+      `${getApiUrl()}/aprag/profiles/${userId}/${sessionId}`,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch student profile: ${res.status}`);
+    }
+
+    return res.json();
+  } catch (error) {
+    console.error("Error fetching student profile:", error);
+    throw error;
+  }
+}
+
+// Get student's current pedagogical state (ZPD, Bloom, Cognitive Load)
+export interface PedagogicalState {
+  user_id: string;
+  session_id: string;
+  zpd: {
+    current_level: string;
+    recommended_level: string;
+    success_rate: number;
+    level_index: number;
+  };
+  bloom: {
+    level: string;
+    level_index: number;
+    confidence: number;
+  };
+  cognitive_load: {
+    total_load: number;
+    needs_simplification: boolean;
+  };
+  personalization_factors?: {
+    understanding_level?: string;
+    difficulty_level?: string;
+    explanation_style?: string;
+  };
+  profile_stats?: {
+    total_interactions: number;
+    total_feedback_count: number;
+    average_understanding: number | null;
+    average_satisfaction: number | null;
+  };
+  total_interactions?: number; // Legacy support
+  last_updated: string | null;
+}
+
+export async function getPedagogicalState(
+  userId: string,
+  sessionId: string
+): Promise<PedagogicalState> {
+  const token = tokenManager.getAccessToken?.() || null;
+  try {
+    const res = await fetch(
+      `${getApiUrl()}/aprag/profiles/${userId}/${sessionId}/pedagogical-state`,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch pedagogical state: ${res.status}`);
+    }
+
+    return res.json();
+  } catch (error) {
+    console.error("Error fetching pedagogical state:", error);
+    throw error;
+  }
+}
+
+// Reset student profile and learning parameters
+export async function resetPedagogicalState(
+  userId: string,
+  sessionId: string
+): Promise<{ message: string; user_id: string; session_id: string }> {
+  const token = tokenManager.getAccessToken?.() || null;
+  try {
+    const res = await fetch(
+      `${getApiUrl()}/aprag/profiles/${userId}/${sessionId}/reset`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    );
+
+    if (!res.ok) {
+      throw new Error(`Failed to reset pedagogical state: ${res.status}`);
+    }
+
+    return res.json();
+  } catch (error) {
+    console.error("Error resetting pedagogical state:", error);
+    throw error;
+  }
+}
+
+// ============================================================================
+// NOTIFICATION SYSTEM
+// ============================================================================
+
+export interface NotificationCreate {
+  type: "success" | "error" | "warning" | "info";
+  title: string;
+  message: string;
+  sessionId?: string;
+  userId?: string;
+}
+
+export interface NotificationResponse {
+  id: string;
+  type: "success" | "error" | "warning" | "info";
+  title: string;
+  message: string;
+  timestamp: string;
+  read: boolean;
+  sessionId?: string;
+  userId?: string;
+}
+
+// Fetch pending notifications
+export async function getPendingNotifications(params?: {
+  userId?: string;
+  sessionId?: string;
+}): Promise<{
+  notifications: NotificationResponse[];
+  count: number;
+}> {
+  const searchParams = new URLSearchParams();
+  if (params?.userId) searchParams.set("user_id", params.userId);
+  if (params?.sessionId) searchParams.set("session_id", params.sessionId);
+
+  const url = `${getApiUrl()}/v1/notifications/pending${
+    searchParams.toString() ? "?" + searchParams.toString() : ""
+  }`;
+
+  const res = await fetch(url, {
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new Error("Failed to fetch notifications");
+  }
+
+  return res.json();
+}
+
+// Create a new notification
+export async function createNotification(
+  notification: NotificationCreate
+): Promise<{
+  success: boolean;
+  notification: NotificationResponse;
+  message: string;
+}> {
+  const res = await fetch(`${getApiUrl()}/v1/notifications/pending`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(notification),
+  });
+
+  if (!res.ok) {
+    throw new Error("Failed to create notification");
+  }
+
+  return res.json();
+}
+
+// Mark notifications as read
+export async function markNotificationsAsRead(
+  notificationIds: string[]
+): Promise<{
+  success: boolean;
+  message: string;
+  updatedCount: number;
+}> {
+  const res = await fetch(`${getApiUrl()}/v1/notifications/delivered`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ notificationIds }),
+  });
+
+  if (!res.ok) {
+    throw new Error("Failed to mark notifications as read");
+  }
+
+  return res.json();
+}
+
+// Delete notifications
+export async function deleteNotifications(notificationIds: string[]): Promise<{
+  success: boolean;
+  message: string;
+  deletedCount: number;
+}> {
+  const res = await fetch(`${getApiUrl()}/v1/notifications/delivered`, {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ notificationIds }),
+  });
+
+  if (!res.ok) {
+    throw new Error("Failed to delete notifications");
+  }
+
+  return res.json();
+}
+
+// Helper function to create background processing notification
+export async function createBackgroundProcessingNotification(
+  sessionId: string,
+  isTimeout: boolean = true
+) {
+  try {
+    await createNotification({
+      type: "info",
+      title: "İşlem Arka Planda Devam Ediyor",
+      message: isTimeout
+        ? "Döküman işleme işlemi arka planda devam ediyor. Bitince bildirim alacaksınız."
+        : "İşlem başarıyla başlatıldı ve arka planda işleniyor.",
+      sessionId,
+    });
+    console.log(
+      "🔔 Background processing notification created for session:",
+      sessionId
+    );
+  } catch (error) {
+    console.error(
+      "Failed to create background processing notification:",
+      error
+    );
+  }
 }

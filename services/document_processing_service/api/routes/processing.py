@@ -34,11 +34,34 @@ async def process_and_store(request: ProcessRequest):
     try:
         logger.info(f"📝 Starting text processing. Text length: {len(request.text)} characters")
         
+        # Get embedding model from metadata to adjust chunk sizes
+        embedding_model = request.metadata.get("embedding_model", "text-embedding-v4")
+        
+        # Adjust chunk sizes for Alibaba embedding models (they handle larger chunks better)
+        is_alibaba_embedding = (
+            embedding_model and (
+                embedding_model.startswith("text-embedding-") or
+                "alibaba" in embedding_model.lower() or
+                "dashscope" in embedding_model.lower()
+            )
+        )
+        
+        if is_alibaba_embedding:
+            # Alibaba embeddings (text-embedding-v4, etc.) can handle larger chunks
+            default_chunk_size = 2500  # Increased from 1000 to 2500
+            default_chunk_overlap = 500  # Increased from 200 to 500
+            logger.info(f"🔵 Alibaba embedding detected ({embedding_model}): Using larger chunk sizes (size={default_chunk_size}, overlap={default_chunk_overlap})")
+        else:
+            # Default sizes for Ollama/local models
+            default_chunk_size = 1000
+            default_chunk_overlap = 200
+            logger.info(f"⚪ Standard embedding model ({embedding_model}): Using standard chunk sizes (size={default_chunk_size}, overlap={default_chunk_overlap})")
+        
         # Step 1: Chunk text
         chunks = chunk_text_with_strategy(
             text=request.text,
-            chunk_size=request.chunk_size or 1000,
-            chunk_overlap=request.chunk_overlap or 200,
+            chunk_size=request.chunk_size or default_chunk_size,
+            chunk_overlap=request.chunk_overlap or default_chunk_overlap,
             strategy=request.chunk_strategy or "lightweight",
             use_llm_post_processing=request.use_llm_post_processing or False,
             llm_model_name=request.llm_model_name or "llama-3.1-8b-instant",
@@ -52,7 +75,7 @@ async def process_and_store(request: ProcessRequest):
         logger.info(f"✅ Successfully split text into {len(chunks)} chunks")
 
         # Step 2: Get embeddings
-        embedding_model = request.metadata.get("embedding_model", "nomic-embed-text")
+        # (embedding_model already extracted above for chunk size adjustment)
         logger.info(f"🔢 Using embedding model: {embedding_model}")
         embeddings = get_embeddings_direct(chunks, embedding_model)
         

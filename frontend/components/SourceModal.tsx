@@ -3,6 +3,127 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { X, FileText, Hash, Loader2 } from "lucide-react";
 import { RAGSource, getApiUrl } from "@/lib/api";
+import ReactMarkdown from "react-markdown";
+
+// Component to format content (JSON, Markdown, or plain text)
+function FormattedContent({ content }: { content: any }) {
+  if (!content) return <p className="text-gray-500">İçerik bulunamadı</p>;
+  
+  // If content is an object, try to format it nicely
+  if (typeof content === 'object' && content !== null) {
+    // Check if it's a KB structure
+    if (content.topic_summary || content.key_concepts || content.learning_objectives) {
+      return (
+        <div className="space-y-6">
+          {content.topic_summary && (
+            <div>
+              <h3 className="text-lg font-bold text-gray-900 mb-3">📝 Özet</h3>
+              <div className="text-gray-800 leading-relaxed break-words">
+                <ReactMarkdown 
+                  components={{
+                    p: ({ children }) => <p className="mb-3">{children}</p>,
+                  }}
+                >
+                  {String(content.topic_summary)}
+                </ReactMarkdown>
+              </div>
+            </div>
+          )}
+          
+          {content.key_concepts && Array.isArray(content.key_concepts) && content.key_concepts.length > 0 && (
+            <div>
+              <h3 className="text-lg font-bold text-gray-900 mb-3">🔑 Anahtar Kavramlar</h3>
+              <div className="space-y-3">
+                {content.key_concepts.map((concept: any, idx: number) => (
+                  <div key={idx} className="bg-blue-50 border-l-4 border-blue-500 p-3 rounded">
+                    {typeof concept === 'object' && concept !== null ? (
+                      <div>
+                        {concept.term && (
+                          <div className="font-semibold text-blue-900 mb-1">
+                            {concept.term}
+                            {concept.importance && (
+                              <span className="ml-2 text-xs font-normal text-blue-700">
+                                ({concept.importance})
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {concept.definition && (
+                          <div className="text-blue-800 text-sm mt-1">
+                            <ReactMarkdown>{concept.definition}</ReactMarkdown>
+                          </div>
+                        )}
+                        {concept.category && (
+                          <div className="text-xs text-blue-600 mt-1">
+                            Kategori: {concept.category}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="text-blue-800">{String(concept)}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* Öğrenme Hedefleri ve Örnekler bölümleri kaldırıldı - sadece Özet ve Anahtar Kavramlar gösteriliyor */}
+        </div>
+      );
+    }
+    
+    // If it's a plain object, try to format as JSON
+    try {
+      const jsonStr = JSON.stringify(content, null, 2);
+      return (
+        <pre className="bg-gray-50 border border-gray-200 rounded-lg p-4 overflow-x-auto text-sm">
+          <code className="text-gray-800">{jsonStr}</code>
+        </pre>
+      );
+    } catch {
+      return <p className="text-gray-800">{String(content)}</p>;
+    }
+  }
+  
+  // If content is a string, try to detect if it's JSON or Markdown
+  const contentStr = String(content).trim();
+  
+  // Try to parse as JSON
+  if (contentStr.startsWith('{') || contentStr.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(contentStr);
+      const jsonStr = JSON.stringify(parsed, null, 2);
+      return (
+        <pre className="bg-gray-50 border border-gray-200 rounded-lg p-4 overflow-x-auto text-sm">
+          <code className="text-gray-800">{jsonStr}</code>
+        </pre>
+      );
+    } catch {
+      // Not valid JSON, treat as markdown/text
+    }
+  }
+  
+  // Treat as Markdown or plain text - FULL CONTENT, NO TRUNCATION
+  return (
+    <div className="text-gray-800 leading-relaxed">
+      <ReactMarkdown 
+        components={{
+          // Ensure all content is displayed, no truncation
+          p: ({ children }) => <p className="mb-3">{children}</p>,
+          h1: ({ children }) => <h1 className="text-2xl font-bold mb-4 mt-6">{children}</h1>,
+          h2: ({ children }) => <h2 className="text-xl font-bold mb-3 mt-5">{children}</h2>,
+          h3: ({ children }) => <h3 className="text-lg font-bold mb-2 mt-4">{children}</h3>,
+          ul: ({ children }) => <ul className="list-disc list-inside mb-3 space-y-1">{children}</ul>,
+          ol: ({ children }) => <ol className="list-decimal list-inside mb-3 space-y-1">{children}</ol>,
+          li: ({ children }) => <li className="ml-2">{children}</li>,
+        }}
+      >
+        {contentStr}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 interface SourceModalProps {
   source: RAGSource | null;
@@ -165,45 +286,10 @@ export default function SourceModal({ source, isOpen, onClose }: SourceModalProp
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {/* Metadata Tags */}
-          <div className="flex flex-wrap gap-2">
-            <span className="inline-flex items-center gap-1 px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-medium">
-              <Hash className="w-3 h-3" />
-              Skor: {(source.score * 100).toFixed(1)}%
-            </span>
-            
-            {source.metadata?.chunk_index !== undefined && (
-              <span className="inline-flex items-center gap-1 px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-medium">
-                Parça {source.metadata.chunk_index + 1}
-                {source.metadata?.total_chunks && ` / ${source.metadata.total_chunks}`}
-              </span>
-            )}
-            
-            {source.metadata?.page_number && (
-              <span className="inline-flex items-center px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-medium">
-                Sayfa {source.metadata.page_number}
-              </span>
-            )}
-            
-            {source.metadata?.section && (
-              <span className="inline-flex items-center px-3 py-1 bg-yellow-100 text-yellow-700 rounded-full text-sm font-medium">
-                {source.metadata.section}
-              </span>
-            )}
-          </div>
-
-          {/* Chunk Title */}
-          {source.metadata?.chunk_title && (
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-              <h4 className="text-sm font-semibold text-gray-700 mb-1">Bölüm Başlığı</h4>
-              <p className="text-gray-900 font-medium">{source.metadata.chunk_title}</p>
-            </div>
-          )}
-
+        <div className="flex-1 overflow-y-auto p-6">
           {/* Loading KB Indicator */}
           {isKnowledgeBase && topicId && loadingKB && (
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-center gap-3">
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-center gap-3 mb-4">
               <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
               <span className="text-sm text-blue-800">Bilgi tabanı yükleniyor...</span>
             </div>
@@ -211,132 +297,63 @@ export default function SourceModal({ source, isOpen, onClose }: SourceModalProp
 
           {/* KB Error */}
           {isKnowledgeBase && topicId && kbError && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
               <p className="text-sm text-red-800">{kbError}</p>
             </div>
           )}
 
-          {/* Source Content */}
-          <div className="bg-white border border-gray-200 rounded-lg p-6 space-y-6">
-            <h4 className="text-sm font-semibold text-gray-700 mb-3">
-              {isKnowledgeBase && kbData ? "Bilgi Tabanı İçeriği" : "İçerik"}
-            </h4>
-            
-            {/* Knowledge Base Content - Formatted */}
-            {isKnowledgeBase && kbData ? (
-              <div className="space-y-6">
-                {/* Topic Summary */}
-                {kbData.topic_summary && (
-                  <div>
-                    <h3 className="text-lg font-bold text-gray-900 mb-3">📝 Özet</h3>
-                    <p className="text-gray-800 leading-relaxed whitespace-pre-wrap">
-                      {String(kbData.topic_summary)}
-                    </p>
-                  </div>
+          {/* Bilgi Tabanı İçeriği - Sadece İçerik, Tam ve Formatlanmış, Scroll Edilebilir */}
+          {isKnowledgeBase && (kbData || source.content) ? (
+            <div className="bg-white border border-gray-200 rounded-lg p-6">
+              <div className="max-h-[calc(90vh-250px)] overflow-y-auto pr-2">
+                <div className="prose prose-sm max-w-none break-words">
+                  <FormattedContent content={kbData || source.content} />
+                </div>
+              </div>
+            </div>
+          ) : !isKnowledgeBase ? (
+            <>
+              {/* Metadata Tags - Sadece non-KB için */}
+              <div className="flex flex-wrap gap-2 mb-4">
+                <span className="inline-flex items-center gap-1 px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-medium">
+                  <Hash className="w-3 h-3" />
+                  Skor: {(source.score * 100).toFixed(1)}%
+                </span>
+                
+                {source.metadata?.chunk_index !== undefined && (
+                  <span className="inline-flex items-center gap-1 px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-medium">
+                    Parça {source.metadata.chunk_index + 1}
+                    {source.metadata?.total_chunks && ` / ${source.metadata.total_chunks}`}
+                  </span>
                 )}
-
-                {/* Key Concepts */}
-                {kbData.key_concepts && Array.isArray(kbData.key_concepts) && kbData.key_concepts.length > 0 && (
-                  <div>
-                    <h3 className="text-lg font-bold text-gray-900 mb-3">🔑 Anahtar Kavramlar</h3>
-                    <div className="space-y-3">
-                      {kbData.key_concepts.map((concept: any, idx: number) => {
-                        const formatted = formatConcept(concept);
-                        const isObject = typeof concept === 'object' && concept !== null;
-                        return (
-                          <div key={idx} className="bg-blue-50 border-l-4 border-blue-500 p-3 rounded">
-                            {isObject && concept.term ? (
-                              <div>
-                                <div className="font-semibold text-blue-900 mb-1">
-                                  {concept.term}
-                                  {concept.importance && (
-                                    <span className="ml-2 text-xs font-normal text-blue-700">
-                                      ({concept.importance})
-                                    </span>
-                                  )}
-                                </div>
-                                {concept.definition && (
-                                  <div className="text-blue-800 text-sm mt-1">
-                                    {concept.definition}
-                                  </div>
-                                )}
-                                {concept.category && (
-                                  <div className="text-xs text-blue-600 mt-1">
-                                    Kategori: {concept.category}
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              <div className="text-blue-800">{formatted}</div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                
+                {source.metadata?.page_number && (
+                  <span className="inline-flex items-center px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-medium">
+                    Sayfa {source.metadata.page_number}
+                  </span>
                 )}
-
-                {/* Learning Objectives */}
-                {kbData.learning_objectives && Array.isArray(kbData.learning_objectives) && kbData.learning_objectives.length > 0 && (
-                  <div>
-                    <h3 className="text-lg font-bold text-gray-900 mb-3">🎯 Öğrenme Hedefleri</h3>
-                    <div className="space-y-2">
-                      {kbData.learning_objectives.map((obj: any, idx: number) => {
-                        const formatted = formatObjective(obj);
-                        const isObject = typeof obj === 'object' && obj !== null;
-                        return (
-                          <div key={idx} className="bg-green-50 border-l-4 border-green-500 p-3 rounded">
-                            {isObject && obj.objective ? (
-                              <div>
-                                <div className="font-medium text-green-900 mb-1">
-                                  {obj.objective}
-                                  {obj.level && (
-                                    <span className="ml-2 text-xs font-normal text-green-700 bg-green-100 px-2 py-0.5 rounded">
-                                      {obj.level}
-                                    </span>
-                                  )}
-                                </div>
-                                {obj.assessment_method && (
-                                  <div className="text-xs text-green-700 mt-1">
-                                    Değerlendirme: {obj.assessment_method}
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              <div className="text-green-800">{formatted}</div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Examples */}
-                {kbData.examples && Array.isArray(kbData.examples) && kbData.examples.length > 0 && (
-                  <div>
-                    <h3 className="text-lg font-bold text-gray-900 mb-3">💡 Örnekler</h3>
-                    <div className="space-y-3">
-                      {kbData.examples.map((ex: any, idx: number) => {
-                        const formatted = formatExample(ex);
-                        return (
-                          <div key={idx} className="bg-purple-50 border-l-4 border-purple-500 p-3 rounded">
-                            <div className="font-medium text-purple-900 mb-1">
-                              Örnek {idx + 1}
-                            </div>
-                            <div className="text-purple-800 text-sm whitespace-pre-wrap">
-                              {formatted}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                
+                {source.metadata?.section && (
+                  <span className="inline-flex items-center px-3 py-1 bg-yellow-100 text-yellow-700 rounded-full text-sm font-medium">
+                    {source.metadata.section}
+                  </span>
                 )}
               </div>
-            ) : (
-              /* Regular Content (non-KB sources) */
-              <div className="prose prose-sm max-w-none">
+
+              {/* Chunk Title */}
+              {source.metadata?.chunk_title && (
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4">
+                  <h4 className="text-sm font-semibold text-gray-700 mb-1">Bölüm Başlığı</h4>
+                  <p className="text-gray-900 font-medium">{source.metadata.chunk_title}</p>
+                </div>
+              )}
+
+              {/* Source Content */}
+              <div className="bg-white border border-gray-200 rounded-lg p-6 space-y-6">
+                <h4 className="text-sm font-semibold text-gray-700 mb-3">İçerik</h4>
+            
+                {/* Regular Content (non-KB sources) */}
+                <div className="prose prose-sm max-w-none">
                 <div className="text-gray-800 leading-relaxed whitespace-pre-wrap">
                   {(() => {
                     if (!source) return "İçerik bulunamadı";
@@ -382,12 +399,11 @@ export default function SourceModal({ source, isOpen, onClose }: SourceModalProp
                   })()}
                 </div>
               </div>
-            )}
-          </div>
+            </div>
 
-          {/* Additional Metadata */}
-          {source.metadata && Object.keys(source.metadata).length > 0 && (
-            <details className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+              {/* Additional Metadata - Sadece non-KB için */}
+              {!isKnowledgeBase && source.metadata && Object.keys(source.metadata).length > 0 && (
+                <details className="bg-gray-50 border border-gray-200 rounded-lg p-4 mt-4">
               <summary className="text-sm font-semibold text-gray-700 cursor-pointer hover:text-gray-900">
                 Ek Bilgiler
               </summary>
@@ -472,7 +488,9 @@ export default function SourceModal({ source, isOpen, onClose }: SourceModalProp
                 })}
               </div>
             </details>
-          )}
+              )}
+            </>
+          ) : null}
         </div>
 
         {/* Footer */}

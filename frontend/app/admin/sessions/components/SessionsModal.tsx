@@ -59,7 +59,7 @@ export default function SessionsModal({
     const checkApragStatus = async () => {
       try {
         const response = await fetch(
-          `${getApiUrl()}/api/aprag/settings/status`
+          `${getApiUrl()}/aprag/settings/status`
         );
         if (response.ok) {
           const data = await response.json();

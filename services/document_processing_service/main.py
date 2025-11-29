@@ -88,15 +88,6 @@ class ProcessRequest(BaseModel):
     llm_model_name: Optional[str] = "llama-3.1-8b-instant"  # NEW: LLM model for post-processing
     model_inference_url: Optional[str] = None  # NEW: Override model inference URL for LLM post-processing
 
-class CRAGEvaluationRequest(BaseModel):
-    query: str
-    retrieved_docs: List[Dict[str, Any]]
-
-class CRAGEvaluationResponse(BaseModel):
-    success: bool
-    evaluation: Dict[str, Any]
-    filtered_docs: List[Dict[str, Any]]
-
 class ProcessResponse(BaseModel):
     success: bool
     message: str
@@ -227,7 +218,7 @@ def get_chroma_client():
 
 # REMOVED: Internal DocumentProcessor class - now using unified external chunking system only
 
-def get_embeddings_direct(texts: List[str], embedding_model: str = "nomic-embed-text") -> List[List[float]]:
+def get_embeddings_direct(texts: List[str], embedding_model: str = "text-embedding-v4") -> List[List[float]]:
     """
     Direct embedding function for use with unified chunking system.
     Get embeddings from local model inference service (Ollama)
@@ -449,8 +440,32 @@ async def process_and_store(request: ProcessRequest):
         logger.info(f"Starting text processing. Text length: {len(request.text)} characters")
         
         # CRITICAL UPGRADE: Use unified chunking system with LLM post-processing support
-        chunk_size = request.chunk_size or 1000
-        chunk_overlap = request.chunk_overlap or 200
+        # Get embedding model from metadata to adjust chunk sizes
+        embedding_model = request.metadata.get("embedding_model", "text-embedding-v4")
+        
+        # Adjust chunk sizes for Alibaba embedding models (they handle larger chunks better)
+        is_alibaba_embedding = (
+            embedding_model and (
+                embedding_model.startswith("text-embedding-") or
+                "alibaba" in embedding_model.lower() or
+                "dashscope" in embedding_model.lower()
+            )
+        )
+        
+        if is_alibaba_embedding:
+            # Alibaba embeddings (text-embedding-v4, etc.) can handle larger chunks
+            # Increase chunk size significantly for better context retention
+            default_chunk_size = 2500  # Increased from 1000 to 2500
+            default_chunk_overlap = 500  # Increased from 200 to 500
+            logger.info(f"🔵 Alibaba embedding detected ({embedding_model}): Using larger chunk sizes (size={default_chunk_size}, overlap={default_chunk_overlap})")
+        else:
+            # Default sizes for Ollama/local models
+            default_chunk_size = 1000
+            default_chunk_overlap = 200
+            logger.info(f"⚪ Standard embedding model ({embedding_model}): Using standard chunk sizes (size={default_chunk_size}, overlap={default_chunk_overlap})")
+        
+        chunk_size = request.chunk_size or default_chunk_size
+        chunk_overlap = request.chunk_overlap or default_chunk_overlap
         chunk_strategy = request.chunk_strategy or "lightweight"
         use_llm_post_processing = request.use_llm_post_processing or False
         llm_model_name = request.llm_model_name or "llama-3.1-8b-instant"
@@ -496,7 +511,7 @@ async def process_and_store(request: ProcessRequest):
         logger.info(f"Successfully split text into {len(chunks)} chunks.")
 
         # Get embeddings - check for embedding model preference in metadata
-        embedding_model = request.metadata.get("embedding_model", "nomic-embed-text")
+        # (embedding_model already extracted above for chunk size adjustment)
         logger.info(f"Using embedding model: {embedding_model}")
         embeddings = get_embeddings_direct(chunks, embedding_model)
         
@@ -834,29 +849,198 @@ async def rag_query(request: RAGQueryRequest):
                         logger.error(f"❌ Available collections: {all_collection_names}")
                         raise Exception(f"Collection '{collection_name}' not found. Tried alternatives: {sorted_alternatives}")
                 
-                # Get embeddings for the query using our model inference service
-                # Prefer embedding model provided with the request; fallback to default
-                embedding_model = (request.embedding_model or os.getenv("DEFAULT_EMBEDDING_MODEL", "nomic-embed-text"))
-                logger.info(f"🔍 Getting embeddings for query via model inference service using {embedding_model}")
+                # CRITICAL: Check collection's embedding dimension first
+                collection_dimension = None
+                collection_embedding_model = None
                 
-                # Try multiple embedding models in order of preference
-                embedding_models_to_try = [
-                    embedding_model,  # Try requested model first
-                    "nomic-embed-text",  # Fallback to Ollama model
-                    "sentence-transformers/all-MiniLM-L6-v2",  # Try HuggingFace again
-                    "BAAI/bge-small-en-v1.5"  # Last resort HuggingFace
-                ]
+                # Strategy 1: Try to get embedding_model from metadata first (FASTEST)
+                try:
+                    logger.info(f"🔍 Attempting to get metadata from collection '{collection_name}'...")
+                    sample_meta = collection.get(limit=1, include=["metadatas"])
+                    logger.info(f"🔍 Got sample_meta: {type(sample_meta)}, keys: {list(sample_meta.keys()) if isinstance(sample_meta, dict) else 'not a dict'}")
+                    
+                    # SAFE: Check if sample_meta exists without using truth value
+                    if sample_meta is not None:
+                        # Safely extract metadata
+                        try:
+                            meta_key = 'metadatas'
+                            if meta_key in sample_meta:
+                                metadatas_raw = sample_meta[meta_key]
+                                logger.info(f"🔍 Found 'metadatas' key, type: {type(metadatas_raw)}")
+                                
+                                # Convert to list safely
+                                import numpy as np
+                                if isinstance(metadatas_raw, np.ndarray):
+                                    metadatas_list = metadatas_raw.tolist()
+                                    logger.info(f"🔍 Converted NumPy array to list, length: {len(metadatas_list)}")
+                                elif isinstance(metadatas_raw, (list, tuple)):
+                                    metadatas_list = list(metadatas_raw)
+                                    logger.info(f"🔍 Converted list/tuple, length: {len(metadatas_list)}")
+                                else:
+                                    metadatas_list = []
+                                    logger.warning(f"⚠️ Unexpected metadatas type: {type(metadatas_raw)}")
+                                
+                                if len(metadatas_list) > 0:
+                                    logger.info(f"🔍 First metadata type: {type(metadatas_list[0])}, is dict: {isinstance(metadatas_list[0], dict)}")
+                                    if isinstance(metadatas_list[0], dict):
+                                        first_meta = metadatas_list[0]
+                                        logger.info(f"🔍 First metadata keys: {list(first_meta.keys())}")
+                                        collection_embedding_model = first_meta.get('embedding_model')
+                                        if collection_embedding_model:
+                                            logger.info(f"✅ Found embedding model in metadata: {collection_embedding_model}")
+                                            
+                                        # Map model name to dimension (FASTEST approach)
+                                        model_lower = collection_embedding_model.lower()
+                                        if 'text-embedding-v4' in model_lower:
+                                            collection_dimension = 1024  # FIXED: v4 is 1024D, not 2048D
+                                        elif 'nomic-embed' in model_lower:
+                                            collection_dimension = 768  # Usually 768
+                                        elif 'all-mpnet-base-v2' in model_lower:
+                                            collection_dimension = 768
+                                        elif 'all-minilm' in model_lower or 'bge-small' in model_lower:
+                                            collection_dimension = 384
+                                            
+                                            if collection_dimension:
+                                                logger.info(f"📏 Collection dimension (from model): {collection_dimension}D")
+                                        else:
+                                            logger.warning(f"⚠️ No 'embedding_model' key in metadata")
+                                    else:
+                                        logger.warning(f"⚠️ First metadata is not a dict: {type(metadatas_list[0])}")
+                                else:
+                                    logger.warning(f"⚠️ metadatas_list is empty")
+                            else:
+                                logger.warning(f"⚠️ 'metadatas' key not found in sample_meta. Available keys: {list(sample_meta.keys()) if isinstance(sample_meta, dict) else 'not a dict'}")
+                        except Exception as meta_err:
+                            logger.error(f"❌ Error extracting metadata: {meta_err}")
+                            import traceback
+                            logger.error(f"Traceback: {traceback.format_exc()}")
+                    else:
+                        logger.warning(f"⚠️ sample_meta is None")
+                except Exception as meta_check_err:
+                    logger.error(f"❌ Could not get metadata: {meta_check_err}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                
+                # Strategy 2: If dimension still unknown, try to get from embeddings directly
+                if not collection_dimension:
+                    try:
+                        sample_emb = collection.get(limit=1, include=["embeddings"])
+                        # SAFE: Check if sample_emb exists without using truth value
+                        if sample_emb is not None:
+                            try:
+                                emb_key = 'embeddings'
+                                if emb_key in sample_emb:
+                                    embeddings_raw = sample_emb[emb_key]
+                                    
+                                    # Convert to list safely
+                                    import numpy as np
+                                    if isinstance(embeddings_raw, np.ndarray):
+                                        embeddings_list = embeddings_raw.tolist()
+                                    elif isinstance(embeddings_raw, (list, tuple)):
+                                        embeddings_list = list(embeddings_raw)
+                                    else:
+                                        embeddings_list = []
+                                    
+                                    if len(embeddings_list) > 0:
+                                        first_emb = embeddings_list[0]
+                                        # Convert to list if needed
+                                        if isinstance(first_emb, np.ndarray):
+                                            first_emb = first_emb.tolist()
+                                        elif not isinstance(first_emb, (list, tuple)):
+                                            first_emb = list(first_emb) if hasattr(first_emb, '__iter__') and not isinstance(first_emb, (str, bytes)) else []
+                                        
+                                        if isinstance(first_emb, (list, tuple)) and len(first_emb) > 0:
+                                            collection_dimension = len(first_emb)
+                                            logger.info(f"📏 Collection dimension (from embedding): {collection_dimension}D")
+                            except Exception as emb_err:
+                                logger.warning(f"⚠️ Error extracting embedding dimension: {emb_err}")
+                    except Exception as emb_check_err:
+                        logger.warning(f"⚠️ Could not get embeddings: {emb_check_err}")
+                
+                if not collection_dimension:
+                    logger.warning("⚠️ Could not determine collection dimension. Will try multiple models.")
+                
+                # Get embeddings for the query using our model inference service
+                # CRITICAL: If we know collection dimension, ONLY use models with matching dimension
+                preferred_model = collection_embedding_model or request.embedding_model or os.getenv("DEFAULT_EMBEDDING_MODEL", "text-embedding-v4")
+                logger.info(f"🔍 Collection dimension: {collection_dimension}, preferred model: {preferred_model}")
+                
+                # Define models by dimension
+                models_by_dimension = {
+                    1024: ["text-embedding-v4"],  # Alibaba 1024D only v4
+                    768: ["nomic-embed-text", "sentence-transformers/all-mpnet-base-v2"],  # 768D
+                    384: ["nomic-embed-text", "sentence-transformers/all-MiniLM-L6-v2", "BAAI/bge-small-en-v1.5"],  # 384D
+                }
+                
+                # Build embedding models list based on collection dimension
+                embedding_models_to_try = []
+                
+                if collection_dimension:
+                    # CRITICAL: Only use models with matching dimension
+                    logger.info(f"⚠️ Collection requires {collection_dimension}D embeddings. Filtering models by dimension...")
+                    
+                    # First, try preferred model if it matches dimension
+                    # Check if preferred model is in the correct dimension list
+                    matching_models = models_by_dimension.get(collection_dimension, [])
+                    if preferred_model in matching_models:
+                        embedding_models_to_try.append(preferred_model)
+                    
+                    # Add all models with matching dimension
+                    embedding_models_to_try.extend([m for m in matching_models if m != preferred_model])
+                    
+                    # If requested model is different and matches dimension, add it
+                    if request.embedding_model and request.embedding_model != preferred_model:
+                        if request.embedding_model in matching_models:
+                            embedding_models_to_try.insert(1, request.embedding_model)  # Insert after preferred
+                    
+                    # Remove duplicates while preserving order
+                    embedding_models_to_try = list(dict.fromkeys(embedding_models_to_try))
+                    
+                    if not embedding_models_to_try:
+                        raise Exception(
+                            f"❌ No embedding models available for {collection_dimension}D dimension. "
+                            f"Collection was created with model: {collection_embedding_model or 'unknown'}. "
+                            f"Please use a model that produces {collection_dimension}D embeddings."
+                        )
+                    
+                    logger.info(f"✅ Will try {len(embedding_models_to_try)} models with {collection_dimension}D: {', '.join(embedding_models_to_try)}")
+                else:
+                    # Unknown dimension, try preferred model first, then common models
+                    logger.warning("⚠️ Collection dimension unknown. Trying preferred model and common fallbacks...")
+                    embedding_models_to_try = [preferred_model]
+                    if request.embedding_model and request.embedding_model != preferred_model:
+                        embedding_models_to_try.append(request.embedding_model)
+                    embedding_models_to_try.extend([
+                        "text-embedding-v3",  # Try Alibaba 1024D
+                        "text-embedding-v2",  # Try Alibaba 1024D
+                        "nomic-embed-text",
+                        "sentence-transformers/all-MiniLM-L6-v2",
+                        "BAAI/bge-small-en-v1.5"
+                    ])
+                    embedding_models_to_try = list(dict.fromkeys([m for m in embedding_models_to_try if m]))
                 
                 query_embeddings = None
                 successful_model = None
+                query_dimension = None
                 
                 for model_to_try in embedding_models_to_try:
                     try:
                         logger.info(f"🔄 Trying embedding model: {model_to_try}")
                         query_embeddings = get_embeddings_direct([request.query], model_to_try)
                         if query_embeddings and len(query_embeddings) > 0 and len(query_embeddings[0]) > 0:
+                            query_dimension = len(query_embeddings[0])
+                            
+                            # Check dimension match if we know collection dimension
+                            if collection_dimension and query_dimension != collection_dimension:
+                                logger.warning(
+                                    f"⚠️ Dimension mismatch: Collection expects {collection_dimension}D, "
+                                    f"but {model_to_try} produces {query_dimension}D. Trying next model..."
+                                )
+                                query_embeddings = None
+                                continue
+                            
                             successful_model = model_to_try
-                            logger.info(f"✅ Successfully got {len(query_embeddings)} query embeddings using {model_to_try}")
+                            logger.info(f"✅ Successfully got {len(query_embeddings)} query embeddings using {model_to_try} (dimension: {query_dimension})")
                             break
                         else:
                             logger.warning(f"⚠️ Empty embeddings from {model_to_try}")
@@ -865,11 +1049,59 @@ async def rag_query(request: RAGQueryRequest):
                         continue
                 
                 if not query_embeddings or not query_embeddings[0]:
-                    raise Exception(f"Failed to generate query embeddings with any model. Tried: {', '.join(embedding_models_to_try)}")
+                    error_msg = f"Failed to generate query embeddings with any model. Tried: {', '.join(embedding_models_to_try)}"
+                    if collection_dimension:
+                        error_msg += f" Collection requires {collection_dimension}D embeddings."
+                    raise Exception(error_msg)
+                
+                # Final dimension check
+                if collection_dimension and query_dimension != collection_dimension:
+                    raise Exception(
+                        f"❌ EMBEDDING DIMENSION MISMATCH: Collection '{collection_name}' requires {collection_dimension}D embeddings, "
+                        f"but query embedding has {query_dimension}D. Please use the same embedding model that was used to create the collection. "
+                        f"Collection was created with model: {collection_embedding_model or 'unknown'}"
+                    )
+                
+                # Check if reranker will be used (via CRAG evaluator)
+                # CRAG evaluator always uses reranker, so we need to check session settings
+                use_reranker = True  # Default: CRAG evaluator uses reranker
+                try:
+                    # Try to get session rag_settings to check if reranker is explicitly enabled
+                    session_response = requests.get(
+                        f"{os.getenv('API_GATEWAY_URL', 'http://api-gateway:8001')}/sessions/{request.session_id}",
+                        timeout=5
+                    )
+                    if session_response.status_code == 200:
+                        session_data = session_response.json()
+                        rag_settings = session_data.get('rag_settings', {})
+                        # If use_reranker_service is explicitly False, don't use reranker
+                        if rag_settings.get('use_reranker_service') is False:
+                            use_reranker = False
+                            logger.info("Reranker disabled in session settings")
+                        else:
+                            logger.info("Reranker will be used (CRAG evaluator)")
+                    else:
+                        logger.info(f"Could not fetch session settings (status: {session_response.status_code}), assuming reranker will be used")
+                except Exception as e:
+                    logger.warning(f"Could not check session settings for reranker: {e}, assuming reranker will be used")
                 
                 # Query the collection using embeddings (not query_texts)
-                # Get more results for hybrid search reranking
-                n_results_fetch = request.top_k * 3 if request.use_hybrid_search and BM25_AVAILABLE else request.top_k
+                # Determine how many documents to fetch initially
+                # Reranker needs more candidates to select from (5x more or at least 25-50)
+                # Hybrid search also needs more for reranking (3x)
+                if use_reranker:
+                    # Reranker will be used: fetch 5x more documents (or at least 25-50)
+                    n_results_fetch = max(request.top_k * 5, 25)
+                    n_results_fetch = min(n_results_fetch, 50)  # Cap at 50 for performance
+                    logger.info(f"🔄 Reranker enabled: fetching {n_results_fetch} documents (top_k={request.top_k})")
+                elif request.use_hybrid_search and BM25_AVAILABLE:
+                    # Hybrid search reranking: fetch 3x more
+                    n_results_fetch = request.top_k * 3
+                    logger.info(f"🔄 Hybrid search enabled: fetching {n_results_fetch} documents (top_k={request.top_k})")
+                else:
+                    # No reranking: just fetch what we need
+                    n_results_fetch = request.top_k
+                    logger.info(f"🔄 No reranking: fetching {n_results_fetch} documents (top_k={request.top_k})")
                 
                 search_results = collection.query(
                     query_embeddings=query_embeddings,
@@ -1029,45 +1261,58 @@ async def rag_query(request: RAGQueryRequest):
                 
                 # CRAG Evaluation with detailed scoring
                 # Get reranker_type from session rag_settings if available
-                reranker_type = None
-                try:
-                    # Try to get session rag_settings from API Gateway
-                    session_response = requests.get(
-                        f"{os.getenv('API_GATEWAY_URL', 'http://api-gateway:8001')}/sessions/{request.session_id}",
-                        timeout=5
-                    )
-                    if session_response.status_code == 200:
-                        session_data = session_response.json()
-                        rag_settings = session_data.get('rag_settings', {})
-                        if rag_settings.get('use_reranker_service') and rag_settings.get('reranker_type'):
-                            reranker_type = rag_settings.get('reranker_type')
-                            logger.info(f"Using reranker_type from session rag_settings: {reranker_type}")
-                except Exception as e:
-                    logger.warning(f"Could not fetch session rag_settings for reranker_type: {e}")
-                
-                # Import new CRAGEvaluator from services
-                from services.crag_evaluator import CRAGEvaluator as NewCRAGEvaluator
-                crag_evaluator = NewCRAGEvaluator(model_inference_url=MODEL_INFERENCER_URL, reranker_type=reranker_type)
-                crag_evaluation_result = crag_evaluator.evaluate_retrieved_docs(
-                    query=request.query,
-                    retrieved_docs=context_docs
-                )
-                
-                logger.info(f"🔍 CRAG EVALUATION: {crag_evaluation_result}")
-                
-                # Apply CRAG decision
-                if crag_evaluation_result["action"] == "reject":
-                    logger.info("❌ CRAG: Query rejected - low relevance to documents")
-                    return RAGQueryResponse(
-                        answer="⚠️ **DERS KAPSAMINDA DEĞİL**\n\nSorduğunuz soru ders dökümanlarıyla ilgili görünmüyor. Lütfen ders materyalleri kapsamında sorular sorunuz.",
-                        sources=[],
-                        chain_type=chain_type
-                    )
-                elif crag_evaluation_result["action"] == "filter":
-                    logger.info(f"🔍 CRAG: Filtering documents - keeping {len(crag_evaluation_result['filtered_docs'])} docs")
-                    context_docs = crag_evaluation_result["filtered_docs"]
+                # Note: We already checked session settings above for use_reranker flag
+                reranker_type = "alibaba"  # DEFAULT: Use Alibaba reranker
+                if use_reranker:
+                    try:
+                        # Try to get session rag_settings from API Gateway for reranker_type
+                        session_response = requests.get(
+                            f"{os.getenv('API_GATEWAY_URL', 'http://api-gateway:8001')}/sessions/{request.session_id}",
+                            timeout=5
+                        )
+                        if session_response.status_code == 200:
+                            session_data = session_response.json()
+                            rag_settings = session_data.get('rag_settings', {})
+                            if rag_settings.get('reranker_type'):
+                                reranker_type = rag_settings.get('reranker_type')
+                                logger.info(f"Using reranker_type from session rag_settings: {reranker_type}")
+                            else:
+                                logger.info(f"No reranker_type in session rag_settings, using default: {reranker_type}")
+                        else:
+                            logger.info(f"Could not fetch session rag_settings (status: {session_response.status_code}), using default: {reranker_type}")
+                    except Exception as e:
+                        logger.warning(f"Could not fetch session rag_settings for reranker_type: {e}, using default: {reranker_type}")
                 else:
-                    logger.info("✅ CRAG: Good relevance - using all documents")
+                    logger.info("Reranker disabled, skipping CRAG evaluation")
+                
+                # CRAG Evaluation (only if reranker is enabled)
+                if use_reranker:
+                    # Import new CRAGEvaluator from services
+                    from services.crag_evaluator import CRAGEvaluator as NewCRAGEvaluator
+                    crag_evaluator = NewCRAGEvaluator(model_inference_url=MODEL_INFERENCER_URL, reranker_type=reranker_type)
+                    crag_evaluation_result = crag_evaluator.evaluate_retrieved_docs(
+                        query=request.query,
+                        retrieved_docs=context_docs
+                    )
+                    
+                    logger.info(f"🔍 CRAG EVALUATION: {crag_evaluation_result}")
+                    
+                    # Apply CRAG decision
+                    if crag_evaluation_result["action"] == "reject":
+                        logger.info("❌ CRAG: Query rejected - low relevance to documents")
+                        return RAGQueryResponse(
+                            answer="⚠️ **DERS KAPSAMINDA DEĞİL**\n\nSorduğunuz soru ders dökümanlarıyla ilgili görünmüyor. Lütfen ders materyalleri kapsamında sorular sorunuz.",
+                            sources=[],
+                            chain_type=chain_type
+                        )
+                    elif crag_evaluation_result["action"] == "filter":
+                        logger.info(f"🔍 CRAG: Filtering documents - keeping {len(crag_evaluation_result['filtered_docs'])} docs")
+                        context_docs = crag_evaluation_result["filtered_docs"]
+                    else:
+                        logger.info("✅ CRAG: Good relevance - using all documents")
+                else:
+                    # No reranker: use all retrieved documents (already limited to top_k)
+                    logger.info("✅ No reranker: using all retrieved documents")
                 
                 # Generate answer using Model Inference Service
                 if context_docs:
@@ -1423,7 +1668,7 @@ async def retrieve_documents(request: RetrieveRequest):
                 return RetrieveResponse(success=False, results=[], total=0)
         
         # Get embeddings for the query
-        embedding_model = request.embedding_model or "nomic-embed-text"
+        embedding_model = request.embedding_model or "text-embedding-v4"
         logger.info(f"🔍 Getting embeddings for query using {embedding_model}")
         
         query_embeddings = get_embeddings_direct([request.query], embedding_model)
@@ -1978,7 +2223,7 @@ async def reprocess_session_documents(
         
         # Fallback to request parameter, then to default
         if not embedding_model:
-            embedding_model = embedding_model_from_request or "nomic-embed-text"
+            embedding_model = embedding_model_from_request or "text-embedding-v4"
             logger.info(f"Using embedding model from request/default: {embedding_model}")
         
         logger.info(f"Re-processing session {session_id} with embedding model: {embedding_model}")
@@ -2415,52 +2660,6 @@ async def delete_session_collection(session_id: str):
         )
     
 
-@app.post("/crag-evaluate", response_model=CRAGEvaluationResponse)
-async def evaluate_with_crag(request: CRAGEvaluationRequest):
-    """
-    CRAG Evaluation endpoint for RAG Testing.
-    
-    Evaluates retrieved documents using CRAG (Corrective RAG) methodology
-    without heavy ML dependencies.
-    """
-    try:
-        logger.info(f"CRAG Evaluation request for query: {request.query[:50]}...")
-        
-        # Initialize CRAG evaluator
-        crag_evaluator = CRAGEvaluator(model_inference_url=MODEL_INFERENCER_URL)
-        
-        # Perform CRAG evaluation
-        evaluation_result = crag_evaluator.evaluate_retrieved_docs(
-            query=request.query,
-            retrieved_docs=request.retrieved_docs
-        )
-        
-        logger.info(f"✅ CRAG Evaluation completed: action={evaluation_result['action']}, confidence={evaluation_result['confidence']}")
-        
-        return CRAGEvaluationResponse(
-            success=True,
-            evaluation=evaluation_result,
-            filtered_docs=evaluation_result.get("filtered_docs", request.retrieved_docs)
-        )
-        
-    except Exception as e:
-        logger.error(f"CRAG Evaluation error: {e}", exc_info=True)
-        # Return fallback evaluation
-        avg_score = sum(doc.get("score", 0) for doc in request.retrieved_docs) / len(request.retrieved_docs) if request.retrieved_docs else 0
-        
-        fallback_evaluation = {
-            "action": "reject" if avg_score < 0.3 else "accept",
-            "confidence": avg_score,
-            "avg_score": avg_score,
-            "error": str(e),
-            "method": "fallback"
-        }
-        
-        return CRAGEvaluationResponse(
-            success=False,
-            evaluation=fallback_evaluation,
-            filtered_docs=request.retrieved_docs if avg_score >= 0.3 else []
-        )
 
 
 

@@ -7,6 +7,12 @@
 -- Disable foreign key constraints
 PRAGMA foreign_keys = OFF;
 
+-- Step 0: Drop views that depend on tables we're modifying (to avoid errors)
+DROP VIEW IF EXISTS student_topic_progress_analytics;
+DROP VIEW IF EXISTS topic_mastery_analytics;
+DROP VIEW IF EXISTS topic_difficulty_analysis;
+DROP VIEW IF EXISTS topic_recommendation_insights;
+
 -- SQLite doesn't support DROP CONSTRAINT directly, so we need to recreate the table
 -- Step 1: Create new table without FOREIGN KEY
 CREATE TABLE IF NOT EXISTS session_settings_new (
@@ -26,6 +32,7 @@ CREATE TABLE IF NOT EXISTS session_settings_new (
     enable_bloom BOOLEAN NOT NULL DEFAULT TRUE,
     enable_cognitive_load BOOLEAN NOT NULL DEFAULT TRUE,
     enable_emoji_feedback BOOLEAN NOT NULL DEFAULT TRUE,
+    enable_ebars BOOLEAN NOT NULL DEFAULT FALSE,
     
     -- Metadata
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -36,9 +43,8 @@ CREATE TABLE IF NOT EXISTS session_settings_new (
 );
 
 -- Step 2: Copy existing data (if table exists)
-INSERT INTO session_settings_new 
-SELECT * FROM session_settings 
-WHERE EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_settings');
+-- Note: enable_ebars will default to FALSE if column doesn't exist in old table
+-- We'll handle this in Python code to check if column exists first
 
 -- Step 3: Drop old table (if exists) - only if we copied data
 DROP TABLE IF EXISTS session_settings;

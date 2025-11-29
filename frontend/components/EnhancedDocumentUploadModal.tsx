@@ -109,7 +109,7 @@ export default function EnhancedDocumentUploadModal({
           }
         }, 2000);
 
-        const result = await convertPdfToMarkdown(selectedFile, false, selectedSessionId);
+        const result = await convertPdfToMarkdown(selectedFile, false);
         clearInterval(stepInterval);
 
         if (result.success) {

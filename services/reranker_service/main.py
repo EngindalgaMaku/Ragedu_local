@@ -22,13 +22,16 @@ app = FastAPI(
 )
 
 # Configuration
-RERANKER_TYPE = os.getenv("RERANKER_TYPE", "bge")  # "bge", "ms-marco", or "alibaba"
+# Default to "alibaba" to avoid heavy PyTorch dependencies
+# Set RERANKER_TYPE=bge or RERANKER_TYPE=ms-marco if you need local rerankers
+RERANKER_TYPE = os.getenv("RERANKER_TYPE", "alibaba")  # "bge", "ms-marco", or "alibaba"
 BGE_MODEL_NAME = os.getenv("BGE_MODEL_NAME", "BAAI/bge-reranker-v2-m3")
 MS_MARCO_MODEL_NAME = os.getenv("MS_MARCO_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 ALIBABA_API_KEY = os.getenv("ALIBABA_API_KEY", os.getenv("DASHSCOPE_API_KEY"))
 ALIBABA_RERANKER_MODEL = os.getenv("ALIBABA_RERANKER_MODEL", "gte-rerank-v2")
 # Alibaba DashScope reranker API endpoint
-ALIBABA_API_BASE = "https://dashscope.aliyuncs.com/api/v1/services/reranking/rerank"
+# Correct endpoint: /api/v1/services/rerank/text-rerank/text-rerank
+ALIBABA_API_BASE = os.getenv("ALIBABA_RERANKER_API_BASE", "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank")
 
 # Global model instances
 bge_reranker = None
@@ -60,16 +63,19 @@ class RerankResponse(BaseModel):
 
 # Model Loading Functions
 def load_bge_reranker():
-    """Load BGE-Reranker-V2-M3 model"""
+    """Load BGE-Reranker-V2-M3 model (lazy loading - only when needed)"""
     global bge_reranker
     if bge_reranker is None:
         try:
             logger.info(f"🔄 Loading BGE Reranker: {BGE_MODEL_NAME}...")
+            logger.warning("⚠️ BGE Reranker requires heavy dependencies (PyTorch, FlagEmbedding)")
+            logger.warning("⚠️ Consider using Alibaba API reranker instead for lighter setup")
             from FlagEmbedding import FlagReranker
             bge_reranker = FlagReranker(BGE_MODEL_NAME, use_fp16=True)
             logger.info("✅ BGE Reranker loaded successfully")
         except ImportError:
-            logger.error("❌ FlagEmbedding not installed. Install with: pip install FlagEmbedding")
+            logger.error("❌ FlagEmbedding not installed. Install with: pip install FlagEmbedding torch")
+            logger.error("💡 TIP: Use Alibaba API reranker (RERANKER_TYPE=alibaba) to avoid heavy dependencies")
             raise
         except Exception as e:
             logger.error(f"❌ Failed to load BGE Reranker: {e}")
@@ -78,16 +84,19 @@ def load_bge_reranker():
 
 
 def load_ms_marco_reranker():
-    """Load MS-MARCO reranker"""
+    """Load MS-MARCO reranker (lazy loading - only when needed)"""
     global ms_marco_reranker
     if ms_marco_reranker is None:
         try:
             logger.info(f"🔄 Loading MS-MARCO Reranker: {MS_MARCO_MODEL_NAME}...")
+            logger.warning("⚠️ MS-MARCO Reranker requires heavy dependencies (PyTorch, sentence-transformers)")
+            logger.warning("⚠️ Consider using Alibaba API reranker instead for lighter setup")
             from sentence_transformers import CrossEncoder
             ms_marco_reranker = CrossEncoder(MS_MARCO_MODEL_NAME)
             logger.info("✅ MS-MARCO Reranker loaded successfully")
         except ImportError:
-            logger.error("❌ sentence-transformers not installed")
+            logger.error("❌ sentence-transformers not installed. Install with: pip install sentence-transformers torch")
+            logger.error("💡 TIP: Use Alibaba API reranker (RERANKER_TYPE=alibaba) to avoid heavy dependencies")
             raise
         except Exception as e:
             logger.error(f"❌ Failed to load MS-MARCO Reranker: {e}")
@@ -110,11 +119,19 @@ def rerank_with_alibaba(query: str, documents: List[str]) -> List[float]:
         raise ValueError("ALIBABA_API_KEY is not set")
     
     try:
-        # Prepare request payload
+        # Prepare request payload according to Alibaba DashScope reranker API format
+        # Format: {"model": "model-name", "input": {"query": "query", "documents": ["doc1", "doc2", ...]}, "parameters": {...}}
+        # Note: "task" field is NOT required - it was a misunderstanding
         payload = {
             "model": ALIBABA_RERANKER_MODEL,
-            "query": query,
-            "documents": documents
+            "input": {
+                "query": query,
+                "documents": documents
+            },
+            "parameters": {
+                "return_documents": True,
+                "top_n": len(documents)  # Return all documents ranked
+            }
         }
         
         headers = {
@@ -130,16 +147,39 @@ def rerank_with_alibaba(query: str, documents: List[str]) -> List[float]:
             timeout=30
         )
         
+        # Log response for debugging
+        if response.status_code != 200:
+            logger.error(f"❌ Alibaba reranker API error: {response.status_code}")
+            logger.error(f"❌ Request URL: {ALIBABA_API_BASE}")
+            logger.error(f"❌ Request payload: {payload}")
+            logger.error(f"❌ Response: {response.text[:1000]}")
+        
         response.raise_for_status()
         result = response.json()
         
         # Extract scores from response
-        # Alibaba API returns results with scores
+        # Alibaba API returns: {"output": {"results": [{"index": 0, "relevance_score": 0.9, "document": {...}}, ...]}}
         if "output" in result and "results" in result["output"]:
-            scores = []
+            scores = [0.0] * len(documents)  # Initialize with zeros
             for item in result["output"]["results"]:
-                scores.append(float(item.get("relevance_score", 0.0)))
+                idx = item.get("index", 0)
+                score = float(item.get("relevance_score", 0.0))
+                if 0 <= idx < len(scores):
+                    scores[idx] = score
+            logger.info(f"✅ Successfully reranked {len(documents)} documents using Alibaba DashScope")
             return scores
+        elif "output" in result:
+            # Try alternative response format
+            logger.warning(f"Unexpected Alibaba API response format, trying to parse: {result.get('output', {})}")
+            # If results is directly in output
+            if "results" in result.get("output", {}):
+                results = result["output"]["results"]
+                scores = [0.0] * len(documents)
+                for i, item in enumerate(results):
+                    score = float(item.get("relevance_score", item.get("score", 0.0)))
+                    if i < len(scores):
+                        scores[i] = score
+                return scores
         else:
             # Fallback: try to extract from different response format
             logger.warning(f"Unexpected Alibaba API response format: {result}")
@@ -154,20 +194,36 @@ def rerank_with_alibaba(query: str, documents: List[str]) -> List[float]:
 
 
 def initialize_reranker():
-    """Initialize the selected reranker based on RERANKER_TYPE"""
+    """Initialize the selected reranker based on RERANKER_TYPE (lazy loading for heavy models)"""
     global current_reranker, current_reranker_type
     
+    # Alibaba API reranker doesn't need model loading - it's API-based
+    if RERANKER_TYPE.lower() == "alibaba":
+        current_reranker = None  # Not needed for API-based reranker
+        current_reranker_type = "alibaba"
+        logger.info("✅ Using Alibaba DashScope API Reranker (no heavy dependencies needed)")
+        return
+    
+    # Only load heavy models if explicitly requested
     try:
         if RERANKER_TYPE.lower() == "bge":
+            logger.warning("⚠️ Loading BGE reranker - this requires heavy PyTorch dependencies")
             current_reranker = load_bge_reranker()
             current_reranker_type = "bge"
             logger.info("✅ Using BGE-Reranker-V2-M3")
-        else:
+        elif RERANKER_TYPE.lower() == "ms-marco":
+            logger.warning("⚠️ Loading MS-MARCO reranker - this requires heavy PyTorch dependencies")
             current_reranker = load_ms_marco_reranker()
             current_reranker_type = "ms-marco"
             logger.info("✅ Using MS-MARCO Reranker")
+        else:
+            # Unknown type, default to Alibaba
+            logger.warning(f"⚠️ Unknown RERANKER_TYPE='{RERANKER_TYPE}', defaulting to Alibaba API")
+            current_reranker = None
+            current_reranker_type = "alibaba"
     except Exception as e:
         logger.error(f"❌ Failed to initialize reranker: {e}")
+        logger.error("💡 TIP: Use RERANKER_TYPE=alibaba to avoid heavy dependencies")
         # Try fallback
         if RERANKER_TYPE.lower() == "bge":
             logger.warning("⚠️ BGE failed, trying MS-MARCO fallback...")
@@ -177,6 +233,7 @@ def initialize_reranker():
                 logger.info("✅ Using MS-MARCO as fallback")
             except Exception as fallback_error:
                 logger.error(f"❌ Fallback also failed: {fallback_error}")
+                logger.error("💡 TIP: Set RERANKER_TYPE=alibaba and ALIBABA_API_KEY to use API-based reranker")
                 current_reranker = None
                 current_reranker_type = None
         else:

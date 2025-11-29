@@ -203,6 +203,7 @@ const SessionSettingsPanel: React.FC<SessionSettingsPanelProps> = ({
       enable_bloom: "Bloom Taksonomisi",
       enable_cognitive_load: "Bilişsel Yük Yönetimi",
       enable_emoji_feedback: "Emoji Geri Bildirimi",
+      enable_ebars: "EBARS (Adaptif Zorluk Ayarlama)",
     };
     return labels[key] || key;
   };
@@ -434,6 +435,17 @@ const SessionSettingsPanel: React.FC<SessionSettingsPanelProps> = ({
               checked={settings.enable_emoji_feedback}
               onChange={(checked) =>
                 updateSetting("enable_emoji_feedback", checked)
+              }
+              disabled={saving}
+            />
+
+            <Toggle
+              id="ebars"
+              label="EBARS (Adaptif Zorluk Ayarlama)"
+              description="Emoji geri bildirimlerine göre cevap zorluk seviyesini dinamik olarak ayarlayan sistem"
+              checked={settings.enable_ebars ?? false}
+              onChange={(checked) =>
+                updateSetting("enable_ebars", checked)
               }
               disabled={saving}
             />

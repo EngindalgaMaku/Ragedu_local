@@ -1,9 +1,14 @@
 fastapi>=0.104.0
 uvicorn>=0.24.0
 pydantic>=2.0.0
-sentence-transformers>=2.2.0
-FlagEmbedding>=1.2.0
 python-dotenv>=1.0.0
+requests>=2.31.0
+
+# Heavy ML dependencies - only install if using local rerankers
+# For Alibaba API reranker, these are NOT needed!
+# sentence-transformers>=2.2.0  # Only for MS-MARCO reranker
+# FlagEmbedding>=1.2.0  # Only for BGE reranker
+# torch>=2.0.0  # Required by sentence-transformers and FlagEmbedding
 
 
 

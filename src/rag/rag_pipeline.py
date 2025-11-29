@@ -18,7 +18,7 @@ from src.utils.logger import get_logger
 from src.utils.cache import get_cache
 from src.config import is_cloud_environment, get_model_inference_url
 from src.utils.memory_manager import get_memory_manager
-from src.rag.re_ranker import ReRanker
+# from src.rag.re_ranker import ReRanker  # DISABLED: Using reranker-service instead
 from src.rag.retrieval_evaluator import RetrievalEvaluator
 
 class RAGPipeline:
@@ -47,13 +47,10 @@ class RAGPipeline:
         # Initialize Model Inference Service URL
         self.model_inference_url = get_model_inference_url()
         
-        # Initialize ReRanker
+        # Initialize ReRanker - DISABLED: Use reranker-service instead
         self.reranker = None
-        if self.config.get("enable_reranking", False): # Check config
-            self.reranker = ReRanker()
-            if not self.reranker.model:
-                self.logger.warning("ReRanker enabled in config, but model failed to load. Re-ranking will be disabled.")
-                self.reranker = None
+        # Local reranker disabled - using reranker-service via CRAG evaluator
+        self.logger.info("Local re-ranker disabled - using reranker-service instead")
         
         # Initialize Retrieval Evaluator (CRAG)
         self.retrieval_evaluator = None

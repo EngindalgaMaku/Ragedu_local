@@ -2,7 +2,13 @@
 import React, { useEffect, useMemo, useState } from "react";
 import DocumentUploadModal from "@/components/DocumentUploadModal";
 import {
-  listMarkdownFiles,
+  listMarkdownFilesWithCategories,
+  listMarkdownCategories,
+  createMarkdownCategory,
+  deleteMarkdownCategory,
+  assignMarkdownCategory,
+  type MarkdownCategory,
+  type MarkdownFileWithCategory,
   uploadMarkdownFile,
   getMarkdownFileContent,
   deleteMarkdownFile,
@@ -10,7 +16,9 @@ import {
 import ModernAdminLayout from "../components/ModernAdminLayout";
 
 export default function DocumentCenterPage() {
-  const [markdownFiles, setMarkdownFiles] = useState<string[]>([]);
+  const [markdownFiles, setMarkdownFiles] = useState<
+    MarkdownFileWithCategory[]
+  >([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -19,7 +27,7 @@ export default function DocumentCenterPage() {
   const [showNanonets, setShowNanonets] = useState(false);
   const [showPdfplumber, setShowPdfplumber] = useState(false);
   const [showMarker, setShowMarker] = useState(false);
-  
+
   // Dropdown state
   const [markerDropdownOpen, setMarkerDropdownOpen] = useState(false);
 
@@ -35,18 +43,36 @@ export default function DocumentCenterPage() {
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 20;
 
+  // Category state
+  const [categories, setCategories] = useState<MarkdownCategory[]>([]);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(
+    null
+  );
+  const [categoryModalOpen, setCategoryModalOpen] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [newCategoryDescription, setNewCategoryDescription] = useState("");
+
+  // Selection for assigning categories
+  const [selectedFilenames, setSelectedFilenames] = useState<Set<string>>(
+    new Set()
+  );
+
   const refreshFiles = async (options?: {
     desiredPage?: number;
     preservePage?: boolean;
   }) => {
     try {
       setLoading(true);
-      const files = await listMarkdownFiles();
-      // Sort alphabetically (case-insensitive)
+      const [files, cats] = await Promise.all([
+        listMarkdownFilesWithCategories(),
+        listMarkdownCategories(),
+      ]);
+      // Sort alphabetically (case-insensitive) by filename
       const sorted = [...files].sort((a, b) =>
-        a.localeCompare(b, "tr", { sensitivity: "accent" })
+        a.filename.localeCompare(b.filename, "tr", { sensitivity: "accent" })
       );
       setMarkdownFiles(sorted);
+      setCategories(cats);
       // Keep user on the same page unless explicitly overridden
       const newTotalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
       setPage((prev) => {
@@ -59,6 +85,63 @@ export default function DocumentCenterPage() {
       setError(e.message || "Markdown dosyaları yüklenemedi");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const toggleFileSelection = (filename: string) => {
+    setSelectedFilenames((prev) => {
+      const next = new Set(prev);
+      if (next.has(filename)) next.delete(filename);
+      else next.add(filename);
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedFilenames(new Set());
+
+  const handleAssignCategory = async (categoryId: number | null) => {
+    try {
+      if (selectedFilenames.size === 0) return;
+      await assignMarkdownCategory(Array.from(selectedFilenames), categoryId);
+      setSuccess("Kategori ataması güncellendi");
+      clearSelection();
+      await refreshFiles({ preservePage: true });
+    } catch (e: any) {
+      setError(e.message || "Kategori ataması başarısız");
+    }
+  };
+
+  const handleCreateCategory = async () => {
+    try {
+      if (!newCategoryName.trim()) return;
+      await createMarkdownCategory({
+        name: newCategoryName.trim(),
+        description: newCategoryDescription.trim() || undefined,
+      });
+      setNewCategoryName("");
+      setNewCategoryDescription("");
+      const cats = await listMarkdownCategories();
+      setCategories(cats);
+    } catch (e: any) {
+      setError(e.message || "Kategori oluşturma başarısız");
+    }
+  };
+
+  const handleDeleteCategory = async (id: number) => {
+    if (
+      !confirm(
+        "Kategoriyi silmek istiyor musunuz? İlişkili belgelerin kategorisi boşalır."
+      )
+    )
+      return;
+    try {
+      await deleteMarkdownCategory(id);
+      const cats = await listMarkdownCategories();
+      setCategories(cats);
+      if (selectedCategoryId === id) setSelectedCategoryId(null);
+      await refreshFiles({ preservePage: true });
+    } catch (e: any) {
+      setError(e.message || "Kategori silme başarısız");
     }
   };
 
@@ -88,14 +171,19 @@ export default function DocumentCenterPage() {
     }
   };
 
+  const filteredFiles = useMemo(() => {
+    if (selectedCategoryId === null) return markdownFiles;
+    return markdownFiles.filter((f) => f.category_id === selectedCategoryId);
+  }, [markdownFiles, selectedCategoryId]);
+
   const pagedFiles = useMemo(() => {
     const start = (page - 1) * PAGE_SIZE;
-    return markdownFiles.slice(start, start + PAGE_SIZE);
-  }, [markdownFiles, page]);
+    return filteredFiles.slice(start, start + PAGE_SIZE);
+  }, [filteredFiles, page]);
 
   const totalPages = useMemo(
-    () => Math.max(1, Math.ceil(markdownFiles.length / PAGE_SIZE)),
-    [markdownFiles.length]
+    () => Math.max(1, Math.ceil(filteredFiles.length / PAGE_SIZE)),
+    [filteredFiles.length]
   );
 
   const openViewer = async (filename: string) => {
@@ -171,6 +259,71 @@ export default function DocumentCenterPage() {
               </div>
             </div>
           </div>
+
+          {/* Category filter & actions */}
+          <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">Kategori:</span>
+              <select
+                className="border rounded-md px-2 py-1 text-sm bg-white dark:bg-gray-900"
+                value={selectedCategoryId ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setSelectedCategoryId(v === "" ? null : Number(v));
+                  setPage(1);
+                }}
+              >
+                <option value="">Tümü</option>
+                {categories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setCategoryModalOpen(true)}
+                className="px-3 py-1.5 text-xs rounded-md border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+              >
+                Kategorileri Yönet
+              </button>
+              {selectedFilenames.size > 0 && (
+                <>
+                  <select
+                    className="border rounded-md px-2 py-1 text-xs bg-white dark:bg-gray-900"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === "__none__") {
+                        handleAssignCategory(null);
+                      } else if (v) {
+                        handleAssignCategory(Number(v));
+                      }
+                      e.target.value = "";
+                    }}
+                    defaultValue=""
+                  >
+                    <option value="" disabled>
+                      Seçili belgeleri kategoriye ata
+                    </option>
+                    <option value="__none__">Kategori yok</option>
+                    {categories.map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={clearSelection}
+                    className="px-2 py-1 text-xs rounded-md border border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  >
+                    Seçimi Temizle
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
         </div>
 
         {error && (
@@ -219,9 +372,13 @@ export default function DocumentCenterPage() {
                   className="w-full sm:w-auto py-3 px-6 bg-orange-600 text-white rounded-lg font-medium text-sm hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 transition-all flex items-center justify-center gap-2"
                 >
                   <span>📚 Marker</span>
-                  <span className="text-xs bg-orange-500 px-2 py-0.5 rounded">Önerilen</span>
+                  <span className="text-xs bg-orange-500 px-2 py-0.5 rounded">
+                    Önerilen
+                  </span>
                   <svg
-                    className={`w-4 h-4 transition-transform ${markerDropdownOpen ? 'rotate-180' : ''}`}
+                    className={`w-4 h-4 transition-transform ${
+                      markerDropdownOpen ? "rotate-180" : ""
+                    }`}
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
@@ -234,7 +391,7 @@ export default function DocumentCenterPage() {
                     />
                   </svg>
                 </button>
-                
+
                 {/* Dropdown Menu */}
                 {markerDropdownOpen && (
                   <>
@@ -261,7 +418,7 @@ export default function DocumentCenterPage() {
                           </div>
                         </div>
                       </button>
-                      
+
                       {/* Nanonets - Alt Seçenek */}
                       <button
                         onClick={() => {
@@ -280,7 +437,7 @@ export default function DocumentCenterPage() {
                           </div>
                         </div>
                       </button>
-                      
+
                       {/* Diğer Seçenekler */}
                       <div className="border-t border-gray-200 dark:border-gray-700 pt-2 pb-2">
                         <label className="w-full cursor-pointer px-4 py-2 hover:bg-gray-50 dark:hover:bg-gray-700/50 transition-colors flex items-center gap-3">
@@ -299,7 +456,7 @@ export default function DocumentCenterPage() {
                             Markdown Yükle
                           </span>
                         </label>
-                        
+
                         <button
                           onClick={() => {
                             setShowPdfplumber(true);
@@ -319,115 +476,215 @@ export default function DocumentCenterPage() {
               </div>
             </div>
           </div>
-          <div className="mt-4">
+
+          {/* Existing markdown files */}
+          <div className="mt-8">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">
+                Mevcut Markdown Dosyaları ({filteredFiles.length})
+              </h3>
+            </div>
+
             {loading ? (
-              <div className="text-sm text-muted-foreground">
-                Liste yükleniyor...
+              <div className="text-center py-4">
+                <span className="text-gray-600">Yükleniyor...</span>
               </div>
-            ) : markdownFiles.length === 0 ? (
-              <div className="text-sm text-muted-foreground">
-                Henüz markdown dosyası yok.
+            ) : pagedFiles.length > 0 ? (
+              <div className="grid gap-3">
+                {pagedFiles.map((file) => (
+                  <div
+                    key={file.filename}
+                    className="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-200 dark:border-gray-700"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedFilenames.has(file.filename)}
+                      onChange={() => toggleFileSelection(file.filename)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-gray-900 dark:text-white truncate">
+                        {file.filename}
+                      </div>
+                      <div className="text-sm text-gray-600 dark:text-gray-400">
+                        {file.category_name && (
+                          <span className="bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-2 py-0.5 rounded text-xs mr-2">
+                            {file.category_name}
+                          </span>
+                        )}
+                        {file.created_at &&
+                          `Eklendi: ${new Date(
+                            file.created_at
+                          ).toLocaleDateString("tr-TR")}`}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => openViewer(file.filename)}
+                        className="px-3 py-1 text-sm rounded-md border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+                      >
+                        Görüntüle
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             ) : (
-              <>
-                <div className="flex items-center justify-between mb-2 text-sm text-muted-foreground">
-                  <span>{markdownFiles.length} dosya</span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setPage((p) => Math.max(1, p - 1))}
-                      disabled={page === 1}
-                      className="px-3 py-1 rounded-md border text-foreground disabled:opacity-50"
-                    >
-                      Önceki
-                    </button>
-                    <span>
-                      Sayfa {page} / {totalPages}
-                    </span>
-                    <button
-                      onClick={() =>
-                        setPage((p) => Math.min(totalPages, p + 1))
-                      }
-                      disabled={page >= totalPages}
-                      className="px-3 py-1 rounded-md border text-foreground disabled:opacity-50"
-                    >
-                      Sonraki
-                    </button>
-                  </div>
-                </div>
-                <ul className="divide-y divide-gray-200 dark:divide-gray-700 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
-                  {pagedFiles.map((f) => (
-                    <li
-                      key={f}
-                      className="px-4 py-3 text-sm text-foreground flex items-center justify-between hover:bg-muted/40 cursor-pointer"
-                      onClick={() => openViewer(f)}
-                    >
-                      <span className="truncate max-w-[70%]" title={f}>
-                        {f}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDownload(f);
-                          }}
-                          className="px-3 py-1 rounded-md border hover:bg-muted"
-                          title="İndir"
-                        >
-                          ⬇️
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDelete(f);
-                          }}
-                          className="px-3 py-1 rounded-md border text-red-600 hover:bg-red-50"
-                          title="Sil"
-                        >
-                          🗑️
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              </>
+              <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                {selectedCategoryId
+                  ? "Bu kategoride dosya bulunamadı"
+                  : "Henüz markdown dosyası yok"}
+              </div>
+            )}
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div className="flex justify-center gap-2 mt-6">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                  className="px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-md disabled:opacity-50 hover:bg-gray-50 dark:hover:bg-gray-800"
+                >
+                  Önceki
+                </button>
+                <span className="px-3 py-1 text-sm">
+                  {page} / {totalPages}
+                </span>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                  className="px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-md disabled:opacity-50 hover:bg-gray-50 dark:hover:bg-gray-800"
+                >
+                  Sonraki
+                </button>
+              </div>
             )}
           </div>
         </div>
 
-        {/* Modals */}
-        <DocumentUploadModal
-          isOpen={showNanonets}
-          conversionMethod="nanonets"
-          onClose={() => setShowNanonets(false)}
-          onSuccess={(message) => {
-            setSuccess(message);
-            setShowNanonets(false);
-          }}
-          onError={(msg) => setError(msg)}
-          onMarkdownFilesUpdate={refreshFiles}
-        />
-        <DocumentUploadModal
-          isOpen={showPdfplumber}
-          conversionMethod="pdfplumber"
-          onClose={() => setShowPdfplumber(false)}
-          onSuccess={(message) => {
-            setSuccess(message);
-            setShowPdfplumber(false);
-          }}
-          onError={(msg) => setError(msg)}
-          onMarkdownFilesUpdate={refreshFiles}
-        />
-        <DocumentUploadModal
-          isOpen={showMarker}
-          conversionMethod="marker"
-          onClose={() => setShowMarker(false)}
-          onSuccess={(message) => {
-            setSuccess(message);
-            setShowMarker(false);
-          }}
-          onError={(msg) => setError(msg)}
-          onMarkdownFilesUpdate={refreshFiles}
-        />
+        {/* Document Upload Modals */}
+        {showNanonets && (
+          <DocumentUploadModal
+            isOpen={showNanonets}
+            onClose={() => setShowNanonets(false)}
+            conversionMethod="nanonets"
+            onSuccess={() => {
+              setSuccess("Dosya başarıyla yüklendi ve işleme alındı");
+              refreshFiles();
+            }}
+            onError={(err) => setError(err)}
+            onMarkdownFilesUpdate={refreshFiles}
+          />
+        )}
+
+        {showPdfplumber && (
+          <DocumentUploadModal
+            isOpen={showPdfplumber}
+            onClose={() => setShowPdfplumber(false)}
+            conversionMethod="pdfplumber"
+            onSuccess={() => {
+              setSuccess("Dosya başarıyla yüklendi ve işleme alındı");
+              refreshFiles();
+            }}
+            onError={(err) => setError(err)}
+            onMarkdownFilesUpdate={refreshFiles}
+          />
+        )}
+
+        {showMarker && (
+          <DocumentUploadModal
+            isOpen={showMarker}
+            onClose={() => setShowMarker(false)}
+            conversionMethod="marker"
+            onSuccess={() => {
+              setSuccess("Dosya başarıyla yüklendi ve işleme alındı");
+              refreshFiles();
+            }}
+            onError={(err) => setError(err)}
+            onMarkdownFilesUpdate={refreshFiles}
+          />
+        )}
+
+        {/* Category Management Modal */}
+        {categoryModalOpen && (
+          <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-md">
+              <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+                <h2 className="text-lg font-semibold">Kategorileri Yönet</h2>
+              </div>
+              <div className="p-6 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">
+                    Kategori Adı
+                  </label>
+                  <input
+                    type="text"
+                    value={newCategoryName}
+                    onChange={(e) => setNewCategoryName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-900"
+                    placeholder="Kategori adı girin"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">
+                    Açıklama (isteğe bağlı)
+                  </label>
+                  <textarea
+                    value={newCategoryDescription}
+                    onChange={(e) => setNewCategoryDescription(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-900"
+                    placeholder="Kategori açıklaması"
+                    rows={3}
+                  />
+                </div>
+                <button
+                  onClick={handleCreateCategory}
+                  className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                  disabled={!newCategoryName.trim()}
+                >
+                  Kategori Oluştur
+                </button>
+
+                <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+                  <h3 className="text-sm font-medium mb-2">
+                    Mevcut Kategoriler
+                  </h3>
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {categories.map((cat) => (
+                      <div
+                        key={cat.id}
+                        className="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-900/50 rounded"
+                      >
+                        <div>
+                          <div className="font-medium">{cat.name}</div>
+                          {cat.description && (
+                            <div className="text-xs text-gray-600 dark:text-gray-400">
+                              {cat.description}
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => handleDeleteCategory(cat.id)}
+                          className="text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 px-2 py-1 rounded text-xs"
+                        >
+                          Sil
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 flex justify-end">
+                <button
+                  onClick={() => setCategoryModalOpen(false)}
+                  className="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-800"
+                >
+                  Kapat
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Markdown Viewer Modal */}
         {isModalOpen && (

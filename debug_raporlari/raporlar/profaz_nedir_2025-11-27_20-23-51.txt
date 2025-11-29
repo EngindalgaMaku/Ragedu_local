@@ -1,0 +1,378 @@
+================================================================================
+
+
+
+ QUERY DEBUG REPORT - TAM SÜREÇ DÖKÜMÜ
+
+================================================================================
+
+[1] İSTEK PARAMETRELERİ
+
+--------------------------------------------------------------------------------
+
+Session ID    : 6f3318202dd81b5fcab7b6621a6f4807
+
+Query         : profaz nedir
+
+Top K         : 5
+
+Use KB        : Yes
+
+Use QA Pairs  : Yes
+
+Use Rerank    : Yes
+
+Model         : qwen/qwen3-32b
+
+Embedding Model: text-embedding-v4
+
+Max Tokens    : 2048
+
+Temperature  : 0.7
+
+Max Context   : 8000 chars
+
+[2] SESSION RAG SETTINGS
+
+--------------------------------------------------------------------------------
+
+Effective Model        : qwen/qwen3-32b
+
+Effective Embedding    : text-embedding-v4
+
+Session Model          : qwen/qwen3-32b
+
+Session Embedding      : text-embedding-v4
+
+[3] RETRIEVAL AŞAMALARI
+
+--------------------------------------------------------------------------------
+
+[3.1] Topic Classification
+
+  Matched Topics    : 3
+
+  Confidence        : 92.0%
+
+  Topic 1        : Mitoz (confidence: 95.0%)
+
+  Topic 2        : Mayoz (confidence: 85.0%)
+
+  Topic 3        : Mitoz ve Mayoz Karşılaştırma (confidence: 80.0%)
+
+[3.2] Chunk Retrieval
+
+  Chunks Retrieved  : 5
+
+  Chunk 1       : Score=45.2%, Preview="## Page 1
+
+# BIYOLOJİ SINIF-10
+
+KONU MAYOZ-2..."
+
+  Chunk 2       : Score=54.2%, Preview="## Page 1
+
+# BİYOLOJİ SINIF-10
+
+## KONU MITOTİK EVRE..."
+
+  Chunk 3       : Score=45.5%, Preview="## MITOZ..."
+
+  Chunk 4       : Score=50.8%, Preview="#### Interfaz:..."
+
+  Chunk 5       : Score=49.6%, Preview="# 7-MAYOZ-1.pdf..."
+
+[3.3] QA Pairs Matching
+
+  QA Pairs Matched  : 0
+
+[3.4] Knowledge Base Retrieval
+
+  KB Items Retrieved: 3
+
+  KB 1          : Topic="Mitoz", Relevance=95.0%
+
+  KB 2          : Topic="Mayoz", Relevance=85.0%
+
+  KB 3          : Topic="Mitoz ve Mayoz Karşılaştırma", Relevance=80.0%
+
+[3.5] Merged Results
+
+  Total Merged      : 8
+
+  By Source:
+
+    - Chunks        : 5
+
+    - KB            : 3
+
+    - QA Pairs      : 0
+
+[3.6] Context Built
+
+  Context Length    : 6714 chars
+
+[4] RERANK SCORES
+
+--------------------------------------------------------------------------------
+
+Max Score      : 0.1721
+
+Avg Score      : 0.0928
+
+Reranker Type  : alibaba
+
+Documents Reranked: 10
+
+[5] LLM GENERATION
+
+--------------------------------------------------------------------------------
+
+Model          : qwen/qwen3-32b
+
+Max Tokens     : 2048
+
+Temperature    : 0.7
+
+Context Length : 6.714 chars
+
+Query Length   : 12 chars
+
+Prompt Length  : 7.525 chars
+
+LLM Duration   : 21740.46 ms
+
+Response Status: 200
+
+[6] RESPONSE
+
+--------------------------------------------------------------------------------
+
+Answer Length  : 959 chars
+
+Confidence     : high
+
+Strategy       : hybrid_kb_rag
+
+[7] TIMING
+
+--------------------------------------------------------------------------------
+
+Total Processing: 26109.00 ms (26.11 s)
+
+Retrieval Time : 2974.00 ms
+
+LLM Time       : 23135.00 ms
+
+[8] SOURCES SUMMARY
+
+--------------------------------------------------------------------------------
+
+Chunks Used    : 5
+
+KB Items Used  : 3
+
+QA Pairs Used  : 0
+
+[9] APRAG PERSONALIZATION & ADAPTIVE LEARNING
+
+--------------------------------------------------------------------------------
+
+[9.0] Feature Flags & Session Settings
+
+Eğitsel-KBRAG Enabled: Yes
+
+Session Settings Loaded: Yes
+
+Components Active:
+
+  - cacs: ✅ Enabled
+
+  - zpd: ✅ Enabled
+
+  - bloom: ✅ Enabled
+
+  - cognitive_load: ✅ Enabled
+
+  - emoji_feedback: ✅ Enabled
+
+  - progressive_assessment: ✅ Enabled
+
+  - personalized_responses: ✅ Enabled
+
+[9.0.1] Student Profile
+
+Profile Exists        : Yes
+
+Average Understanding : 3.05
+
+Average Satisfaction  : 3.05
+
+Total Interactions    : 58
+
+Total Feedback Count  : 8
+
+[9.1] CACS Document Scoring Details
+
+CACS Applied          : Yes
+
+Documents Scored      : 3
+
+Scoring Details:
+
+  Doc 1 (unknown):
+
+    Final Score    : 59.75%
+
+    Base Score     : 95.00%
+
+    Personal Score : 35.00%
+
+    Global Score   : 50.00%
+
+    Context Score  : 50.00%
+
+    Rank           : 1
+
+  Doc 2 (unknown):
+
+    Final Score    : 56.75%
+
+    Base Score     : 85.00%
+
+    Personal Score : 35.00%
+
+    Global Score   : 50.00%
+
+    Context Score  : 50.00%
+
+    Rank           : 2
+
+  Doc 3 (unknown):
+
+    Final Score    : 55.25%
+
+    Base Score     : 80.00%
+
+    Personal Score : 35.00%
+
+    Global Score   : 50.00%
+
+    Context Score  : 50.00%
+
+    Rank           : 3
+
+[9.2] Pedagogical Context
+
+ZPD Recommended    : elementary
+
+Bloom Level         : remember
+
+Cognitive Load      : 0.32
+
+[9.3] Pedagogical Analysis Details
+
+ZPD Analysis:
+
+  Enabled           : Yes
+
+  Current Level     : intermediate
+
+  Recommended Level : elementary
+
+  Success Rate      : 0.00%
+
+  Calculation Method: zpd_calculator
+
+Bloom Taxonomy:
+
+  Enabled           : Yes
+
+  Level             : remember
+
+  Level Index        : 1
+
+  Confidence        : 100.00%
+
+  Detection Method  : bloom_detector
+
+Cognitive Load:
+
+  Enabled           : Yes
+
+  Total Load        : 0.32
+
+  Needs Simplification: No
+
+  Calculation Method: cognitive_load_manager
+
+[9.4] Personalization Factors
+
+  understanding_level: "intermediate"
+
+  explanation_style: "balanced"
+
+  difficulty_level: "elementary"
+
+  needs_examples: false
+
+  needs_visual_aids: false
+
+[9.5] Pedagogical Instructions (Sent to LLM)
+
+--------------------------------------------------------------------------------
+
+-- BLOOM SEVİYE TALİMATI ---
+
+Bu soru Bloom Taksonomisi Seviye 1 (remember) gerektiriyor.
+
+Öğrencinin mevcut seviyesi: elementary
+
+📝 Yanıt S-tratejisi:
+
+- Kısa, net ve doğrudan tanım ver
+
+- Hafızayı destekleyici ipuçları ekle
+
+- Anahtar kelimeleri vurgula
+
+----------------------------
+
+[9.6] Response Comparison
+
+Original Length      : 959 chars
+
+Personalized Length  : 649 chars
+
+Length Difference    : -310 chars
+
+Is Different         : Yes
+
+Similarity Ratio     : 53.76%
+
+[9.7] Original vs Personalized Response
+
+--------------------------------------------------------------------------------
+
+ORIGINAL:
+
+Profaz, **mitoz** sürecinde çekirdek bölünmesinin (karyokinez) başlangıç evresidir. Bu evrede **kromatin iplikler** belirgin hale gelmek için sıkılaşarak **kromozomlar** haline dönüşür. **Çekirdek zarı** ve **çekirdekçik**, hücre bölünmesi için hazırlık yapmak üzere parçalanmaya başlar.  
+
+**Sentrozomlar** (hayvan hücrelerinde) iğ ipliklerini oluşturur ve kutuplara doğru hareket eder. DNA eşlenmesi (replikasyon) **interfaz** evresindeki **S evresi** sırasında tamamlanmıştır; bu nedenle profazda DNA eşlenmesi değil, sadece yapısal değişimler gerçekleşir. Kromozomların ve iğ ipliklerinin organize olması, hücre bölünmesi için gerekli olan yapısal temelini oluşturur.  
+
+Profaz, hücrenin genetik malzemesini bölünmeye hazırladığı kritik bir aşamadır. Bu evre sonunda çekirdek zarı tamamen kaybolur ve kromozomlar hareket edebilir hale gelir. Mitozun diğer evrelerine (metafaz, anafaz, telofaz) geçiş, profazda başlayan bu yapısal dönüşümlerle mümkün olur.
+
+PERSONALIZED:
+
+Profaz, hücre bölünmesinin bir evresidir. Bu evrede, çekirdek bölünmesinin başlangıç aşaması vardır. Çekirdek zarı ve çekirdekçik, hücre bölünmesi için hazırlık yapmak üzere parçalanmaya başlar.
+
+Kromatin iplikler, sıkılaşarak kromozomlar haline gelir. Sentrozomlar, iğ ipliklerini oluşturur ve kutuplara doğru hareket eder. DNA eşlenmesi, interfaz evresindeki S evresi sırasında tamamlanmıştır. Bu nedenle, profazda DNA eşlenmesi değil, sadece yapısal değişimler gerçekleşir.
+
+Profaz, hücrenin genetik malzemesini bölünmeye hazırladığı kritik bir aşamadır. Bu evre sonunda, çekirdek zarı tamamen kaybolur ve kromozomlar hareket edebilir hale gelir.
+
+================================================================================
+
+Report Generated: 27.11.2025 20:23:51
+
+================================================================================
+

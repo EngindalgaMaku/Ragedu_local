@@ -91,7 +91,7 @@ export default function DocumentUploadModal({
   const [processingStep, setProcessingStep] = useState("");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const stepIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  
+
   // Use conversionMethod if provided, otherwise default to nanonets
   const useFallback = conversionMethod === "pdfplumber";
   const useMarker = conversionMethod === "marker";
@@ -124,19 +124,23 @@ export default function DocumentUploadModal({
 
       let stepIndex = 0;
       if (stepIntervalRef.current) clearInterval(stepIntervalRef.current);
-      stepIntervalRef.current = setInterval(() => {
-        if (stepIndex < steps.length) {
-          setProcessingStep(steps[stepIndex]);
-          stepIndex++;
-        } else {
-          // Loop back to show we're still processing
-          setProcessingStep("İşlem devam ediyor... Lütfen bekleyin.");
-        }
-      }, useMarker ? 8000 : 5000); // Slower for Marker (8s vs 5s)
+      stepIntervalRef.current = setInterval(
+        () => {
+          if (stepIndex < steps.length) {
+            setProcessingStep(steps[stepIndex]);
+            stepIndex++;
+          } else {
+            // Loop back to show we're still processing
+            setProcessingStep("İşlem devam ediyor... Lütfen bekleyin.");
+          }
+        },
+        useMarker ? 8000 : 5000
+      ); // Slower for Marker (8s vs 5s)
 
-      const result = useMarker 
-        ? await convertMarker(selectedFile, selectedSessionId)
-        : await convertPdfToMarkdown(selectedFile, useFallback, selectedSessionId);
+      // Marker için doğrudan Marker API'sini kullan, diğerlerinde mevcut PDF dönüştürme yolunu koru
+      const result = useMarker
+        ? await convertMarker(selectedFile)
+        : await convertPdfToMarkdown(selectedFile, useFallback);
 
       // Clear interval immediately after request completes
       if (stepIntervalRef.current) {
@@ -172,13 +176,13 @@ export default function DocumentUploadModal({
         clearInterval(stepIntervalRef.current);
         stepIntervalRef.current = null;
       }
-      
+
       console.error("Document conversion error:", e);
       console.error("Error type:", typeof e);
       console.error("Error keys:", Object.keys(e || {}));
-      
+
       let errorMsg = "Belge dönüştürme işlemi başarısız";
-      
+
       // Try to extract error message from various sources
       if (e?.message) {
         errorMsg = e.message;
@@ -186,24 +190,32 @@ export default function DocumentUploadModal({
         errorMsg = e.response.data.detail;
       } else if (e?.response?.data?.message) {
         errorMsg = e.response.data.message;
-      } else if (typeof e === 'string') {
+      } else if (typeof e === "string") {
         errorMsg = e;
-      } else if (e?.toString && e.toString() !== '[object Object]') {
+      } else if (e?.toString && e.toString() !== "[object Object]") {
         errorMsg = e.toString();
       } else if (e?.detail) {
         errorMsg = e.detail;
       }
-      
+
       // If it's a network error, provide more context
-      if (errorMsg.includes("Failed to fetch") || errorMsg.includes("NetworkError")) {
-        errorMsg = "Sunucuya bağlanılamadı. Lütfen internet bağlantınızı kontrol edin veya daha sonra tekrar deneyin.";
+      if (
+        errorMsg.includes("Failed to fetch") ||
+        errorMsg.includes("NetworkError")
+      ) {
+        errorMsg =
+          "Sunucuya bağlanılamadı. Lütfen internet bağlantınızı kontrol edin veya daha sonra tekrar deneyin.";
       }
-      
+
       // If it's an Internal Server Error, provide helpful message
-      if (errorMsg.includes("Internal Server Error") || errorMsg.includes("500")) {
-        errorMsg = "Sunucu hatası oluştu. Büyük/karmaşık PDF'ler için 'Hızlı Dönüştür' yöntemini deneyin veya daha küçük bir dosya kullanın.";
+      if (
+        errorMsg.includes("Internal Server Error") ||
+        errorMsg.includes("500")
+      ) {
+        errorMsg =
+          "Sunucu hatası oluştu. Büyük/karmaşık PDF'ler için 'Hızlı Dönüştür' yöntemini deneyin veya daha küçük bir dosya kullanın.";
       }
-      
+
       console.error("Final extracted error message:", errorMsg);
       setIsConverting(false); // CRITICAL: Stop converting state
       setProcessingStep(""); // Clear processing step
@@ -300,14 +312,14 @@ export default function DocumentUploadModal({
             </div>
             <div>
               <h2 className="text-xl font-bold text-foreground">
-                {conversionMethod === "pdfplumber" 
-                  ? "⚡ Hızlı Dönüştür" 
+                {conversionMethod === "pdfplumber"
+                  ? "⚡ Hızlı Dönüştür"
                   : conversionMethod === "marker"
                   ? "📚 Marker (En Kaliteli)"
                   : "🌐 Gelişmiş Dönüştür"}
               </h2>
               <p className="text-sm text-muted-foreground">
-                {conversionMethod === "pdfplumber" 
+                {conversionMethod === "pdfplumber"
                   ? "Basit metin PDF'ler için hızlı dönüştürme (30 sn)"
                   : conversionMethod === "marker"
                   ? "PDF/PPT/DOC için en kaliteli OCR ve düzen korumalı dönüştürme (5-15 dk)"
@@ -329,8 +341,18 @@ export default function DocumentUploadModal({
           {errorMessage && (
             <div className="mb-4 p-4 bg-red-50 dark:bg-red-900/20 border-2 border-red-300 dark:border-red-700 rounded-lg shadow-lg">
               <div className="flex items-start gap-3">
-                <svg className="w-6 h-6 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                <svg
+                  className="w-6 h-6 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2"
+                    d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
                 </svg>
                 <div className="flex-1 min-w-0">
                   <h4 className="text-base font-bold text-red-800 dark:text-red-300 mb-2">
@@ -348,14 +370,24 @@ export default function DocumentUploadModal({
                   className="text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 flex-shrink-0 p-1"
                   title="Kapat"
                 >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      d="M6 18L18 6M6 6l12 12"
+                    />
                   </svg>
                 </button>
               </div>
             </div>
           )}
-          
+
           {isConverting ? (
             // Processing State
             <div className="text-center py-4 sm:py-6 md:py-8">

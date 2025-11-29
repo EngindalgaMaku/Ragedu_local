@@ -48,6 +48,22 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
   const [extractingKBBatch, setExtractingKBBatch] = useState(false);
   const [expandedTopics, setExpandedTopics] = useState<Set<number>>(new Set());
   const [topicKBData, setTopicKBData] = useState<{ [key: number]: any }>({});
+  
+  // Topic extraction modal states
+  const [showExtractModal, setShowExtractModal] = useState(false);
+  const [systemPrompt, setSystemPrompt] = useState("");
+  
+  // KB extraction modal states
+  const [showKBExtractModal, setShowKBExtractModal] = useState(false);
+  const [kbSystemPrompt, setKbSystemPrompt] = useState("");
+  const [kbExtractType, setKbExtractType] = useState<"all" | "missing">("all");
+  
+  // QA Embedding calculation states
+  const [calculatingEmbeddings, setCalculatingEmbeddings] = useState(false);
+  const [embeddingProgress, setEmbeddingProgress] = useState<{
+    processed: number;
+    total: number;
+  } | null>(null);
 
   // Fetch topics
   const fetchTopics = async () => {
@@ -68,11 +84,17 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
     }
   };
 
+  // Open extract topics modal
+  const handleOpenExtractModal = () => {
+    setShowExtractModal(true);
+  };
+
   // Extract topics - ASYNC with polling!
   const handleExtractTopics = async () => {
     try {
       setExtracting(true);
       setError(null);
+      setShowExtractModal(false); // Close modal
 
       // Start extraction job (returns immediately)
       const response = await fetch(
@@ -80,6 +102,9 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_prompt: systemPrompt.trim() || null
+          }),
         }
       );
 
@@ -177,6 +202,12 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
     }
   };
 
+  // Open KB extraction modal
+  const handleOpenKBExtractModal = (type: "all" | "missing") => {
+    setKbExtractType(type);
+    setShowKBExtractModal(true);
+  };
+
   // KB: Extract knowledge base batch
   const handleExtractKBBatch = async () => {
     try {
@@ -184,6 +215,8 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
       setKbBatchJobId(null);
       setKbBatchStatus(null);
       setError(null);
+      setShowKBExtractModal(false); // Close modal
+      
       const response = await fetch(
         `/api/aprag/knowledge/extract-batch/${sessionId}`,
         {
@@ -192,6 +225,7 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
           body: JSON.stringify({
             session_id: sessionId,
             force_refresh: false,
+            system_prompt: kbSystemPrompt.trim() || null,
             extraction_config: {
               generate_qa_pairs: true,
               qa_pairs_per_topic: 15,
@@ -203,11 +237,16 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
       // Try to parse response even if status is not ok - backend might have started the job
       let data;
       try {
-        data = await response.json();
-      } catch (parseError) {
-        // If JSON parsing fails, check if response has text
-        const text = await response.text();
-        throw new Error(text || "KB oluşturulamadı");
+        const responseText = await response.text();
+        try {
+          data = JSON.parse(responseText);
+        } catch (parseError) {
+          // If JSON parsing fails, use text as error message
+          throw new Error(responseText || "KB oluşturulamadı");
+        }
+      } catch (e: any) {
+        // If reading response fails, throw the error
+        throw new Error(e.message || "KB oluşturulamadı");
       }
 
       // If we got a job_id, start polling even if response.ok is false
@@ -259,6 +298,8 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
       setKbBatchJobId(null);
       setKbBatchStatus(null);
       setError(null);
+      setShowKBExtractModal(false); // Close modal
+      
       const response = await fetch(
         `/api/aprag/knowledge/extract-batch-missing/${sessionId}`,
         {
@@ -267,6 +308,7 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
           body: JSON.stringify({
             session_id: sessionId,
             force_refresh: false,
+            system_prompt: kbSystemPrompt.trim() || null,
             extraction_config: {
               generate_qa_pairs: true,
               qa_pairs_per_topic: 15,
@@ -278,11 +320,16 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
       // Try to parse response even if status is not ok - backend might have started the job
       let data;
       try {
-        data = await response.json();
-      } catch (parseError) {
-        // If JSON parsing fails, check if response has text
-        const text = await response.text();
-        throw new Error(text || "KB oluşturulamadı");
+        const responseText = await response.text();
+        try {
+          data = JSON.parse(responseText);
+        } catch (parseError) {
+          // If JSON parsing fails, use text as error message
+          throw new Error(responseText || "KB oluşturulamadı");
+        }
+      } catch (e: any) {
+        // If reading response fails, throw the error
+        throw new Error(e.message || "KB oluşturulamadı");
       }
 
       // Check if all topics already have KB
@@ -611,6 +658,58 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
     await refreshKBComponent(topicId, "all");
   };
 
+  // Calculate QA embeddings batch
+  const handleCalculateQAEmbeddings = async () => {
+    try {
+      setCalculatingEmbeddings(true);
+      setEmbeddingProgress(null);
+      setError(null);
+      setSuccess(null);
+
+      const response = await fetch(
+        `/api/aprag/knowledge/qa-embeddings/calculate-batch/${sessionId}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { detail: errorText };
+        }
+        throw new Error(errorData.detail || "Embedding hesaplama başarısız");
+      }
+
+      const data = await response.json();
+      
+      if (data.success) {
+        setSuccess(
+          `✅ ${data.message || `Embedding'ler hesaplandı: ${data.processed}/${data.total} QA pair`}`
+        );
+        setEmbeddingProgress({
+          processed: data.processed || 0,
+          total: data.total || 0,
+        });
+      } else {
+        throw new Error(data.message || "Embedding hesaplama başarısız");
+      }
+    } catch (e: any) {
+      console.error("QA embedding calculation failed:", e);
+      setError(e.message || "QA embedding'leri hesaplanamadı");
+    } finally {
+      setCalculatingEmbeddings(false);
+      // Clear progress after 5 seconds
+      setTimeout(() => {
+        setEmbeddingProgress(null);
+      }, 5000);
+    }
+  };
+
   // DEPRECATED: Old regenerate function - keeping for reference
   const _oldRegenerateKBForTopic = async (topicId: number) => {
     try {
@@ -796,7 +895,7 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
         </div>
         <div className="flex gap-2">
           <button
-            onClick={handleExtractTopics}
+            onClick={handleOpenExtractModal}
             disabled={extracting}
             className="py-2 px-3 bg-indigo-600 text-white rounded-md text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2"
           >
@@ -829,7 +928,7 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
             )}
           </button>
           <button
-            onClick={handleExtractKBBatch}
+            onClick={() => handleOpenKBExtractModal("all")}
             disabled={extractingKBBatch || topics.length === 0}
             className="py-2 px-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-md text-sm font-medium hover:from-purple-700 hover:to-pink-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2"
             title="Tüm konular için bilgi tabanı ve soru-cevaplar oluştur"
@@ -862,7 +961,7 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
             )}
           </button>
           <button
-            onClick={handleExtractKBBatchMissing}
+            onClick={() => handleOpenKBExtractModal("missing")}
             disabled={extractingKBBatch || topics.length === 0}
             className="py-2 px-3 bg-gradient-to-r from-blue-600 to-cyan-600 text-white rounded-md text-sm font-medium hover:from-blue-700 hover:to-cyan-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2"
             title="Sadece eksik bilgi tabanı olan konular için bilgi tabanı oluştur"
@@ -894,6 +993,39 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
               <span>➕ Eksik KB'leri Oluştur</span>
             )}
           </button>
+          <button
+            onClick={handleCalculateQAEmbeddings}
+            disabled={calculatingEmbeddings || topics.length === 0}
+            className="py-2 px-3 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-md text-sm font-medium hover:from-emerald-700 hover:to-teal-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2"
+            title="QA pair'ler için embedding'leri hesapla (sonradan yapılabilir)"
+          >
+            {calculatingEmbeddings ? (
+              <>
+                <svg
+                  className="animate-spin h-4 w-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  ></circle>
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  ></path>
+                </svg>
+                <span>Hesaplanıyor...</span>
+              </>
+            ) : (
+              <span>🔢 QA Embedding Hesapla</span>
+            )}
+          </button>
         </div>
       </div>
 
@@ -917,6 +1049,12 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
                 {kbBatchStatus.current_topic_title
                   ? ` • Şu an: ${kbBatchStatus.current_topic_title}`
                   : ""}
+              </p>
+            )}
+            {embeddingProgress && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Embedding hesaplama: {embeddingProgress.processed}/
+                {embeddingProgress.total} QA pair işlendi
               </p>
             )}
           </div>
@@ -1317,6 +1455,186 @@ const TopicManagementPanel: React.FC<TopicManagementPanelProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* KB Extraction Modal */}
+      {showKBExtractModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-card border border-border rounded-lg shadow-xl max-w-2xl w-full">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h3 className="text-lg font-semibold text-foreground">
+                Bilgi Tabanı Oluşturma Ayarları
+              </h3>
+              <button
+                onClick={() => setShowKBExtractModal(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div className="px-6 py-4">
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-foreground mb-2">
+                  Sistem Prompt
+                </label>
+                <textarea
+                  value={kbSystemPrompt}
+                  onChange={(e) => setKbSystemPrompt(e.target.value)}
+                  placeholder="Bilgi tabanı oluşturma için sistem prompt'u girin..."
+                  className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground text-sm focus:ring-2 focus:ring-primary focus:border-primary min-h-[120px]"
+                  rows={5}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Bu prompt, bilgi tabanı oluşturma sırasında LLM'e gönderilecek. Özet, kavramlar, öğrenme hedefleri ve soru-cevapların nasıl oluşturulacağını belirler.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 px-6 py-4 border-t border-border">
+              <button
+                onClick={kbExtractType === "all" ? handleExtractKBBatch : handleExtractKBBatchMissing}
+                disabled={extractingKBBatch}
+                className="flex-1 py-2 px-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-md text-sm font-medium hover:from-purple-700 hover:to-pink-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center justify-center gap-2"
+              >
+                {extractingKBBatch ? (
+                  <>
+                    <svg
+                      className="animate-spin h-4 w-4"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      ></circle>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    <span>Oluşturuluyor...</span>
+                  </>
+                ) : (
+                  <span>Bilgi Tabanı Oluştur</span>
+                )}
+              </button>
+              <button
+                onClick={() => setShowKBExtractModal(false)}
+                disabled={extractingKBBatch}
+                className="flex-1 py-2 px-4 bg-secondary text-secondary-foreground rounded-md text-sm font-medium hover:bg-secondary/80 transition-colors"
+              >
+                İptal
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Topic Extraction Modal */}
+      {showExtractModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-card border border-border rounded-lg shadow-xl max-w-2xl w-full">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+              <h3 className="text-lg font-semibold text-foreground">
+                Konu Çıkarma Ayarları
+              </h3>
+              <button
+                onClick={() => setShowExtractModal(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+            <div className="px-6 py-4">
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-foreground mb-2">
+                  Sistem Prompt
+                </label>
+                <textarea
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  placeholder="Konu çıkarımı için sistem prompt'u girin..."
+                  className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground text-sm focus:ring-2 focus:ring-primary focus:border-primary min-h-[120px]"
+                  rows={5}
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Bu prompt, konu çıkarımı sırasında LLM'e gönderilecek. Konuların nasıl çıkarılacağını belirler.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2 px-6 py-4 border-t border-border">
+              <button
+                onClick={handleExtractTopics}
+                disabled={extracting}
+                className="flex-1 py-2 px-4 bg-indigo-600 text-white rounded-md text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center justify-center gap-2"
+              >
+                {extracting ? (
+                  <>
+                    <svg
+                      className="animate-spin h-4 w-4"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      ></circle>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    <span>Çıkarılıyor...</span>
+                  </>
+                ) : (
+                  <span>Konuları Çıkar</span>
+                )}
+              </button>
+              <button
+                onClick={() => setShowExtractModal(false)}
+                disabled={extracting}
+                className="flex-1 py-2 px-4 bg-secondary text-secondary-foreground rounded-md text-sm font-medium hover:bg-secondary/80 transition-colors"
+              >
+                İptal
+              </button>
+            </div>
           </div>
         </div>
       )}

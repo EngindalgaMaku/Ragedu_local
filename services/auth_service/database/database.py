@@ -91,26 +91,35 @@ class DatabaseManager:
     def apply_migrations(self, conn: sqlite3.Connection):
         """Apply database migrations for existing databases"""
         try:
-            # Check if last_activity column exists in user_sessions
-            cursor = conn.execute("PRAGMA table_info(user_sessions)")
-            columns = [row[1] for row in cursor.fetchall()]
+            # Check if user_sessions table exists before trying to modify it
+            cursor = conn.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='user_sessions'
+            """)
             
-            if 'last_activity' not in columns:
-                logger.info("Adding last_activity column to user_sessions table")
-                # SQLite doesn't allow DEFAULT CURRENT_TIMESTAMP in ALTER TABLE
-                # So we add it as nullable first, then update existing rows
-                conn.execute("""
-                    ALTER TABLE user_sessions 
-                    ADD COLUMN last_activity TIMESTAMP
-                """)
-                # Update existing rows with created_at value
-                conn.execute("""
-                    UPDATE user_sessions 
-                    SET last_activity = created_at 
-                    WHERE last_activity IS NULL
-                """)
-                conn.commit()
-                logger.info("Migration: last_activity column added and populated")
+            if cursor.fetchone():
+                # Check if last_activity column exists in user_sessions
+                cursor = conn.execute("PRAGMA table_info(user_sessions)")
+                columns = [row[1] for row in cursor.fetchall()]
+                
+                if 'last_activity' not in columns:
+                    logger.info("Adding last_activity column to user_sessions table")
+                    # SQLite doesn't allow DEFAULT CURRENT_TIMESTAMP in ALTER TABLE
+                    # So we add it as nullable first, then update existing rows
+                    conn.execute("""
+                        ALTER TABLE user_sessions
+                        ADD COLUMN last_activity TIMESTAMP
+                    """)
+                    # Update existing rows with created_at value
+                    conn.execute("""
+                        UPDATE user_sessions
+                        SET last_activity = created_at
+                        WHERE last_activity IS NULL
+                    """)
+                    conn.commit()
+                    logger.info("Migration: last_activity column added and populated")
+            else:
+                logger.info("user_sessions table not found, skipping last_activity migration")
             
             # Apply APRAG migrations (003_create_aprag_tables.sql)
             self.apply_aprag_migrations(conn)
@@ -120,9 +129,18 @@ class DatabaseManager:
             
             # Apply Foreign Key Fix migration (005_fix_aprag_foreign_keys.sql)
             self.apply_foreign_key_fix_migration(conn)
+            
+            # Apply Module migrations (009_create_module_tables.sql)
+            self.apply_module_migrations(conn)
                 
         except Exception as e:
             logger.warning(f"Migration warning: {e}")
+            # Even if other migrations fail, still try to apply module migrations
+            try:
+                logger.info("Attempting to apply module migrations despite earlier migration warnings...")
+                self.apply_module_migrations(conn)
+            except Exception as module_error:
+                logger.warning(f"Module migration also failed: {module_error}")
     
     def create_aprag_tables(self, conn: sqlite3.Connection):
         """Create APRAG tables (for new databases)"""
@@ -302,6 +320,165 @@ class DatabaseManager:
         except Exception as e:
             logger.warning(f"Foreign Key Fix migration warning (non-critical): {e}")
     
+    def apply_module_migrations(self, conn: sqlite3.Connection):
+        """Apply Module Extraction System migrations (009_create_module_tables.sql)"""
+        try:
+            # Check if ALL module tables exist (must check all 7, not just 'courses')
+            required_tables = [
+                'courses', 'course_modules', 'module_progress',
+                'curriculum_standards', 'module_templates',
+                'module_extraction_jobs', 'module_topic_relationships'
+            ]
+            
+            cursor = conn.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name IN ({})
+            """.format(','.join('?' * len(required_tables))), required_tables)
+            
+            existing_tables = [row[0] for row in cursor.fetchall()]
+            
+            # Only skip if ALL 7 tables exist
+            if len(existing_tables) == len(required_tables):
+                logger.info("All module tables already exist, skipping migration")
+                return
+            
+            # Log which tables are missing for debugging
+            missing_tables = set(required_tables) - set(existing_tables)
+            if missing_tables:
+                logger.info(f"Missing module tables detected: {missing_tables}")
+            
+            logger.info("Applying Module migrations...")
+            
+            # Read migration file
+            migration_paths = [
+                os.path.join(os.path.dirname(__file__), "migrations/009_create_module_tables.sql"),
+                os.path.join(os.path.dirname(__file__), "../database/migrations/009_create_module_tables.sql"),
+            ]
+            
+            migration_path = None
+            for path in migration_paths:
+                if os.path.exists(path):
+                    migration_path = path
+                    break
+            
+            if migration_path and os.path.exists(migration_path):
+                with open(migration_path, 'r', encoding='utf-8') as f:
+                    migration_sql = f.read()
+                
+                # CRITICAL FIX: Handle partial migration scenarios
+                # If some tables exist but migration fails, create missing tables individually
+                try:
+                    # Try full migration first
+                    conn.executescript(migration_sql)
+                    conn.commit()
+                    logger.info("Module migrations applied successfully")
+                except Exception as migration_error:
+                    logger.warning(f"Full migration failed: {migration_error}")
+                    logger.info("Attempting to create missing tables individually...")
+                    
+                    # Create only the missing tables using individual CREATE statements
+                    self._create_missing_module_tables(conn, missing_tables)
+            else:
+                logger.warning(f"Module migration file not found at expected paths: {migration_paths}")
+                
+        except Exception as e:
+            logger.warning(f"Module migration warning (non-critical): {e}")
+    
+    def _create_missing_module_tables(self, conn: sqlite3.Connection, missing_tables):
+        """Create missing module tables individually to handle partial migration scenarios"""
+        try:
+            # Define individual table creation statements for missing tables
+            table_definitions = {
+                'curriculum_standards': """
+                    CREATE TABLE IF NOT EXISTS curriculum_standards (
+                        standard_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        curriculum_type VARCHAR(100) NOT NULL,
+                        subject_area VARCHAR(100) NOT NULL,
+                        grade_level VARCHAR(50) NOT NULL,
+                        standard_code VARCHAR(100) NOT NULL,
+                        standard_title VARCHAR(500) NOT NULL,
+                        standard_description TEXT,
+                        parent_standard_id INTEGER,
+                        standard_level INTEGER DEFAULT 1,
+                        expected_outcomes TEXT,
+                        assessment_criteria TEXT,
+                        time_allocation_hours INTEGER,
+                        official_source_url TEXT,
+                        last_updated_official DATE,
+                        is_active BOOLEAN DEFAULT TRUE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (parent_standard_id) REFERENCES curriculum_standards(standard_id) ON DELETE SET NULL,
+                        UNIQUE(curriculum_type, subject_area, grade_level, standard_code)
+                    )
+                """,
+                'courses': """
+                    CREATE TABLE IF NOT EXISTS courses (
+                        course_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        course_code VARCHAR(50) NOT NULL,
+                        course_name VARCHAR(255) NOT NULL,
+                        course_description TEXT,
+                        curriculum_standard VARCHAR(100) NOT NULL,
+                        subject_area VARCHAR(100) NOT NULL,
+                        grade_level VARCHAR(50) NOT NULL,
+                        academic_year VARCHAR(20),
+                        total_hours INTEGER,
+                        difficulty_level VARCHAR(20) DEFAULT 'intermediate',
+                        language VARCHAR(10) DEFAULT 'tr',
+                        is_active BOOLEAN DEFAULT TRUE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(course_code)
+                    )
+                """,
+                # Add other tables as needed...
+            }
+            
+            # Create missing tables
+            for table_name in missing_tables:
+                if table_name in table_definitions:
+                    logger.info(f"Creating missing table: {table_name}")
+                    conn.execute(table_definitions[table_name])
+            
+            # Create indexes for curriculum_standards
+            if 'curriculum_standards' in missing_tables:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_curriculum_standards_type ON curriculum_standards(curriculum_type, subject_area, grade_level)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_curriculum_standards_code ON curriculum_standards(standard_code)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_curriculum_standards_active ON curriculum_standards(is_active)")
+            
+            conn.commit()
+            logger.info(f"Successfully created missing tables: {missing_tables}")
+            
+        except Exception as e:
+            logger.error(f"Failed to create missing module tables: {e}")
+    
+    def create_module_tables(self, conn: sqlite3.Connection):
+        """Create Module tables (for new databases)"""
+        try:
+            # Read migration file
+            migration_paths = [
+                os.path.join(os.path.dirname(__file__), "migrations/009_create_module_tables.sql"),
+                os.path.join(os.path.dirname(__file__), "../database/migrations/009_create_module_tables.sql"),
+            ]
+            
+            migration_path = None
+            for path in migration_paths:
+                if os.path.exists(path):
+                    migration_path = path
+                    break
+            
+            if migration_path and os.path.exists(migration_path):
+                with open(migration_path, 'r', encoding='utf-8') as f:
+                    migration_sql = f.read()
+                
+                # Execute migration (IF NOT EXISTS will prevent errors if tables already exist)
+                conn.executescript(migration_sql)
+                logger.info("Module tables created successfully")
+            else:
+                logger.warning(f"Module migration file not found at expected paths: {migration_paths}")
+                
+        except Exception as e:
+            logger.warning(f"Module table creation warning (non-critical): {e}")
+    
     def create_tables(self, conn: sqlite3.Connection):
         """Create all database tables"""
         
@@ -362,6 +539,9 @@ class DatabaseManager:
         
         # Create Topic tables (for new databases)
         self.create_topic_tables(conn)
+        
+        # Create Module tables (for new databases)
+        self.create_module_tables(conn)
         
         conn.commit()
         logger.info("Database tables created successfully")

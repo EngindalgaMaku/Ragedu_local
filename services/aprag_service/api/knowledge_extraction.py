@@ -37,6 +37,293 @@ BATCH_KB_JOBS: Dict[str, Dict[str, Any]] = {}
 
 
 # ============================================================================
+# Helper Functions for QA Embeddings
+# ============================================================================
+
+async def calculate_and_store_qa_embedding(
+    qa_id: int,
+    question: str,
+    embedding_model: Optional[str] = None,
+    db: Optional[DatabaseManager] = None
+) -> bool:
+    """
+    Calculate embedding for a QA pair question and store it in database
+    
+    Args:
+        qa_id: QA pair ID
+        question: Question text
+        embedding_model: Embedding model to use (defaults to DEFAULT_EMBEDDING_MODEL)
+        db: Database manager instance
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        if not db:
+            db = get_db()
+        
+        if not embedding_model:
+            embedding_model = os.getenv("DEFAULT_EMBEDDING_MODEL", "text-embedding-v4")
+        
+        logger.info(f"📦 Calculating embedding for QA {qa_id} using model {embedding_model}...")
+        
+        # Calculate embedding
+        response = requests.post(
+            f"{MODEL_INFERENCER_URL}/embeddings",
+            json={
+                "texts": [question],
+                "model": embedding_model
+            },
+            timeout=15
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"❌ Embedding calculation failed for QA {qa_id}: {response.status_code}")
+            return False
+        
+        data = response.json()
+        embeddings = data.get("embeddings", [])
+        
+        if not embeddings or len(embeddings) == 0:
+            logger.error(f"❌ No embedding returned for QA {qa_id}")
+            return False
+        
+        embedding = embeddings[0]
+        embedding_dim = len(embedding)
+        
+        # Store in database
+        with db.get_connection() as conn:
+            # First ensure question_embedding column exists (apply migration if needed)
+            cursor_check = conn.execute("PRAGMA table_info(topic_qa_pairs)")
+            columns = {row[1]: row[2] for row in cursor_check.fetchall()}
+            
+            if 'question_embedding' not in columns:
+                logger.info("⚠️ question_embedding column not found. Applying migration...")
+                try:
+                    # Apply migration directly
+                    conn.execute("""
+                        ALTER TABLE topic_qa_pairs 
+                        ADD COLUMN question_embedding TEXT
+                    """)
+                    conn.execute("""
+                        ALTER TABLE topic_qa_pairs 
+                        ADD COLUMN embedding_model VARCHAR(100)
+                    """)
+                    conn.execute("""
+                        ALTER TABLE topic_qa_pairs 
+                        ADD COLUMN embedding_dim INTEGER
+                    """)
+                    conn.execute("""
+                        ALTER TABLE topic_qa_pairs 
+                        ADD COLUMN embedding_updated_at TIMESTAMP
+                    """)
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_qa_pairs_topic_active 
+                        ON topic_qa_pairs(topic_id, is_active)
+                    """)
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_qa_pairs_embedding_model 
+                        ON topic_qa_pairs(embedding_model)
+                    """)
+                    conn.commit()
+                    logger.info("✅ question_embedding column added successfully")
+                except Exception as e:
+                    logger.error(f"❌ Failed to add question_embedding column: {e}")
+                    conn.rollback()
+                    return False
+            
+            # Now update with the column
+            conn.execute("""
+                UPDATE topic_qa_pairs
+                SET question_embedding = ?,
+                    embedding_model = ?,
+                    embedding_dim = ?,
+                    embedding_updated_at = CURRENT_TIMESTAMP
+                WHERE qa_id = ?
+            """, (
+                json.dumps(embedding, ensure_ascii=False),
+                embedding_model,
+                embedding_dim,
+                qa_id
+            ))
+            conn.commit()
+        
+        logger.info(f"✅ Embedding stored for QA {qa_id} (dim={embedding_dim}, model={embedding_model})")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error calculating/storing embedding for QA {qa_id}: {e}")
+        return False
+
+
+async def calculate_and_store_qa_embeddings_batch(
+    qa_pairs: List[Dict[str, Any]],
+    embedding_model: Optional[str] = None,
+    db: Optional[DatabaseManager] = None
+) -> int:
+    """
+    Calculate embeddings for multiple QA pairs in batch and store them
+    
+    Args:
+        qa_pairs: List of QA pairs with qa_id and question
+        embedding_model: Embedding model to use
+        db: Database manager instance
+        
+    Returns:
+        Number of successfully processed embeddings
+    """
+    try:
+        if not db:
+            db = get_db()
+        
+        if not embedding_model:
+            embedding_model = os.getenv("DEFAULT_EMBEDDING_MODEL", "text-embedding-v4")
+        
+        if not qa_pairs:
+            return 0
+        
+        logger.info(f"📦 Calculating embeddings for {len(qa_pairs)} QA pairs in batch...")
+        
+        # Prepare questions for batch embedding
+        questions = [qa.get("question", "") for qa in qa_pairs if qa.get("question")]
+        
+        if not questions:
+            logger.warning("⚠️ No questions found in QA pairs for embedding")
+            return 0
+        
+        # Calculate embeddings in batch
+        response = requests.post(
+            f"{MODEL_INFERENCER_URL}/embeddings",
+            json={
+                "texts": questions,
+                "model": embedding_model
+            },
+            timeout=30  # Increased timeout for batch
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"❌ Batch embedding calculation failed: {response.status_code}")
+            # Fallback to individual calculations
+            success_count = 0
+            for qa in qa_pairs:
+                if qa.get("qa_id") and qa.get("question"):
+                    if await calculate_and_store_qa_embedding(
+                        qa["qa_id"], qa["question"], embedding_model, db
+                    ):
+                        success_count += 1
+            return success_count
+        
+        data = response.json()
+        embeddings = data.get("embeddings", [])
+        
+        if len(embeddings) != len(questions):
+            logger.warning(f"⚠️ Expected {len(questions)} embeddings, got {len(embeddings)}")
+            # Fallback to individual calculations
+            success_count = 0
+            for qa in qa_pairs:
+                if qa.get("qa_id") and qa.get("question"):
+                    if await calculate_and_store_qa_embedding(
+                        qa["qa_id"], qa["question"], embedding_model, db
+                    ):
+                        success_count += 1
+            return success_count
+        
+        # Store all embeddings
+        success_count = 0
+        embedding_model_name = embedding_model
+        with db.get_connection() as conn:
+            # First ensure question_embedding column exists (apply migration if needed)
+            cursor_check = conn.execute("PRAGMA table_info(topic_qa_pairs)")
+            columns = {row[1]: row[2] for row in cursor_check.fetchall()}
+            
+            if 'question_embedding' not in columns:
+                logger.info("⚠️ question_embedding column not found. Applying migration...")
+                try:
+                    # Apply migration directly
+                    conn.execute("""
+                        ALTER TABLE topic_qa_pairs 
+                        ADD COLUMN question_embedding TEXT
+                    """)
+                    conn.execute("""
+                        ALTER TABLE topic_qa_pairs 
+                        ADD COLUMN embedding_model VARCHAR(100)
+                    """)
+                    conn.execute("""
+                        ALTER TABLE topic_qa_pairs 
+                        ADD COLUMN embedding_dim INTEGER
+                    """)
+                    conn.execute("""
+                        ALTER TABLE topic_qa_pairs 
+                        ADD COLUMN embedding_updated_at TIMESTAMP
+                    """)
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_qa_pairs_topic_active 
+                        ON topic_qa_pairs(topic_id, is_active)
+                    """)
+                    conn.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_qa_pairs_embedding_model 
+                        ON topic_qa_pairs(embedding_model)
+                    """)
+                    conn.commit()
+                    logger.info("✅ question_embedding column added successfully")
+                except Exception as e:
+                    logger.error(f"❌ Failed to add question_embedding column: {e}")
+                    conn.rollback()
+                    # Fallback to individual calculations
+                    success_count = 0
+                    for qa in qa_pairs:
+                        if qa.get("qa_id") and qa.get("question"):
+                            if await calculate_and_store_qa_embedding(
+                                qa["qa_id"], qa["question"], embedding_model, db
+                            ):
+                                success_count += 1
+                    return success_count
+            
+            # Now update with the column
+            for i, qa in enumerate(qa_pairs):
+                if not qa.get("qa_id") or not qa.get("question"):
+                    continue
+                
+                embedding = embeddings[i]
+                embedding_dim = len(embedding)
+                
+                try:
+                    conn.execute("""
+                        UPDATE topic_qa_pairs
+                        SET question_embedding = ?,
+                            embedding_model = ?,
+                            embedding_dim = ?,
+                            embedding_updated_at = CURRENT_TIMESTAMP
+                        WHERE qa_id = ?
+                    """, (
+                        json.dumps(embedding, ensure_ascii=False),
+                        embedding_model_name,
+                        embedding_dim,
+                        qa["qa_id"]
+                    ))
+                    success_count += 1
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to store embedding for QA {qa.get('qa_id')}: {e}")
+            
+            conn.commit()
+        
+        logger.info(f"✅ Batch embedding completed: {success_count}/{len(qa_pairs)} QA pairs processed")
+        return success_count
+        
+    except Exception as e:
+        logger.error(f"❌ Error in batch embedding calculation: {e}")
+        # Fallback to individual calculations
+        success_count = 0
+        for qa in qa_pairs:
+            if qa.get("qa_id") and qa.get("question"):
+                if await calculate_and_store_qa_embedding(
+                    qa["qa_id"], qa["question"], embedding_model, db
+                ):
+                    success_count += 1
+        return success_count
+
+
+# ============================================================================
 # Request/Response Models
 # ============================================================================
 
@@ -44,12 +331,14 @@ class KnowledgeExtractionRequest(BaseModel):
     """Request model for knowledge extraction"""
     topic_id: int
     force_refresh: bool = False  # Force re-extraction even if exists
+    system_prompt: Optional[str] = None
 
 
 class BatchKnowledgeExtractionRequest(BaseModel):
     """Request model for batch knowledge extraction"""
     session_id: str
     force_refresh: bool = False
+    system_prompt: Optional[str] = None
     extraction_config: Optional[Dict[str, Any]] = {
         "generate_qa_pairs": True,
         "qa_pairs_per_topic": 15,
@@ -140,10 +429,6 @@ def translate_qa_pairs(qa_pairs: List[Dict]) -> List[Dict]:
         translated.append(translated_qa)
     return translated
 
-def get_db() -> DatabaseManager:
-    """Get database manager dependency"""
-    db_path = os.getenv("APRAG_DB_PATH", "/app/data/rag_assistant.db")
-    return DatabaseManager(db_path)
 
 
 def get_session_model(session_id: str) -> str:
@@ -317,10 +602,16 @@ def filter_chunks_by_topic(chunks: List[Dict], topic_keywords: List[str], relate
 # LLM Knowledge Extraction Functions
 # ============================================================================
 
-async def extract_topic_summary(topic_title: str, chunks_text: str, model: str = "llama-3.1-8b-instant") -> str:
+async def extract_topic_summary(topic_title: str, chunks_text: str, model: str = "llama-3.1-8b-instant", system_prompt: Optional[str] = None) -> str:
     """Extract comprehensive topic summary using LLM (always in Turkish)"""
     
-    prompt = f"""Sen bir TÜRKÇE eğitim içeriği uzmanısın. Aşağıdaki ders materyallerinden "{topic_title}" konusu için kapsamlı ve TAMAMEN TÜRKÇE bir özet oluştur.
+    # Use custom system prompt if provided, otherwise use default
+    if system_prompt:
+        base_instruction = system_prompt.strip()
+        logger.info(f"📝 [KB EXTRACTION] Using custom system prompt for summary: {base_instruction[:100]}...")
+        prompt = f"""{base_instruction}
+
+"{topic_title}" konusu için kapsamlı ve TAMAMEN TÜRKÇE bir özet oluştur.
 
 KONU: {topic_title}
 
@@ -373,10 +664,16 @@ YANITINI SADECE TÜRKÇE OLARAK YAZ.
         return ""
 
 
-async def extract_key_concepts(topic_title: str, chunks_text: str, model: str = "llama3:8b") -> List[Dict]:
+async def extract_key_concepts(topic_title: str, chunks_text: str, model: str = "llama3:8b", system_prompt: Optional[str] = None) -> List[Dict]:
     """Extract key concepts with definitions"""
     
-    prompt = f""""{topic_title}" konusundaki temel kavramları listele ve her birini kısaca tanımla.
+    # Use custom system prompt if provided
+    if system_prompt:
+        base_instruction = system_prompt.strip()
+        logger.info(f"💡 [KB EXTRACTION] Using custom system prompt for concepts: {base_instruction[:100]}...")
+        prompt = f"""{base_instruction}
+
+"{topic_title}" konusundaki temel kavramları listele ve her birini kısaca tanımla.
 
 MATERYAL:
 {chunks_text[:10000]}
@@ -437,10 +734,16 @@ Sadece JSON çıktısı ver, başka açıklama yapma."""
         return []
 
 
-async def extract_learning_objectives(topic_title: str, chunks_text: str, model: str = "llama3:8b") -> List[Dict]:
+async def extract_learning_objectives(topic_title: str, chunks_text: str, model: str = "llama3:8b", system_prompt: Optional[str] = None) -> List[Dict]:
     """Extract Bloom's Taxonomy-aligned learning objectives"""
     
-    prompt = f""""{topic_title}" konusu için Bloom Taksonomisine uygun öğrenme hedefleri oluştur.
+    # Use custom system prompt if provided
+    if system_prompt:
+        base_instruction = system_prompt.strip()
+        logger.info(f"🎯 [KB EXTRACTION] Using custom system prompt for objectives: {base_instruction[:100]}...")
+        prompt = f"""{base_instruction}
+
+"{topic_title}" konusu için Bloom Taksonomisine uygun öğrenme hedefleri oluştur.
 
 BLOOM TAKSONOMİSİ SEVİYELERİ (TÜRKÇE İSİMLER KULLAN):
 1. Hatırlama: Temel bilgileri hatırlar
@@ -845,10 +1148,16 @@ UNUTMA: Bu bir TÜRKÇE eğitim materyali - her kelimen Türkçe olmalı!"""
         return []
 
 
-async def extract_examples_and_applications(topic_title: str, chunks_text: str, model: str = "llama3:8b") -> List[Dict]:
+async def extract_examples_and_applications(topic_title: str, chunks_text: str, model: str = "llama3:8b", system_prompt: Optional[str] = None) -> List[Dict]:
     """Extract real-world examples and applications"""
     
-    prompt = f""""{topic_title}" konusu için gerçek hayat örnekleri ve uygulama senaryoları oluştur.
+    # Use custom system prompt if provided
+    if system_prompt:
+        base_instruction = system_prompt.strip()
+        logger.info(f"📚 [KB EXTRACTION] Using custom system prompt for examples: {base_instruction[:100]}...")
+        prompt = f"""{base_instruction}
+
+"{topic_title}" konusu için gerçek hayat örnekleri ve uygulama senaryoları oluştur.
 
 MATERYAL:
 {chunks_text[:10000]}
@@ -1120,7 +1429,7 @@ def calculate_quality_score(summary: str, concepts: List, objectives: List, qa_p
 # ============================================================================
 
 @router.post("/extract/{topic_id}")
-async def extract_knowledge_for_topic(topic_id: int, request: KnowledgeExtractionRequest = None):
+async def extract_knowledge_for_topic(topic_id: int, request: KnowledgeExtractionRequest = None, system_prompt: Optional[str] = None):
     """
     Extract comprehensive structured knowledge for a topic
     
@@ -1129,6 +1438,11 @@ async def extract_knowledge_for_topic(topic_id: int, request: KnowledgeExtractio
     2. Extracts summary, concepts, objectives
     3. Generates examples and applications
     4. Stores in topic_knowledge_base table
+    
+    Args:
+        topic_id: Topic ID to extract knowledge for
+        request: Optional extraction request with force_refresh flag
+        system_prompt: Optional custom system prompt for LLM extraction
     """
     
     logger.info(f"🔄 [KB DEBUG] Starting knowledge extraction for topic_id={topic_id}")
@@ -1207,24 +1521,27 @@ async def extract_knowledge_for_topic(topic_id: int, request: KnowledgeExtractio
         extraction_start = datetime.now()
         logger.info(f"🚀 [KB DEBUG] Starting LLM extraction pipeline...")
         
+        # Get system_prompt from request if provided
+        system_prompt = request.system_prompt if request else None
+        
         # 1. Summary
         logger.info(f"📝 [KB DEBUG] Step 1: Extracting topic summary...")
-        summary = await extract_topic_summary(topic["topic_title"], chunks_text, model_to_use)
+        summary = await extract_topic_summary(topic["topic_title"], chunks_text, model_to_use, system_prompt)
         logger.info(f"📝 [KB DEBUG] Summary extracted: {len(summary)} characters")
         
         # 2. Key Concepts
         logger.info(f"💡 [KB DEBUG] Step 2: Extracting key concepts...")
-        concepts = await extract_key_concepts(topic["topic_title"], chunks_text, model_to_use)
+        concepts = await extract_key_concepts(topic["topic_title"], chunks_text, model_to_use, system_prompt)
         logger.info(f"💡 [KB DEBUG] Extracted {len(concepts)} concepts")
         
         # 3. Learning Objectives
         logger.info(f"🎯 [KB DEBUG] Step 3: Extracting learning objectives...")
-        objectives = await extract_learning_objectives(topic["topic_title"], chunks_text, model_to_use)
+        objectives = await extract_learning_objectives(topic["topic_title"], chunks_text, model_to_use, system_prompt)
         logger.info(f"🎯 [KB DEBUG] Extracted {len(objectives)} learning objectives")
         
         # 4. Examples
         logger.info(f"📚 [KB DEBUG] Step 4: Extracting examples and applications...")
-        examples = await extract_examples_and_applications(topic["topic_title"], chunks_text, model_to_use)
+        examples = await extract_examples_and_applications(topic["topic_title"], chunks_text, model_to_use, system_prompt)
         logger.info(f"📚 [KB DEBUG] Extracted {len(examples)} examples")
         
         extraction_time = (datetime.now() - extraction_start).total_seconds()
@@ -1290,8 +1607,9 @@ async def extract_knowledge_for_topic(topic_id: int, request: KnowledgeExtractio
 
                 if qa_pairs:
                     with db.get_connection() as conn:
+                        qa_ids = []
                         for qa in qa_pairs:
-                            conn.execute(
+                            cursor = conn.execute(
                                 """
                                 INSERT INTO topic_qa_pairs (
                                     topic_id, question, answer, explanation,
@@ -1315,8 +1633,22 @@ async def extract_knowledge_for_topic(topic_id: int, request: KnowledgeExtractio
                                     model_to_use,
                                 ),
                             )
+                            qa_ids.append({
+                                "qa_id": cursor.lastrowid,
+                                "question": qa.get("question", "")
+                            })
                         conn.commit()
                         qa_pairs_generated = len(qa_pairs)
+                        
+                        # Calculate and store embeddings for new QA pairs
+                        if qa_ids:
+                            logger.info(f"📦 Calculating embeddings for {len(qa_ids)} new QA pairs...")
+                            embedding_model = os.getenv("DEFAULT_EMBEDDING_MODEL", "text-embedding-v4")
+                            await calculate_and_store_qa_embeddings_batch(
+                                qa_pairs=qa_ids,
+                                embedding_model=embedding_model,
+                                db=db
+                            )
         except Exception as e:
             logger.error(
                 f"Error generating QA pairs inside knowledge extraction for topic {topic_id}: {e}"
@@ -1445,6 +1777,7 @@ async def _run_batch_extraction_job(
         errors: List[Dict[str, Any]] = []
 
         force_refresh = bool(request_data.get("force_refresh", False))
+        system_prompt = request_data.get("system_prompt")
         extraction_config = request_data.get("extraction_config") or {}
         generate_qa_pairs = extraction_config.get("generate_qa_pairs", True)
         qa_pairs_per_topic = extraction_config.get("qa_pairs_per_topic", 15)
@@ -1465,7 +1798,7 @@ async def _run_batch_extraction_job(
                     topic_id=topic_id,
                     force_refresh=force_refresh,
                 )
-                result = await extract_knowledge_for_topic(topic_id, extraction_req)
+                result = await extract_knowledge_for_topic(topic_id, extraction_req, system_prompt)
 
                 # Generate QA pairs if requested
                 if generate_qa_pairs:
@@ -1654,9 +1987,10 @@ async def generate_qa_pairs_endpoint(topic_id: int, request: QAGenerationRequest
         )
         
         # Store in database
+        qa_ids = []
         with db.get_connection() as conn:
             for qa in qa_pairs:
-                conn.execute("""
+                cursor = conn.execute("""
                     INSERT INTO topic_qa_pairs (
                         topic_id, question, answer, explanation,
                         difficulty_level, question_type, bloom_taxonomy_level,
@@ -1674,8 +2008,22 @@ async def generate_qa_pairs_endpoint(topic_id: int, request: QAGenerationRequest
                     "llm_generated",
                     "llama-3.1-8b-instant"
                 ))
+                qa_ids.append({
+                    "qa_id": cursor.lastrowid,
+                    "question": qa["question"]
+                })
             
             conn.commit()
+        
+        # Calculate and store embeddings for new QA pairs
+        if qa_ids:
+            logger.info(f"📦 Calculating embeddings for {len(qa_ids)} new QA pairs...")
+            embedding_model = os.getenv("DEFAULT_EMBEDDING_MODEL", "text-embedding-v4")
+            await calculate_and_store_qa_embeddings_batch(
+                qa_pairs=qa_ids,
+                embedding_model=embedding_model,
+                db=db
+            )
         
         return {
             "success": True,
@@ -2245,4 +2593,170 @@ async def refresh_all_components(topic_id: int, request: SelectiveRefreshRequest
     logger.info(f"✅ [SELECTIVE REFRESH] ALL components updated for topic {topic_id}")
     
     return result
+
+
+@router.post("/qa-embeddings/calculate-batch/{session_id}")
+async def calculate_qa_embeddings_batch(
+    session_id: str,
+    topic_id: Optional[int] = None,
+    embedding_model: Optional[str] = None
+):
+    """
+    Calculate and store embeddings for QA pairs that don't have embeddings yet.
+    
+    Args:
+        session_id: Session ID to filter QA pairs
+        topic_id: Optional topic ID to limit to specific topic (if None, processes all topics in session)
+        embedding_model: Optional embedding model to use (defaults to DEFAULT_EMBEDDING_MODEL)
+    
+    Returns:
+        Dict with success status and statistics
+    """
+    try:
+        db = get_db()
+        
+        if not embedding_model:
+            embedding_model = os.getenv("DEFAULT_EMBEDDING_MODEL", "text-embedding-v4")
+        
+        # Get QA pairs without embeddings
+        with db.get_connection() as conn:
+            if topic_id:
+                # First ensure question_embedding column exists (apply migration if needed)
+                cursor_check = conn.execute("PRAGMA table_info(topic_qa_pairs)")
+                columns = {row[1]: row[2] for row in cursor_check.fetchall()}
+                
+                if 'question_embedding' not in columns:
+                    logger.info("⚠️ question_embedding column not found. Applying migration...")
+                    try:
+                        # Apply migration directly
+                        conn.execute("""
+                            ALTER TABLE topic_qa_pairs 
+                            ADD COLUMN question_embedding TEXT
+                        """)
+                        conn.execute("""
+                            ALTER TABLE topic_qa_pairs 
+                            ADD COLUMN embedding_model VARCHAR(100)
+                        """)
+                        conn.execute("""
+                            ALTER TABLE topic_qa_pairs 
+                            ADD COLUMN embedding_dim INTEGER
+                        """)
+                        conn.execute("""
+                            ALTER TABLE topic_qa_pairs 
+                            ADD COLUMN embedding_updated_at TIMESTAMP
+                        """)
+                        conn.execute("""
+                            CREATE INDEX IF NOT EXISTS idx_qa_pairs_topic_active 
+                            ON topic_qa_pairs(topic_id, is_active)
+                        """)
+                        conn.execute("""
+                            CREATE INDEX IF NOT EXISTS idx_qa_pairs_embedding_model 
+                            ON topic_qa_pairs(embedding_model)
+                        """)
+                        conn.commit()
+                        logger.info("✅ question_embedding column added successfully")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to add question_embedding column: {e}")
+                        conn.rollback()
+                        raise HTTPException(status_code=500, detail=f"Failed to apply migration: {str(e)}")
+                
+                # Now query with the column
+                cursor = conn.execute("""
+                    SELECT qa_id, question
+                    FROM topic_qa_pairs
+                    WHERE topic_id = ? 
+                      AND (question_embedding IS NULL OR question_embedding = '')
+                    ORDER BY qa_id
+                """, (topic_id,))
+            else:
+                # Get all QA pairs for topics in this session
+                # First ensure question_embedding column exists (apply migration if needed)
+                cursor_check = conn.execute("PRAGMA table_info(topic_qa_pairs)")
+                columns = {row[1]: row[2] for row in cursor_check.fetchall()}
+                
+                if 'question_embedding' not in columns:
+                    logger.info("⚠️ question_embedding column not found. Applying migration...")
+                    try:
+                        # Apply migration directly
+                        conn.execute("""
+                            ALTER TABLE topic_qa_pairs 
+                            ADD COLUMN question_embedding TEXT
+                        """)
+                        conn.execute("""
+                            ALTER TABLE topic_qa_pairs 
+                            ADD COLUMN embedding_model VARCHAR(100)
+                        """)
+                        conn.execute("""
+                            ALTER TABLE topic_qa_pairs 
+                            ADD COLUMN embedding_dim INTEGER
+                        """)
+                        conn.execute("""
+                            ALTER TABLE topic_qa_pairs 
+                            ADD COLUMN embedding_updated_at TIMESTAMP
+                        """)
+                        conn.execute("""
+                            CREATE INDEX IF NOT EXISTS idx_qa_pairs_topic_active 
+                            ON topic_qa_pairs(topic_id, is_active)
+                        """)
+                        conn.execute("""
+                            CREATE INDEX IF NOT EXISTS idx_qa_pairs_embedding_model 
+                            ON topic_qa_pairs(embedding_model)
+                        """)
+                        conn.commit()
+                        logger.info("✅ question_embedding column added successfully")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to add question_embedding column: {e}")
+                        conn.rollback()
+                        raise HTTPException(status_code=500, detail=f"Failed to apply migration: {str(e)}")
+                
+                # Now query with the column
+                cursor = conn.execute("""
+                    SELECT qa.qa_id, qa.question
+                    FROM topic_qa_pairs qa
+                    INNER JOIN course_topics t ON qa.topic_id = t.topic_id
+                    WHERE t.session_id = ?
+                      AND (qa.question_embedding IS NULL OR qa.question_embedding = '')
+                    ORDER BY qa.qa_id
+                """, (session_id,))
+            
+            qa_pairs = [{"qa_id": row["qa_id"], "question": row["question"]} for row in cursor.fetchall()]
+        
+        if not qa_pairs:
+            return {
+                "success": True,
+                "message": "No QA pairs found without embeddings",
+                "processed": 0,
+                "total": 0
+            }
+        
+        logger.info(f"📦 Found {len(qa_pairs)} QA pairs without embeddings. Calculating...")
+        
+        # Calculate embeddings in batches (process 50 at a time to avoid timeout)
+        batch_size = 50
+        total_processed = 0
+        
+        for i in range(0, len(qa_pairs), batch_size):
+            batch = qa_pairs[i:i + batch_size]
+            logger.info(f"📦 Processing batch {i//batch_size + 1}/{(len(qa_pairs) + batch_size - 1)//batch_size} ({len(batch)} QA pairs)...")
+            
+            processed = await calculate_and_store_qa_embeddings_batch(
+                qa_pairs=batch,
+                embedding_model=embedding_model,
+                db=db
+            )
+            total_processed += processed
+        
+        return {
+            "success": True,
+            "message": f"Embeddings calculated for {total_processed}/{len(qa_pairs)} QA pairs",
+            "processed": total_processed,
+            "total": len(qa_pairs),
+            "embedding_model": embedding_model
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error calculating QA embeddings batch: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to calculate embeddings: {str(e)}")
 

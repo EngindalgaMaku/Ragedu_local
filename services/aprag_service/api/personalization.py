@@ -150,26 +150,63 @@ def _analyze_student_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
 def _generate_personalization_prompt(
     original_response: str,
     query: str,
-    factors: Dict[str, Any]
+    factors: Dict[str, Any],
+    zpd_info: Optional[Dict[str, Any]] = None,
+    bloom_info: Optional[Dict[str, Any]] = None,
+    cognitive_load_info: Optional[Dict[str, Any]] = None,
+    pedagogical_instructions: Optional[str] = None
 ) -> str:
     """
     Generate a prompt for LLM to personalize the response
     """
-    prompt = f"""Aşağıdaki cevabı öğrencinin öğrenme profiline göre kişiselleştir:
+    prompt = f"""Sen bir eğitim asistanısın. Aşağıdaki cevabı öğrencinin öğrenme profiline ve pedagojik analiz sonuçlarına göre kişiselleştir.
 
-ÖĞRENCİ PROFİLİ:
+📊 ÖĞRENCİ PROFİLİ:
 - Anlama Seviyesi: {factors['understanding_level']}
 - Zorluk Seviyesi: {factors['difficulty_level']}
 - Açıklama Stili: {factors['explanation_style']}
 - Örnekler Gerekli: {'Evet' if factors['needs_examples'] else 'Hayır'}
-
-ORİJİNAL SORU:
+"""
+    
+    # Add ZPD information
+    if zpd_info:
+        prompt += f"""
+🎯 ZPD (Zone of Proximal Development):
+- Mevcut Seviye: {zpd_info.get('current_level', 'N/A')}
+- Önerilen Seviye: {zpd_info.get('recommended_level', 'N/A')}
+- Başarı Oranı: {zpd_info.get('success_rate', 0):.1%}
+"""
+    
+    # Add Bloom Taxonomy information
+    if bloom_info:
+        prompt += f"""
+🧠 Bloom Taksonomisi:
+- Tespit Edilen Seviye: {bloom_info.get('level', 'N/A')} (Seviye {bloom_info.get('level_index', 'N/A')})
+- Güven: {bloom_info.get('confidence', 0):.1%}
+"""
+    
+    # Add Cognitive Load information
+    if cognitive_load_info:
+        prompt += f"""
+⚖️ Bilişsel Yük:
+- Toplam Yük: {cognitive_load_info.get('total_load', 0):.2f}
+- Sadeleştirme Gerekli: {'Evet' if cognitive_load_info.get('needs_simplification', False) else 'Hayır'}
+"""
+    
+    prompt += f"""
+📝 ORİJİNAL SORU:
 {query}
 
-ORİJİNAL CEVAP:
+📄 ORİJİNAL CEVAP:
 {original_response}
 
-LÜTFEN CEVABI ŞU ŞEKİLDE KİŞİSELLEŞTİR:
+⚠️ ÇOK ÖNEMLİ - DOĞRULUK KURALLARI:
+- SADECE orijinal cevapta ve ders materyallerinde bulunan bilgileri kullan
+- Orijinal cevapta olmayan yeni bilgiler EKLEME (örneğin: fotosentez, klorofil gibi detaylar)
+- Orijinal cevabın içeriğini koru, sadece sunumunu değiştir
+- Emin olmadığın bilgileri uydurma veya tahmin etme
+
+🔧 KİŞİSELLEŞTİRME TALİMATLARI:
 """
     
     if factors["explanation_style"] == "detailed":
@@ -183,15 +220,29 @@ LÜTFEN CEVABI ŞU ŞEKİLDE KİŞİSELLEŞTİR:
         prompt += "- Pratik örnekler ekle\n"
         prompt += "- Günlük hayattan örnekler ver\n"
     
-    if factors["difficulty_level"] == "beginner":
+    if factors["difficulty_level"] == "beginner" or (zpd_info and zpd_info.get('recommended_level') == 'elementary'):
         prompt += "- Temel kavramları önce açıkla\n"
         prompt += "- Teknik terimleri basit dille açıkla\n"
-    elif factors["difficulty_level"] == "advanced":
+        prompt += "- Daha basit kelimeler kullan\n"
+    elif factors["difficulty_level"] == "advanced" or (zpd_info and zpd_info.get('recommended_level') == 'advanced'):
         prompt += "- Daha derinlemesine bilgi ver\n"
         prompt += "- İleri seviye detaylar ekle\n"
     
-    prompt += "\nKişiselleştirilmiş cevabı sadece Türkçe olarak ver. Orijinal cevabın içeriğini koru, sadece sunumunu ve detay seviyesini öğrenci profiline göre ayarla."
-    prompt += "\n\nMARKDOWN FORMATI KULLAN: Önemli kavramları **kalın** yaz, listeler için `-` veya `*` kullan, kod için `backtick` kullan, başlıklar için `##` kullan. Formatlı ve okunabilir bir cevap ver."
+    # Add pedagogical instructions if available
+    if pedagogical_instructions:
+        prompt += f"""
+\n🎓 PEDAGOJİK TALİMATLAR (ÇOK ÖNEMLİ - MUTLAKA UYGULA):
+{pedagogical_instructions}
+
+⚠️ UYARI: Yukarıdaki pedagojik talimatlar ZORUNLUDUR. Özellikle:
+- "ZORUNLU" veya "MUTLAKA UYGULA" yazan maddeleri kesinlikle uygula
+- Hafıza ipuçları eklenmesi gerekiyorsa MUTLAKA ekle
+- Anahtar kelimeleri vurgulama gerekiyorsa **kalın** formatında vurgula
+- Teknik terimleri basitleştirme gerekiyorsa basitleştir
+"""
+    
+    prompt += "\n✅ ÖNEMLİ: Kişiselleştirilmiş cevabı SADECE TÜRKÇE olarak ver. Orijinal cevabın içeriğini koru, ancak sunumunu, detay seviyesini ve zorluk seviyesini öğrenci profiline ve pedagojik talimatlara göre ayarla. Cevabı başlık veya madde listesi olmadan, düz metin olarak ver.\n"
+    prompt += "\n⚠️ ÇOK ÖNEMLİ: Yukarıdaki tüm pedagojik talimatları uygula. Sadece cevabı ver, kontrol listesi veya başlık ekleme!"
     
     return prompt
 
@@ -218,9 +269,30 @@ async def personalize_response(
         # Get student profile
         try:
             profile_result = await get_profile(request.user_id, request.session_id, db)
-            profile_dict = profile_result.dict() if hasattr(profile_result, 'dict') else profile_result
+            # Pydantic v2: use model_dump() instead of dict()
+            if hasattr(profile_result, 'model_dump'):
+                profile_dict = profile_result.model_dump()
+            elif hasattr(profile_result, 'dict'):
+                profile_dict = profile_result.dict()
+            elif isinstance(profile_result, dict):
+                profile_dict = profile_result
+            else:
+                # Fallback: convert to dict manually
+                profile_dict = {
+                    "user_id": getattr(profile_result, 'user_id', request.user_id),
+                    "session_id": getattr(profile_result, 'session_id', request.session_id),
+                    "average_understanding": getattr(profile_result, 'average_understanding', None),
+                    "average_satisfaction": getattr(profile_result, 'average_satisfaction', None),
+                    "total_interactions": getattr(profile_result, 'total_interactions', 0),
+                    "total_feedback_count": getattr(profile_result, 'total_feedback_count', 0),
+                    "preferred_explanation_style": getattr(profile_result, 'preferred_explanation_style', None),
+                    "preferred_difficulty_level": getattr(profile_result, 'preferred_difficulty_level', None),
+                }
+            logger.info(f"Profile loaded: interactions={profile_dict.get('total_interactions', 0)}, "
+                       f"feedback={profile_dict.get('total_feedback_count', 0)}")
         except Exception as e:
-            logger.warning(f"Could not get profile, using defaults: {e}")
+            logger.warning(f"Could not get profile, using defaults: {e}", exc_info=True)
+            # Use defaults but still allow personalization if pedagogical info is available
             profile_dict = {
                 "average_understanding": None,
                 "average_satisfaction": None,
@@ -311,13 +383,19 @@ async def personalize_response(
         
         # === END FAZ 3 ===
         
-        # If no significant personalization needed, return original
-        if (
-            profile_dict.get("total_feedback_count", 0) < 3 and
-            not profile_dict.get("preferred_explanation_style") and
-            not profile_dict.get("preferred_difficulty_level")
-        ):
-            logger.info("Insufficient profile data, returning original response (with pedagogical info if available)")
+        # Always try to personalize if pedagogical instructions are available
+        # (even with limited profile data, pedagogical analysis can still personalize)
+        should_personalize = (
+            profile_dict.get("total_feedback_count", 0) >= 3 or
+            profile_dict.get("preferred_explanation_style") or
+            profile_dict.get("preferred_difficulty_level") or
+            pedagogical_instructions or
+            zpd_info or
+            bloom_info
+        )
+        
+        if not should_personalize:
+            logger.info("No personalization needed, returning original response (with pedagogical info if available)")
             return PersonalizeResponse(
                 personalized_response=request.original_response,
                 personalization_factors=factors,
@@ -333,25 +411,36 @@ async def personalize_response(
         personalization_prompt = _generate_personalization_prompt(
             request.original_response,
             request.query,
-            factors
+            factors,
+            zpd_info=zpd_info,
+            bloom_info=bloom_info,
+            cognitive_load_info=cognitive_load_info,
+            pedagogical_instructions=pedagogical_instructions
         )
-        
-        # Add pedagogical instructions if available
-        if pedagogical_instructions:
-            personalization_prompt += pedagogical_instructions
         
         # Call model inference service to personalize
         try:
+            logger.info(f"Calling LLM for personalization with prompt length: {len(personalization_prompt)}")
             # Use a simple model for personalization (fast, lightweight)
+            # Calculate max_tokens: original response length + room for personalization
+            # Estimate tokens: ~1 token per 4 characters for Turkish text
+            original_tokens_estimate = len(request.original_response) // 4
+            # Allow up to 1.5x expansion for personalization (more examples, simpler language, etc.)
+            max_tokens_calc = int(original_tokens_estimate * 1.5)
+            # Ensure minimum of 256 tokens and maximum of 2048
+            max_tokens = max(256, min(max_tokens_calc, 2048))
+            
+            logger.info(f"Personalization LLM call: original={len(request.original_response)} chars (~{original_tokens_estimate} tokens), max_tokens={max_tokens}")
+            
             model_response = requests.post(
                 f"{MODEL_INFERENCE_URL}/models/generate",
                 json={
                     "prompt": personalization_prompt,
                     "model": "llama-3.1-8b-instant",  # Fast model for personalization
-                    "max_tokens": min(len(request.original_response.split()) * 2, 2048),  # Allow some expansion, but cap at 2048
-                    "temperature": 0.3,  # Lower temperature for more consistent personalization
+                    "max_tokens": max_tokens,
+                    "temperature": 0.5,  # Slightly higher temperature for more creative personalization
                 },
-                timeout=10
+                timeout=20  # Increased timeout for longer responses
             )
             
             if model_response.status_code == 200:
@@ -359,13 +448,59 @@ async def personalize_response(
                 personalized_text = result.get("response", result.get("text", request.original_response))
                 
                 # Clean up the response (remove prompt artifacts if any)
-                if "Kişiselleştirilmiş cevabı" in personalized_text:
-                    # Extract only the personalized response part
-                    parts = personalized_text.split("Kişiselleştirilmiş cevabı")
-                    if len(parts) > 1:
-                        personalized_text = parts[-1].strip()
+                # Check for various markers that might indicate prompt contamination
+                cleanup_markers = [
+                    "Kişiselleştirilmiş cevabı",
+                    "KİŞİSELLEŞTİRİLMİŞ CEVAP:",
+                    "ORİJİNAL CEVAP:",
+                    "ORIGINAL RESPONSE:",
+                    "YANIT:",
+                    "CEVAP:"
+                ]
                 
-                logger.info(f"Successfully personalized response for user {request.user_id}")
+                for marker in cleanup_markers:
+                    if marker in personalized_text:
+                        parts = personalized_text.split(marker)
+                        if len(parts) > 1:
+                            # Take the last part (should be the actual response)
+                            personalized_text = parts[-1].strip()
+                            break
+                
+                # Remove any leading/trailing whitespace and ensure it's not empty
+                personalized_text = personalized_text.strip()
+                
+                # If response seems incomplete (ends with incomplete sentence), log warning
+                if personalized_text and not personalized_text[-1] in ['.', '!', '?', ':', ';']:
+                    # Check if it's a very short response (might be truncated)
+                    if len(personalized_text) < len(request.original_response) * 0.5:
+                        logger.warning(f"Personalized response seems short ({len(personalized_text)} chars vs original {len(request.original_response)} chars). "
+                                     f"Last 50 chars: ...{personalized_text[-50:]}")
+                
+                # Validate response quality
+                # Check for repetition (same sentence appears multiple times)
+                sentences = personalized_text.split('.')
+                unique_sentences = set(s.strip().lower() for s in sentences if s.strip())
+                if len(sentences) > len(unique_sentences) * 1.5:  # More than 50% repetition
+                    logger.warning(f"Personalized response has significant repetition: {len(sentences)} sentences, {len(unique_sentences)} unique")
+                
+                # Check for meaningful difference
+                if personalized_text.strip() == request.original_response.strip():
+                    logger.warning("LLM returned identical response, applying template-based personalization")
+                    # Fall through to template-based approach
+                else:
+                    # Calculate similarity to detect if too different (might have hallucinated)
+                    original_words = set(request.original_response.lower().split())
+                    personalized_words = set(personalized_text.lower().split())
+                    common_words = original_words & personalized_words
+                    similarity_ratio = len(common_words) / max(len(original_words), len(personalized_words), 1)
+                    
+                    if similarity_ratio < 0.2:  # Less than 20% word overlap - might be hallucinating
+                        logger.warning(f"Personalized response has low similarity to original ({similarity_ratio:.2%}). May contain hallucinations.")
+                    
+                    logger.info(f"Successfully personalized response for user {request.user_id} "
+                              f"(original: {len(request.original_response)} chars, "
+                              f"personalized: {len(personalized_text)} chars, "
+                              f"similarity: {similarity_ratio:.2%})")
                 
                 return PersonalizeResponse(
                     personalized_response=personalized_text,

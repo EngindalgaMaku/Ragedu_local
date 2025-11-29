@@ -5,6 +5,7 @@ All Eğitsel-KBRAG features are dependent on APRAG being enabled
 
 import os
 import logging
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +51,36 @@ class FeatureFlags:
         # Database'den session-specific kontrol (varsa)
         if session_id and FeatureFlags._db_manager:
             try:
+                # First ensure table exists (kalıcı çözüm)
+                with FeatureFlags._db_manager.get_connection() as conn:
+                    cursor = conn.execute("""
+                        SELECT name FROM sqlite_master
+                        WHERE type='table' AND name='feature_flags'
+                    """)
+                    if not cursor.fetchone():
+                        # Table doesn't exist, create it
+                        conn.execute("""
+                            CREATE TABLE feature_flags (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                feature_name TEXT NOT NULL,
+                                session_id TEXT,
+                                feature_enabled BOOLEAN NOT NULL DEFAULT 1,
+                                config_data TEXT,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                UNIQUE(feature_name, session_id)
+                            )
+                        """)
+                        conn.commit()
+                        logger.info("✅ Created feature_flags table in feature_flags.py")
+                
                 # Session-specific feature flag kontrolü
                 result = FeatureFlags._db_manager.execute_query(
-                    "SELECT is_enabled FROM feature_flags WHERE feature_name = ? AND session_id = ?",
-                    ("aprag_enabled", session_id)
+                    "SELECT feature_enabled FROM feature_flags WHERE feature_name = ? AND session_id = ?",
+                    ("aprag", session_id)
                 )
                 if result:
-                    return bool(result[0].get("is_enabled", True))
+                    return bool(result[0].get("feature_enabled", True))
             except Exception as e:
                 logger.warning(f"Failed to check session-specific APRAG flag: {e}")
         
@@ -165,6 +189,57 @@ class FeatureFlags:
         return os.getenv("ENABLE_EMOJI_FEEDBACK", "true").lower() == "true"
     
     @staticmethod
+    def is_ebars_enabled(session_id=None):
+        """
+        EBARS (Emoji-Based Adaptive Response System)
+        
+        APRAG ve Eğitsel-KBRAG'a bağlı
+        Adaptive difficulty adjustment based on emoji feedback
+        
+        Args:
+            session_id: Optional session ID for session-specific checks
+        """
+        if not FeatureFlags.is_egitsel_kbrag_enabled():
+            logger.debug("EBARS disabled: Eğitsel-KBRAG not enabled")
+            return False
+        
+        # Check session-specific settings from session_settings table first
+        if session_id and FeatureFlags._db_manager:
+            try:
+                # Check if session_settings table exists and has enable_ebars column
+                with FeatureFlags._db_manager.get_connection() as conn:
+                    # Check if table exists
+                    cursor = conn.execute("""
+                        SELECT name FROM sqlite_master
+                        WHERE type='table' AND name='session_settings'
+                    """)
+                    if cursor.fetchone():
+                        # Check if enable_ebars column exists
+                        cursor = conn.execute("PRAGMA table_info(session_settings)")
+                        columns = [row[1] for row in cursor.fetchall()]
+                        if 'enable_ebars' in columns:
+                            # Get EBARS setting from session_settings
+                            result = FeatureFlags._db_manager.execute_query(
+                                "SELECT enable_ebars FROM session_settings WHERE session_id = ?",
+                                (session_id,)
+                            )
+                            if result:
+                                session_setting = bool(result[0].get("enable_ebars", False))
+                                logger.debug(f"Session {session_id} EBARS setting from session_settings: {session_setting}")
+                                return session_setting
+                        else:
+                            logger.debug(f"enable_ebars column not found in session_settings table")
+                    else:
+                        logger.debug(f"session_settings table not found")
+            except Exception as e:
+                logger.warning(f"Failed to check session EBARS setting from session_settings: {e}")
+        
+        # Fallback to environment variable (default: false - must be explicitly enabled)
+        env_setting = os.getenv("ENABLE_EBARS", "false").lower() == "true"
+        logger.debug(f"Using environment EBARS setting: {env_setting}")
+        return env_setting
+    
+    @staticmethod
     def is_progressive_assessment_enabled(session_id=None):
         """
         Progressive Assessment Flow System
@@ -227,8 +302,8 @@ class FeatureFlags:
             except Exception as e:
                 logger.warning(f"Failed to check session personalized responses setting: {e}")
         
-        # Fallback to environment variable
-        env_setting = os.getenv("ENABLE_PERSONALIZED_RESPONSES", "false").lower() == "true"
+        # Fallback to environment variable (default: true for Eğitsel-KBRAG)
+        env_setting = os.getenv("ENABLE_PERSONALIZED_RESPONSES", "true").lower() == "true"
         logger.debug(f"Using environment personalized responses setting: {env_setting}")
         return env_setting
     
@@ -267,6 +342,113 @@ class FeatureFlags:
         return env_setting
     
     # ==========================================
+    # Module Extraction Feature Methods
+    # ==========================================
+    
+    @staticmethod
+    def is_module_extraction_enabled(session_id=None):
+        """
+        Module Extraction System
+        
+        APRAG'a bağlı
+        Extract curriculum-aware modules from session content
+        
+        Args:
+            session_id: Optional session ID for session-specific checks
+        """
+        # Önce APRAG aktif mi kontrol et
+        if not FeatureFlags.is_aprag_enabled(session_id):
+            logger.debug("Module extraction disabled: APRAG is not enabled")
+            return False
+        
+        # Check session-specific settings first
+        if session_id and FeatureFlags._db_manager:
+            try:
+                result = FeatureFlags._db_manager.execute_query(
+                    "SELECT enable_module_extraction FROM session_settings WHERE session_id = ?",
+                    (session_id,)
+                )
+                if result:
+                    session_setting = bool(result[0].get("enable_module_extraction", True))
+                    logger.debug(f"Session {session_id} module extraction setting: {session_setting}")
+                    return session_setting
+            except Exception as e:
+                logger.warning(f"Failed to check session module extraction setting: {e}")
+        
+        # Fallback to environment variable
+        env_setting = os.getenv("MODULE_EXTRACTION_ENABLED", "true").lower() == "true"
+        logger.debug(f"Using environment module extraction setting: {env_setting}")
+        return env_setting
+    
+    @staticmethod
+    def is_module_quality_validation_enabled(session_id=None):
+        """
+        Module Quality Validation System
+        
+        APRAG ve Module Extraction'a bağlı
+        Validate extracted modules for quality and completeness
+        
+        Args:
+            session_id: Optional session ID for session-specific checks
+        """
+        if not FeatureFlags.is_module_extraction_enabled(session_id):
+            logger.debug("Module quality validation disabled: Module extraction not enabled")
+            return False
+        
+        # Check session-specific settings first
+        if session_id and FeatureFlags._db_manager:
+            try:
+                result = FeatureFlags._db_manager.execute_query(
+                    "SELECT enable_module_quality_validation FROM session_settings WHERE session_id = ?",
+                    (session_id,)
+                )
+                if result:
+                    session_setting = bool(result[0].get("enable_module_quality_validation", True))
+                    logger.debug(f"Session {session_id} module quality validation setting: {session_setting}")
+                    return session_setting
+            except Exception as e:
+                logger.warning(f"Failed to check session module quality validation setting: {e}")
+        
+        # Fallback to environment variable
+        env_setting = os.getenv("MODULE_QUALITY_VALIDATION_ENABLED", "true").lower() == "true"
+        logger.debug(f"Using environment module quality validation setting: {env_setting}")
+        return env_setting
+    
+    @staticmethod
+    def is_module_curriculum_alignment_enabled(session_id=None):
+        """
+        Module Curriculum Alignment System
+        
+        APRAG ve Module Extraction'a bağlı
+        Align extracted modules with curriculum standards
+        
+        Args:
+            session_id: Optional session ID for session-specific checks
+        """
+        if not FeatureFlags.is_module_extraction_enabled(session_id):
+            logger.debug("Module curriculum alignment disabled: Module extraction not enabled")
+            return False
+        
+        # Check session-specific settings first
+        if session_id and FeatureFlags._db_manager:
+            try:
+                result = FeatureFlags._db_manager.execute_query(
+                    "SELECT enable_module_curriculum_alignment FROM session_settings WHERE session_id = ?",
+                    (session_id,)
+                )
+                if result:
+                    session_setting = bool(result[0].get("enable_module_curriculum_alignment", True))
+                    logger.debug(f"Session {session_id} module curriculum alignment setting: {session_setting}")
+                    return session_setting
+            except Exception as e:
+                logger.warning(f"Failed to check session module curriculum alignment setting: {e}")
+        
+        # Fallback to environment variable
+        env_setting = os.getenv("MODULE_CURRICULUM_ALIGNMENT_ENABLED", "true").lower() == "true"
+        logger.debug(f"Using environment module curriculum alignment setting: {env_setting}")
+        return env_setting
+    
+    # ==========================================
     # Yardımcı Metodlar
     # ==========================================
     
@@ -296,6 +478,15 @@ class FeatureFlags:
                     "cognitive_load": FeatureFlags.is_cognitive_load_enabled(),
                     "emoji_feedback": FeatureFlags.is_emoji_feedback_enabled(),
                     "progressive_assessment": FeatureFlags.is_progressive_assessment_enabled()
+                }
+            },
+            "module_extraction": {
+                "enabled": FeatureFlags.is_module_extraction_enabled(),
+                "status": "active" if FeatureFlags.is_module_extraction_enabled() else "disabled (requires APRAG)",
+                "features": {
+                    "module_extraction": FeatureFlags.is_module_extraction_enabled(),
+                    "module_quality_validation": FeatureFlags.is_module_quality_validation_enabled(),
+                    "module_curriculum_alignment": FeatureFlags.is_module_curriculum_alignment_enabled()
                 }
             }
         }
@@ -345,3 +536,26 @@ _feature_flags = FeatureFlags()
 def get_feature_flags():
     """Get global feature flags instance"""
     return _feature_flags
+
+
+def is_feature_enabled(feature_name: str, session_id: Optional[str] = None) -> bool:
+    """
+    Generic function to check if a feature is enabled.
+    Used by EBARS and other modules.
+    
+    Args:
+        feature_name: Name of the feature (e.g., 'ebars', 'aprag')
+        session_id: Optional session ID for session-specific checks
+        
+    Returns:
+        bool: Feature enabled?
+    """
+    if feature_name == "ebars":
+        return FeatureFlags.is_ebars_enabled(session_id)
+    elif feature_name == "aprag":
+        return FeatureFlags.is_aprag_enabled(session_id)
+    elif feature_name == "egitsel_kbrag":
+        return FeatureFlags.is_egitsel_kbrag_enabled()
+    else:
+        logger.warning(f"Unknown feature name: {feature_name}")
+        return False

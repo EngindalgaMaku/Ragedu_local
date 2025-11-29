@@ -65,11 +65,23 @@ const config: Config = {
         sans: ["Inter", "system-ui", "sans-serif"],
       },
       animation: {
+        // Custom animations
         "fade-in": "fadeIn 0.5s ease-in-out",
         "slide-up": "slideUp 0.3s ease-out",
         "scale-in": "scaleIn 0.2s ease-out",
         "pulse-soft": "pulseSoft 2s ease-in-out infinite",
         "slide-in-right": "slideInRight 0.3s ease-out",
+
+        // Tailwind default animations (ensuring they exist)
+        spin: "spin 1s linear infinite",
+        ping: "ping 1s cubic-bezier(0, 0, 0.2, 1) infinite",
+        pulse: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+        bounce: "bounce 1s infinite",
+
+        // Custom AI loading animations
+        "ai-thinking": "aiThinking 2s ease-in-out infinite",
+        "dots-bounce": "dotsBounce 1.4s ease-in-out infinite",
+        glow: "glow 2s ease-in-out infinite alternate",
       },
       keyframes: {
         fadeIn: {
@@ -91,6 +103,63 @@ const config: Config = {
         pulseSoft: {
           "0%, 100%": { opacity: "1" },
           "50%": { opacity: "0.7" },
+        },
+
+        // Tailwind default keyframes
+        spin: {
+          to: { transform: "rotate(360deg)" },
+        },
+        ping: {
+          "75%, 100%": {
+            transform: "scale(2)",
+            opacity: "0",
+          },
+        },
+        pulse: {
+          "50%": {
+            opacity: "0.5",
+          },
+        },
+        bounce: {
+          "0%, 100%": {
+            transform: "translateY(-25%)",
+            "animation-timing-function": "cubic-bezier(0.8,0,1,1)",
+          },
+          "50%": {
+            transform: "none",
+            "animation-timing-function": "cubic-bezier(0,0,0.2,1)",
+          },
+        },
+
+        // Custom AI loading keyframes
+        aiThinking: {
+          "0%, 100%": {
+            transform: "scale(1)",
+            opacity: "1",
+          },
+          "50%": {
+            transform: "scale(1.05)",
+            opacity: "0.8",
+          },
+        },
+        dotsBounce: {
+          "0%, 80%, 100%": {
+            transform: "scale(0)",
+            opacity: "0.5",
+          },
+          "40%": {
+            transform: "scale(1)",
+            opacity: "1",
+          },
+        },
+        glow: {
+          from: {
+            "box-shadow": "0 0 20px rgba(59, 130, 246, 0.5)",
+          },
+          to: {
+            "box-shadow":
+              "0 0 30px rgba(59, 130, 246, 0.8), 0 0 40px rgba(139, 92, 246, 0.3)",
+          },
         },
       },
     },

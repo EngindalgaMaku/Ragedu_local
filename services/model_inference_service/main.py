@@ -10,7 +10,8 @@ from typing import List, Optional
 import ollama
 from groq import Groq
 from huggingface_hub import InferenceClient
-from sentence_transformers import CrossEncoder
+# sentence-transformers is optional - only imported when needed (lazy loading)
+# from sentence_transformers import CrossEncoder  # Moved to get_rerank_model() function
 from openai import OpenAI as OpenAIClient
 
 # Disable SSL warnings for HuggingFace API (common in corporate/proxy environments)
@@ -26,6 +27,7 @@ HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 ALIBABA_API_KEY = os.getenv("ALIBABA_API_KEY", os.getenv("DASHSCOPE_API_KEY"))
+ALIBABA_API_BASE = os.getenv("ALIBABA_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 
 # --- FastAPI App Initialization ---
 app = FastAPI(
@@ -100,116 +102,115 @@ class OutputCleanerResponse(BaseModel):
 # --- LLM Clients ---
 ollama_client = None
 OLLAMA_AVAILABLE = False
-OLLAMA_LAST_FAILURE_TIME = None  # Track when Ollama last failed
-OLLAMA_RETRY_COOLDOWN = 300  # Don't retry for 5 minutes after failure
 
 def get_ollama_client():
-    """Get or initialize Ollama client with fast timeout - non-blocking."""
-    global ollama_client, OLLAMA_AVAILABLE, OLLAMA_LAST_FAILURE_TIME
-    
-    # If we already know Ollama is unavailable, check cooldown before retrying
-    if ollama_client is None and not OLLAMA_AVAILABLE:
-        if OLLAMA_LAST_FAILURE_TIME is not None:
-            time_since_failure = time.time() - OLLAMA_LAST_FAILURE_TIME
-            if time_since_failure < OLLAMA_RETRY_COOLDOWN:
-                # Still in cooldown, don't retry
-                return None
-            # Cooldown expired, reset failure time and try again
-            OLLAMA_LAST_FAILURE_TIME = None
+    """Get or initialize Ollama client with fast timeout to avoid blocking."""
+    global ollama_client, OLLAMA_AVAILABLE
     
     if ollama_client is not None and OLLAMA_AVAILABLE:
         try:
-            # Quick check if still available with very short timeout
-            import threading
-            check_result = [None]
-            check_exception = [None]
+            # Quick check if still available (with timeout)
+            import signal
+            def timeout_handler(signum, frame):
+                raise TimeoutError("Ollama check timeout")
             
-            def quick_check():
-                try:
-                    check_result[0] = ollama_client.list()
-                except Exception as e:
-                    check_exception[0] = e
-            
-            check_thread = threading.Thread(target=quick_check)
-            check_thread.daemon = True
-            check_thread.start()
-            check_thread.join(timeout=0.5)  # Very short timeout
-            
-            if check_thread.is_alive():
-                # Ollama is slow/unavailable, mark as unavailable but don't block
+            # Use a very short timeout for quick check (1 second)
+            try:
+                # Try to list models with timeout
+                import threading
+                result = [None]
+                exception = [None]
+                
+                def check_ollama():
+                    try:
+                        result[0] = ollama_client.list()
+                    except Exception as e:
+                        exception[0] = e
+                
+                thread = threading.Thread(target=check_ollama)
+                thread.daemon = True
+                thread.start()
+                thread.join(timeout=1.0)  # 1 second timeout
+                
+                if thread.is_alive():
+                    # Timeout - Ollama is not responding
+                    ollama_client = None
+                    OLLAMA_AVAILABLE = False
+                    return None
+                
+                if exception[0]:
+                    raise exception[0]
+                
+                return ollama_client
+            except:
+                # Client became unavailable, reset
                 ollama_client = None
                 OLLAMA_AVAILABLE = False
-                OLLAMA_LAST_FAILURE_TIME = time.time()
-                return None
-            
-            if check_exception[0]:
-                # Connection failed, reset
-                ollama_client = None
-                OLLAMA_AVAILABLE = False
-                OLLAMA_LAST_FAILURE_TIME = time.time()
-                return None
-            
-            return ollama_client
         except:
             # Client became unavailable, reset
             ollama_client = None
             OLLAMA_AVAILABLE = False
-            return None
     
-    # Try to initialize/reconnect with very fast timeout
-    try:
-        import threading
-        connect_result = [None]
-        connect_exception = [None]
-        
-        def try_connect():
-            try:
-                client = ollama.Client(host=OLLAMA_HOST)
-                # Quick test with timeout
-                test_result = client.list()
-                connect_result[0] = client
-            except Exception as e:
-                connect_exception[0] = e
-        
-        connect_thread = threading.Thread(target=try_connect)
-        connect_thread.daemon = True
-        connect_thread.start()
-        connect_thread.join(timeout=1.0)  # 1 second max timeout
-        
-        if connect_thread.is_alive():
-            # Ollama is not responding, mark as unavailable
-            ollama_client = None
-            OLLAMA_AVAILABLE = False
-            OLLAMA_LAST_FAILURE_TIME = time.time()
-            return None
-        
-        if connect_exception[0]:
-            # Connection failed, mark as unavailable
-            ollama_client = None
-            OLLAMA_AVAILABLE = False
-            OLLAMA_LAST_FAILURE_TIME = time.time()
-            return None
-        
-        if connect_result[0]:
-            ollama_client = connect_result[0]
-            OLLAMA_AVAILABLE = True
-            return ollama_client
-    except Exception as e:
-        # Any error means Ollama is unavailable
-        ollama_client = None
-        OLLAMA_AVAILABLE = False
-        OLLAMA_LAST_FAILURE_TIME = time.time()
-        return None
+    # Try to initialize/reconnect with fast timeout
+    max_retries = 2  # Reduced from 5 to 2
+    for attempt in range(max_retries):
+        try:
+            print(f"🔵 [DIAGNOSTIC] Attempting to connect to Ollama at: {OLLAMA_HOST} (attempt {attempt + 1}/{max_retries})")
+            
+            # Use threading with timeout to avoid blocking
+            import threading
+            client_result = [None]
+            client_exception = [None]
+            
+            def try_connect():
+                try:
+                    client = ollama.Client(host=OLLAMA_HOST, timeout=2.0)  # 2 second timeout
+                    client.list()  # Quick check
+                    client_result[0] = client
+                except Exception as e:
+                    client_exception[0] = e
+            
+            thread = threading.Thread(target=try_connect)
+            thread.daemon = True
+            thread.start()
+            thread.join(timeout=3.0)  # Max 3 seconds per attempt
+            
+            if thread.is_alive():
+                # Timeout - Ollama is not responding
+                print(f"⚠️ [DIAGNOSTIC] Ollama connection timeout (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)  # Reduced wait time from 2-8 seconds to 0.5 seconds
+                continue
+            
+            if client_exception[0]:
+                raise client_exception[0]
+            
+            if client_result[0]:
+                ollama_client = client_result[0]
+                OLLAMA_AVAILABLE = True
+                print("✅ [DIAGNOSTIC] Successfully connected to Ollama and listed models.")
+                return ollama_client
+            
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = 0.5  # Reduced from (attempt + 1) * 2 to 0.5 seconds
+                print(f"⚠️ [DIAGNOSTIC] Could not connect to Ollama (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time} seconds...")
+                print(f"   Error: {e}")
+                time.sleep(wait_time)
+            else:
+                print(f"❌ [CRITICAL] Could not connect to Ollama at {OLLAMA_HOST} after {max_retries} attempts.")
+                print(f"   Error Type: {type(e).__name__}")
+                print(f"   Error Details: {e}")
+                print(f"   ℹ️ [INFO] Ollama is unavailable. Service will use HuggingFace/Alibaba embeddings as fallback.")
+                ollama_client = None
+                OLLAMA_AVAILABLE = False
+                return None
     
     return None
 
-# Initial connection attempt - non-blocking, fast fail
-# Don't block startup if Ollama is unavailable
-try:
-    get_ollama_client()
-except Exception as e:
-    # Silently fail - Ollama is optional
-    pass
+# Initial connection attempt - DISABLED to avoid blocking startup
+# Ollama will be connected lazily on first use
+print("ℹ️ [INFO] Ollama connection will be attempted on first use (lazy loading)")
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 if not groq_client:
@@ -256,44 +257,21 @@ else:
 alibaba_client = None
 if ALIBABA_API_KEY:
     try:
-        # Debug: Log API key format (masked for security)
-        api_key_preview = f"{ALIBABA_API_KEY[:8]}***{ALIBABA_API_KEY[-4:]}" if len(ALIBABA_API_KEY) > 12 else "***"
-        print(f"🔍 [ALIBABA DEBUG] API Key found: {api_key_preview}")
-        print(f"🔍 [ALIBABA DEBUG] API Key length: {len(ALIBABA_API_KEY)}")
-        print(f"🔍 [ALIBABA DEBUG] Using INTERNATIONAL endpoint: https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-        
         alibaba_client = OpenAIClient(
             api_key=ALIBABA_API_KEY,
-            base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+            base_url=ALIBABA_API_BASE
         )
-        print("✅ Alibaba DashScope International API client initialized.")
+        print(f"✅ Alibaba DashScope API client initialized with endpoint: {ALIBABA_API_BASE}")
     except Exception as e:
         print(f"⚠️ Warning: Failed to initialize Alibaba client: {e}")
         alibaba_client = None
 else:
     print("⚠️ Warning: ALIBABA_API_KEY not set. Alibaba models will not be available.")
-    print("🔍 [ALIBABA DEBUG] Checked environment variables: ALIBABA_API_KEY and DASHSCOPE_API_KEY")
 
-# --- Cross-Encoder Model for Reranking ---
-rerank_model = None
-RERANK_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-
-def get_rerank_model():
-    """Load the cross-encoder model for reranking."""
-    global rerank_model
-    if rerank_model is None:
-        try:
-            print(f"🔄 Loading rerank model: {RERANK_MODEL_NAME}...")
-            rerank_model = CrossEncoder(RERANK_MODEL_NAME)
-            print(f"✅ Rerank model '{RERANK_MODEL_NAME}' loaded successfully.")
-        except Exception as e:
-            print(f"❌ CRITICAL: Failed to load rerank model '{RERANK_MODEL_NAME}'. Reranking will not be available.")
-            print(f"   Error: {e}")
-            rerank_model = None
-    return rerank_model
-
-# Load model at startup
-get_rerank_model()
+# --- Reranking ---
+# NOTE: Reranking is now handled by reranker-service (Alibaba DashScope API)
+# No local sentence-transformers dependency needed
+# The /rerank endpoint proxies requests to reranker-service
 
 # --- Output Cleaning Functions ---
 def clean_llm_output(raw_output: str, original_query: str = "") -> str:
@@ -387,7 +365,8 @@ def is_openrouter_model(model_name: str) -> bool:
         "google/gemma-2-9b-it:free",
         "google/gemini-2.5-flash-lite",
         "nousresearch/hermes-3-llama-3.1-8b:free",
-        "qwen/qwen3-32b"
+        "qwen/qwen3-32b",
+        "x-ai/grok-4.1-fast:free"
     ]
     return model_name in openrouter_models
 
@@ -420,16 +399,34 @@ def is_deepseek_model(model_name: str) -> bool:
     return model_name in deepseek_models
 
 def is_alibaba_model(model_name: str) -> bool:
-    """Check if the model is an Alibaba DashScope model."""
+    """Check if the model is an Alibaba DashScope Qwen model."""
     alibaba_models = [
         "qwen-plus",
         "qwen-turbo",
         "qwen-max",
         "qwen-max-longcontext",
-        "qwen-plus-net",
-        "qwen-turbo-net"
+        "qwen-7b-chat",
+        "qwen-14b-chat",
+        "qwen-72b-chat",
+        "qwen-vl-plus",
+        "qwen-vl-max",
+        "qwen-flash"
     ]
     return model_name in alibaba_models
+
+def is_alibaba_embedding_model(model_name: str) -> bool:
+    """Check if the model is an Alibaba DashScope embedding model."""
+    if not model_name:
+        return False
+    # Alibaba embedding models start with "text-embedding-"
+    return model_name.startswith("text-embedding-") or "alibaba" in model_name.lower() or "dashscope" in model_name.lower()
+
+def is_huggingface_embedding_model(model_name: str) -> bool:
+    """Check if the model is a HuggingFace embedding model."""
+    if not model_name:
+        return False
+    hf_orgs = ["sentence-transformers/", "intfloat/", "BAAI/"]
+    return "/" in model_name and any(model_name.startswith(org) for org in hf_orgs)
 
 # --- API Endpoints ---
 @app.get("/health", summary="Health Check")
@@ -461,9 +458,6 @@ async def generate_response(request: GenerationRequest):
                 raise HTTPException(status_code=503, detail="Alibaba client is not available. Check ALIBABA_API_KEY.")
 
             try:
-                print(f"🔍 [ALIBABA DEBUG] Attempting to call model: {model_name}")
-                print(f"🔍 [ALIBABA DEBUG] Request params - Temperature: {request.temperature}, Max tokens: {request.max_tokens}")
-                
                 chat_completion = alibaba_client.chat.completions.create(
                     model=model_name,
                     messages=[
@@ -474,34 +468,18 @@ async def generate_response(request: GenerationRequest):
                     max_tokens=request.max_tokens,
                     stream=False
                 )
-                print(f"✅ [ALIBABA DEBUG] API call successful for model: {model_name}")
                 response_content = chat_completion.choices[0].message.content or ""
                 return GenerationResponse(response=response_content, model_used=model_name)
             except Exception as e:
                 error_str = str(e)
-                print(f"🔍 [ALIBABA DEBUG] Full error: {error_str}")
-                print(f"🔍 [ALIBABA DEBUG] Error type: {type(e)}")
-                
-                # Check for specific Alibaba Cloud errors
-                if "403" in error_str and "AccessDenied.Unpurchased" in error_str:
-                    error_detail = (
-                        "Alibaba Cloud 403-AccessDenied.Unpurchased error. This indicates:\n"
-                        "1. The DashScope service may not be activated in your Alibaba Cloud account\n"
-                        "2. The API key may not have permissions for the requested model\n"
-                        "3. You may need to activate the DashScope service first\n"
-                        "4. The model might require a paid subscription\n\n"
-                        f"Please check: https://dashscope.console.aliyun.com/\n"
-                        f"Full error: {error_str}"
-                    )
-                    print(f"❌ [ALIBABA ERROR] {error_detail}")
-                    raise HTTPException(status_code=403, detail=error_detail)
-                elif "401" in error_str or "authentication" in error_str.lower() or "invalid" in error_str.lower():
+                # Check for authentication errors specifically
+                if "401" in error_str or "authentication" in error_str.lower() or "invalid" in error_str.lower():
                     error_detail = f"Alibaba API authentication failed. Please check your ALIBABA_API_KEY environment variable. Error: {error_str}"
-                    print(f"❌ [ALIBABA ERROR] {error_detail}")
+                    print(f"❌ {error_detail}")
                     raise HTTPException(status_code=401, detail=error_detail)
                 else:
                     error_detail = f"Alibaba API error: {error_str}"
-                    print(f"❌ [ALIBABA ERROR] {error_detail}")
+                    print(f"❌ {error_detail}")
                     raise HTTPException(status_code=500, detail=error_detail)
 
         elif is_deepseek_model(model_name):
@@ -785,7 +763,8 @@ def get_available_models():
             "google/gemma-2-9b-it:free",
             "google/gemini-2.5-flash-lite",
             "nousresearch/hermes-3-llama-3.1-8b:free",
-            "qwen/qwen3-32b"
+            "qwen/qwen3-32b",
+            "x-ai/grok-4.1-fast:free"  # Grok 4.1 Fast - Free tier
         ]
 
     if deepseek_client and DEEPSEEK_API_KEY:
@@ -795,75 +774,68 @@ def get_available_models():
             "deepseek-reasoner"  # Thinking mode (DeepSeek-V3.2-Exp)
         ]
 
-    if alibaba_client and ALIBABA_API_KEY:
-        # Alibaba DashScope models - OpenAI-compatible API
-        models["alibaba"] = [
-            "qwen-plus",
-            "qwen-turbo",
-            "qwen-max",
-            "qwen-max-longcontext",
-            "qwen-plus-net",
-            "qwen-turbo-net"
-        ]
-
-    # Try to get Ollama models with fast timeout (non-blocking)
-    client = get_ollama_client()
-    if client is not None:
-        try:
-            # Use threading to add timeout to Ollama list() call
-            import threading
-            installed_models = None
-            exception_occurred = None
-            
-            def fetch_models():
-                nonlocal installed_models, exception_occurred
-                try:
-                    installed_models = client.list()
-                except Exception as e:
-                    exception_occurred = e
-            
-            thread = threading.Thread(target=fetch_models)
-            thread.daemon = True
-            thread.start()
-            thread.join(timeout=1.0)  # 1 second timeout - fast fail
-            
-            if thread.is_alive():
-                # Ollama is slow/unavailable, skip it silently
-                models["ollama"] = []
-            elif exception_occurred:
-                # Ollama connection failed, skip it silently
-                models["ollama"] = []
-            elif installed_models:
-                print(f"Ollama list() response: {installed_models}")  # Debug print
-                # Fix the model name extraction
-                if 'models' in installed_models and isinstance(installed_models['models'], list):
-                    model_names = []
-                    for model in installed_models['models']:
-                        if isinstance(model, dict):
-                            # Check for both 'name' and 'model' fields for compatibility
-                            if 'name' in model:
-                                model_names.append(model['name'])
-                            elif 'model' in model:
-                                model_names.append(model['model'])
-                        elif isinstance(model, str):
-                            model_names.append(model)
-                        else:
-                            # Handle Model objects with 'model' attribute
-                            if hasattr(model, 'model'):
-                                model_names.append(model.model)
-                            elif hasattr(model, 'name'):
-                                model_names.append(model.name)
-                    models["ollama"] = model_names
-                else:
-                    # Handle case where the response format is different
-                    models["ollama"] = []
-                    print(f"Unexpected response format from Ollama list(): {installed_models}")
-            else:
-                models["ollama"] = []
-        except Exception as e:
-            print(f"Could not fetch Ollama models: {e}")
-            # Return empty list for ollama if it fails during the call
-            models["ollama"] = []
+    # Try to get Ollama models with timeout (DISABLED - causes unnecessary connection attempts)
+    # Ollama models will be empty by default to avoid blocking and connection errors
+    # If Ollama is needed, it will be connected lazily on first use
+    models["ollama"] = []
+    # DISABLED: Ollama connection check to prevent unnecessary connection attempts
+    # client = get_ollama_client()
+    # if client is not None:
+    #     try:
+    #         # Use threading to add timeout to Ollama list() call
+    #         import threading
+    #         installed_models = None
+    #         exception_occurred = None
+    #         
+    #         def fetch_models():
+    #             nonlocal installed_models, exception_occurred
+    #             try:
+    #                 installed_models = client.list()
+    #             except Exception as e:
+    #                 exception_occurred = e
+    #         
+    #         thread = threading.Thread(target=fetch_models)
+    #         thread.daemon = True
+    #         thread.start()
+    #         thread.join(timeout=3)  # 3 second timeout
+    #         
+    #         if thread.is_alive():
+    #             print("⚠️ Ollama list() call timed out after 3 seconds")
+    #             models["ollama"] = []
+    #         elif exception_occurred:
+    #             print(f"Could not fetch Ollama models: {exception_occurred}")
+    #             models["ollama"] = []
+    #         elif installed_models:
+    #             print(f"Ollama list() response: {installed_models}")  # Debug print
+    #             # Fix the model name extraction
+    #             if 'models' in installed_models and isinstance(installed_models['models'], list):
+    #                 model_names = []
+    #                 for model in installed_models['models']:
+    #                     if isinstance(model, dict):
+    #                         # Check for both 'name' and 'model' fields for compatibility
+    #                         if 'name' in model:
+    #                             model_names.append(model['name'])
+    #                         elif 'model' in model:
+    #                             model_names.append(model['model'])
+    #                     elif isinstance(model, str):
+    #                         model_names.append(model)
+    #                     else:
+    #                         # Handle Model objects with 'model' attribute
+    #                         if hasattr(model, 'model'):
+    #                             model_names.append(model.model)
+    #                         elif hasattr(model, 'name'):
+    #                             model_names.append(model.name)
+    #                 models["ollama"] = model_names
+    #             else:
+    #                 # Handle case where the response format is different
+    #                 models["ollama"] = []
+    #                 print(f"Unexpected response format from Ollama list(): {installed_models}")
+    #         else:
+    #             models["ollama"] = []
+    #     except Exception as e:
+    #         print(f"Could not fetch Ollama models: {e}")
+    #         # Return empty list for ollama if it fails during the call
+    #         models["ollama"] = []
 
     # HuggingFace models - Only models confirmed to work with Inference API
     # Note: Meta Llama models are NOT available on Inference API (require local transformers)
@@ -890,6 +862,20 @@ def get_available_models():
         # Use mistralai/Mistral-7B-Instruct-v0.3 or Ollama llama3:8b as alternatives
     ]
 
+    # Alibaba DashScope Qwen models - OpenAI-compatible API
+    # Always include models in list (API key check happens during actual usage)
+    # Alibaba DashScope Qwen models - OpenAI-compatible API (Güncel 2025 modelleri)
+    # Always include models in list (API key check happens during actual usage)
+    models["alibaba"] = [
+        # Güncel chat modelleri (2025)
+        "qwen-plus",              # Qwen Plus - Genel amaçlı
+        "qwen-turbo",             # Qwen Turbo - Hızlı yanıt
+        "qwen-flash",             # Qwen Flash - Çok hızlı yanıt
+        "qwen-max",               # Qwen Max - En güçlü model
+        "qwen-max-longcontext",   # Qwen Max Long Context - Uzun bağlam desteği
+        "qwen2.5-max",            # Qwen 2.5 Max - 2025 güncel model
+    ]
+
     return models
 
 @app.get("/models/embedding", summary="List Available Embedding Models")
@@ -901,77 +887,56 @@ def get_available_embedding_models():
         "alibaba": []
     }
     
-    # Get Ollama embedding models with fast timeout (non-blocking)
-    client = get_ollama_client()
-    if client is not None:
-        try:
-            # Use threading for fast timeout
-            import threading
-            installed_models = None
-            exception_occurred = None
-            
-            def fetch_models():
-                nonlocal installed_models, exception_occurred
-                try:
-                    installed_models = client.list()
-                except Exception as e:
-                    exception_occurred = e
-            
-            thread = threading.Thread(target=fetch_models)
-            thread.daemon = True
-            thread.start()
-            thread.join(timeout=1.0)  # 1 second timeout - fast fail
-            
-            if thread.is_alive() or exception_occurred:
-                # Ollama is slow/unavailable, skip it silently
-                embedding_models["ollama"] = []
-                return embedding_models
-            
-            if not installed_models:
-                embedding_models["ollama"] = []
-                return embedding_models
-            
-            print(f"[Embedding] Ollama list response type: {type(installed_models)}")
-            print(f"[Embedding] Ollama list response: {installed_models}")
-            
-            # Handle different response formats
-            models_list = []
-            if isinstance(installed_models, dict) and 'models' in installed_models:
-                models_list = installed_models['models']
-            elif isinstance(installed_models, list):
-                models_list = installed_models
-            elif hasattr(installed_models, 'models'):
-                models_list = installed_models.models
-            else:
-                # Try to extract models from the response
-                models_list = installed_models if isinstance(installed_models, list) else []
-            
-            # Filter for embedding models (common embedding model names)
-            embedding_keywords = ['embed', 'bge', 'nomic', 'instructor', 'e5']
-            for model in models_list:
-                model_name = ""
-                # Handle Model objects (from ollama library)
-                if hasattr(model, 'model'):
-                    model_name = model.model
-                elif hasattr(model, 'name'):
-                    model_name = model.name
-                # Handle dict format
-                elif isinstance(model, dict):
-                    model_name = model.get('name', model.get('model', ''))
-                # Handle string format
-                elif isinstance(model, str):
-                    model_name = model
-                
-                # Check if it's an embedding model
-                if model_name and any(keyword in model_name.lower() for keyword in embedding_keywords):
-                    embedding_models["ollama"].append(model_name)
-                    print(f"[Embedding] Added Ollama embedding model: {model_name}")
-            
-            print(f"[Embedding] Found {len(embedding_models['ollama'])} Ollama embedding models")
-        except Exception as e:
-            print(f"[Embedding] Could not fetch Ollama embedding models: {e}")
-            import traceback
-            traceback.print_exc()
+    # Get Ollama embedding models (DISABLED - causes unnecessary connection attempts)
+    # Ollama embedding models will be empty by default to avoid blocking and connection errors
+    # If Ollama is needed, it will be connected lazily on first use
+    embedding_models["ollama"] = []
+    # DISABLED: Ollama connection check to prevent unnecessary connection attempts
+    # client = get_ollama_client()
+    # if client is not None:
+    #     try:
+    #         installed_models = client.list()
+    #         print(f"[Embedding] Ollama list response type: {type(installed_models)}")
+    #         print(f"[Embedding] Ollama list response: {installed_models}")
+    #         
+    #         # Handle different response formats
+    #         models_list = []
+    #         if isinstance(installed_models, dict) and 'models' in installed_models:
+    #             models_list = installed_models['models']
+    #         elif isinstance(installed_models, list):
+    #             models_list = installed_models
+    #         elif hasattr(installed_models, 'models'):
+    #             models_list = installed_models.models
+    #         else:
+    #             # Try to extract models from the response
+    #             models_list = installed_models if isinstance(installed_models, list) else []
+    #         
+    #         # Filter for embedding models (common embedding model names)
+    #         embedding_keywords = ['embed', 'bge', 'nomic', 'instructor', 'e5']
+    #         for model in models_list:
+    #             model_name = ""
+    #             # Handle Model objects (from ollama library)
+    #             if hasattr(model, 'model'):
+    #                 model_name = model.model
+    #             elif hasattr(model, 'name'):
+    #                 model_name = model.name
+    #             # Handle dict format
+    #             elif isinstance(model, dict):
+    #                 model_name = model.get('name', model.get('model', ''))
+    #             # Handle string format
+    #             elif isinstance(model, str):
+    #                 model_name = model
+    #             
+    #             # Check if it's an embedding model
+    #             if model_name and any(keyword in model_name.lower() for keyword in embedding_keywords):
+    #                 embedding_models["ollama"].append(model_name)
+    #                 print(f"[Embedding] Added Ollama embedding model: {model_name}")
+    #         
+    #         print(f"[Embedding] Found {len(embedding_models['ollama'])} Ollama embedding models")
+    #     except Exception as e:
+    #         print(f"[Embedding] Could not fetch Ollama embedding models: {e}")
+    #         import traceback
+    #         traceback.print_exc()
     
     # Popular free HuggingFace embedding models
     embedding_models["huggingface"] = [
@@ -1047,31 +1012,16 @@ def get_available_embedding_models():
         }
     ]
     
-    # Alibaba DashScope embedding models
-    if alibaba_client and ALIBABA_API_KEY:
-        embedding_models["alibaba"] = [
-            {
-                "id": "text-embedding-v4",
-                "name": "text-embedding-v4",
-                "description": "Alibaba DashScope - En güncel embedding modeli (1024 boyut, çok dilli)",
-                "dimensions": 1024,
-                "language": "multilingual"
-            },
-            {
-                "id": "text-embedding-v3",
-                "name": "text-embedding-v3",
-                "description": "Alibaba DashScope - Önceki versiyon (1024 boyut, çok dilli)",
-                "dimensions": 1024,
-                "language": "multilingual"
-            },
-            {
-                "id": "text-embedding-v2",
-                "name": "text-embedding-v2",
-                "description": "Alibaba DashScope - Stabil versiyon (1536 boyut, çok dilli)",
-                "dimensions": 1536,
-                "language": "multilingual"
-            }
-        ]
+    # Alibaba DashScope embedding models (sadece v4 - en güncel)
+    embedding_models["alibaba"] = [
+        {
+            "id": "text-embedding-v4",
+            "name": "text-embedding-v4",
+            "description": "Alibaba DashScope Text Embedding v4 - Qwen3-Embedding (1024 boyut, 100+ dil)",
+            "dimensions": 1024,
+            "language": "multilingual"
+        }
+    ]
     
     return embedding_models
 
@@ -1163,15 +1113,6 @@ async def pull_model(request: PullModelRequest):
         print(f"❌ Error during model pull: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred while pulling the model: {str(e)}")
 
-def is_alibaba_embedding_model(model_name: str) -> bool:
-    """Check if the model is an Alibaba DashScope embedding model."""
-    alibaba_embedding_models = [
-        "text-embedding-v4",
-        "text-embedding-v3",
-        "text-embedding-v2"
-    ]
-    return model_name in alibaba_embedding_models
-
 def is_huggingface_embedding_model(model_name: str) -> bool:
     """Check if the model is a HuggingFace embedding model."""
     # HuggingFace models typically have format: "organization/model-name" or contain "/"
@@ -1190,11 +1131,29 @@ def is_huggingface_embedding_model(model_name: str) -> bool:
     # Check if it's in the list or contains "/" (typical HuggingFace format)
     return model_name in hf_embedding_models or ("/" in model_name and not model_name.startswith("openai/"))
 
+def is_alibaba_embedding_model(model_name: str) -> bool:
+    """Check if the model is an Alibaba DashScope embedding model."""
+    alibaba_embedding_models = [
+        "text-embedding-v4"
+    ]
+    return model_name in alibaba_embedding_models or model_name.startswith("text-embedding-")
+
+@app.post("/embeddings", response_model=EmbedResponse, summary="Generate Embeddings for Texts (OpenAI-compatible endpoint)")
+async def generate_embeddings_openai_compatible(request: EmbedRequest):
+    """
+    OpenAI-compatible embeddings endpoint.
+    Receives a list of texts and returns their embeddings.
+    Supports Ollama, HuggingFace, and Alibaba DashScope embedding models.
+    This endpoint is provided for compatibility with OpenAI API format.
+    """
+    # Delegate to the main /embed endpoint
+    return await generate_embeddings(request)
+
 @app.post("/embed", response_model=EmbedResponse, summary="Generate Embeddings for Texts")
 async def generate_embeddings(request: EmbedRequest):
     """
     Receives a list of texts and returns their embeddings.
-    Uses HuggingFace if a HuggingFace model is specified, otherwise tries Ollama first.
+    Supports Ollama, HuggingFace, and Alibaba DashScope embedding models.
     """
     texts = request.texts
     
@@ -1203,93 +1162,125 @@ async def generate_embeddings(request: EmbedRequest):
     
     try:
         start_time = time.time()
-        default_model = os.getenv("DEFAULT_EMBEDDING_MODEL", "nomic-embed-text")
+        # Get model from request, if not provided use Alibaba DashScope embedding (default in system)
+        # This prevents unnecessary Ollama connection attempts when session embedding model is not passed
+        default_model = os.getenv("DEFAULT_EMBEDDING_MODEL", "text-embedding-v4")
         model_name = getattr(request, "model", None) or default_model
         
         # Clean model name (remove :latest, :v1, etc.)
         if ":" in model_name:
             model_name = model_name.split(":")[0]
         
-        print(f"Generating embeddings for {len(texts)} texts using model: {model_name}")
+        print(f"🔵 [EMBEDDING] Generating embeddings for {len(texts)} texts using model: {model_name}")
+        print(f"🔵 [EMBEDDING] Default model: {default_model}, Request model: {getattr(request, 'model', None)}")
         
         embeddings = []
         
-        # 🎯 CRITICAL FIX: Check provider-specific models first
-        if is_alibaba_embedding_model(model_name):
-            print(f"🔍 [EMBEDDING DEBUG] Detected Alibaba embedding model: {model_name}")
-            
+        # Check for Alibaba embedding model first (PRIORITY 1)
+        is_alibaba_embedding = is_alibaba_embedding_model(model_name)
+        alibaba_failed = False
+        if is_alibaba_embedding:
+            print(f"🔵 [EMBEDDING] Detected Alibaba embedding model: {model_name}")
             if not alibaba_client or not ALIBABA_API_KEY:
-                error_detail = (
-                    f"❌ [EMBEDDING ERROR] Alibaba embedding model '{model_name}' requested but Alibaba client not available.\n"
-                    f"   - Please check ALIBABA_API_KEY environment variable\n"
-                    f"   - Ensure identity verification is completed in Alibaba Cloud\n"
-                    f"   - NO FALLBACK will be attempted to preserve research integrity"
-                )
-                print(error_detail)
-                raise HTTPException(status_code=503, detail=error_detail)
-            
-            try:
-                print(f"🔍 [EMBEDDING DEBUG] Calling Alibaba DashScope embedding API for {len(texts)} texts")
-                
-                # Use OpenAI-compatible embedding API for Alibaba DashScope
-                # Reference: https://help.aliyun.com/zh/dashscope/developer-reference/text-embedding-quick-start
-                api_response = alibaba_client.embeddings.create(
-                    model=model_name,
-                    input=texts
-                )
-                
-                # Extract embeddings from response
-                for embedding_data in api_response.data:
-                    embeddings.append(embedding_data.embedding)
-                
-                end_time = time.time()
-                processing_time = end_time - start_time
-                print(f"✅ [EMBEDDING SUCCESS] Generated {len(embeddings)} embeddings using Alibaba '{model_name}' in {processing_time:.2f} seconds")
-                
-                return EmbedResponse(embeddings=embeddings, model_used=model_name)
-                
-            except Exception as alibaba_error:
-                error_detail = (
-                    f"❌ [EMBEDDING ERROR] Alibaba embedding failed for model '{model_name}':\n"
-                    f"   Error: {str(alibaba_error)}\n"
-                    f"   - Check if identity verification is completed in Alibaba Cloud\n"
-                    f"   - NO FALLBACK attempted to preserve research integrity"
-                )
-                print(error_detail)
-                raise HTTPException(status_code=500, detail=error_detail)
-        
-        # Skip Ollama if a HuggingFace model is explicitly requested
-        # Check if it's a HuggingFace model by format (contains / and starts with known orgs)
-        hf_orgs = ["sentence-transformers/", "intfloat/", "BAAI/"]
-        is_hf_model = "/" in model_name and any(model_name.startswith(org) for org in hf_orgs)
-        skip_ollama = is_huggingface_embedding_model(model_name) or is_hf_model
-        
-        if skip_ollama:
-            print(f"🔍 [EMBEDDING DEBUG] Detected HuggingFace model '{model_name}', skipping Ollama")
-        else:
-            # Try Ollama first if available and not a HuggingFace model
-            client = get_ollama_client()
-            if client is not None:
+                error_msg = f"❌ [CRITICAL] Alibaba client not available for embedding model '{model_name}'. "
+                if not ALIBABA_API_KEY:
+                    error_msg += "ALIBABA_API_KEY is not set. "
+                if not alibaba_client:
+                    error_msg += "Alibaba client initialization failed. "
+                error_msg += "Falling back to HuggingFace."
+                print(error_msg)
+                # Skip Ollama check entirely for Alibaba models, go directly to HuggingFace
+                alibaba_failed = True
+            else:
                 try:
-                    for text in texts:
-                        response = client.embeddings(model=model_name, prompt=text)
-                        
-                        if isinstance(response, dict):
-                            embedding = response.get('embedding')
-                        else:
-                            embedding = getattr(response, 'embedding', None)
-
-                        if embedding is not None:
+                    print(f"✅ Using Alibaba DashScope embedding model: {model_name}")
+                    
+                    # Process all texts individually (no batch to avoid 8192 char limit)
+                    # Individual chunks should be small enough, batch causes total char limit issues
+                    embeddings = []
+                    print(f"Processing {len(texts)} texts individually for Alibaba embedding")
+                    
+                    for i, text in enumerate(texts):
+                        try:
+                            print(f"Processing text {i+1}/{len(texts)} (length: {len(text)} chars)")
+                            
+                            # Send individual text to avoid batch character limit
+                            embedding_response = alibaba_client.embeddings.create(
+                                model=model_name,
+                                input=text  # Send single text directly (not as list)
+                            )
+                            
+                            # Process individual response
+                            if hasattr(embedding_response, 'data') and len(embedding_response.data) > 0:
+                                embedding = embedding_response.data[0].embedding
+                            elif isinstance(embedding_response, dict) and 'data' in embedding_response:
+                                embedding = embedding_response['data'][0]['embedding']
+                            else:
+                                raise Exception(f"Unexpected Alibaba embedding response format for text {i+1}")
+                            
                             embeddings.append(embedding)
-                        else:
-                            raise Exception(f"Could not extract embedding from Ollama response.")
+                            
+                        except Exception as individual_error:
+                            print(f"⚠️ Individual Alibaba embedding failed for text {i+1}: {str(individual_error)}")
+                            # Add a zero vector as fallback for failed embeddings
+                            embeddings.append([0.0] * 1024)  # Assuming 1024-dimensional embeddings for text-embedding-v4
                     
                     end_time = time.time()
                     processing_time = end_time - start_time
-                    print(f"✅ Successfully generated {len(embeddings)} embeddings using Ollama in {processing_time:.2f} seconds.")
+                    print(f"✅ Successfully generated {len(embeddings)} embeddings using Alibaba DashScope in {processing_time:.2f} seconds.")
                     return EmbedResponse(embeddings=embeddings, model_used=model_name)
-                except Exception as ollama_error:
-                    print(f"⚠️ Ollama embedding failed: {ollama_error}. Trying HuggingFace fallback...")
+                except Exception as alibaba_error:
+                    print(f"⚠️ Alibaba embedding failed: {alibaba_error}. Trying HuggingFace fallback...")
+                    alibaba_failed = True
+        
+        # Check model type and skip Ollama entirely unless explicitly an Ollama model
+        # This prevents unnecessary connection attempts
+        hf_orgs = ["sentence-transformers/", "intfloat/", "BAAI/"]
+        is_hf_model = "/" in model_name and any(model_name.startswith(org) for org in hf_orgs)
+        ollama_models = ["nomic-embed-text", "nomic-embed", "embeddinggemma", "bge-m3"]
+        is_ollama_model = model_name in ollama_models
+        
+        # Skip Ollama for all non-Ollama models (Alibaba, HuggingFace, or unknown)
+        # If Alibaba was detected but failed, skip Ollama entirely
+        if is_alibaba_embedding and alibaba_failed:
+            print(f"⚠️ Alibaba model '{model_name}' failed, skipping Ollama and using HuggingFace fallback.")
+        elif is_huggingface_embedding_model(model_name) or is_hf_model:
+            print(f"Detected HuggingFace model '{model_name}', skipping Ollama")
+        elif not is_ollama_model:
+            # Unknown model or default - if it's not explicitly an Ollama model, skip Ollama
+            # Note: If it's an Alibaba model, we should have handled it above
+            if is_alibaba_embedding_model(model_name):
+                print(f"⚠️ Model '{model_name}' is Alibaba embedding model, but Alibaba check failed earlier. Using HuggingFace fallback...")
+            else:
+                print(f"Model '{model_name}' is not an Ollama model, skipping Ollama and using HuggingFace directly")
+        else:
+            # Only try Ollama if it's explicitly an Ollama model
+            if is_ollama_model:
+                print(f"Detected Ollama model '{model_name}', attempting Ollama connection...")
+                client = get_ollama_client()
+                if client is not None:
+                    try:
+                        for text in texts:
+                            response = client.embeddings(model=model_name, prompt=text)
+                            
+                            if isinstance(response, dict):
+                                embedding = response.get('embedding')
+                            else:
+                                embedding = getattr(response, 'embedding', None)
+
+                            if embedding is not None:
+                                embeddings.append(embedding)
+                            else:
+                                raise Exception(f"Could not extract embedding from Ollama response.")
+                        
+                        end_time = time.time()
+                        processing_time = end_time - start_time
+                        print(f"✅ Successfully generated {len(embeddings)} embeddings using Ollama in {processing_time:.2f} seconds.")
+                        return EmbedResponse(embeddings=embeddings, model_used=model_name)
+                    except Exception as ollama_error:
+                        print(f"⚠️ Ollama embedding failed: {ollama_error}. Trying HuggingFace fallback...")
+                else:
+                    print(f"⚠️ Ollama client not available, skipping Ollama and using HuggingFace/Alibaba fallback")
         
         # Use HuggingFace if Ollama is not available, failed, or if a HuggingFace model was explicitly requested
         # Map Ollama embedding models to HuggingFace equivalents
@@ -1505,34 +1496,46 @@ async def handle_rag_query(request: RAGQueryRequest):
 @app.post("/rerank", response_model=RerankResponse, summary="Rerank Documents")
 async def rerank_documents(request: RerankRequest):
     """
-    Reranks a list of documents based on their relevance to a query
-    using a cross-encoder model.
+    Reranks a list of documents based on their relevance to a query.
+    Proxies to reranker-service which uses Alibaba DashScope API (no heavy dependencies).
     """
-    model = get_rerank_model()
-    if model is None:
-        raise HTTPException(status_code=503, detail="Rerank model is not available.")
-
+    # Proxy to reranker-service instead of using local sentence-transformers
+    RERANKER_SERVICE_URL = os.getenv("RERANKER_SERVICE_URL", "http://reranker-service:8008")
+    
     try:
-        # The model expects a list of (query, document) pairs
-        model_input = [(request.query, doc) for doc in request.documents]
+        # Forward request to reranker-service
+        response = requests.post(
+            f"{RERANKER_SERVICE_URL}/rerank",
+            json={
+                "query": request.query,
+                "documents": request.documents
+            },
+            timeout=30
+        )
         
-        # Compute scores
-        scores = model.predict(model_input)
-        
-        # Combine documents with their scores
-        results = []
-        for i, score in enumerate(scores):
-            results.append({
-                "document": request.documents[i],
-                "index": i,
-                "relevance_score": float(score)
-            })
+        if response.status_code == 200:
+            result = response.json()
+            # Convert reranker-service response format to our format
+            rerank_results = result.get("results", [])
+            results = []
+            for item in rerank_results:
+                results.append({
+                    "document": item.get("document", ""),
+                    "index": item.get("index", 0),
+                    "relevance_score": item.get("relevance_score", 0.0)
+                })
+            return RerankResponse(results=results)
+        else:
+            error_detail = f"Reranker service error: {response.status_code}"
+            if response.text:
+                error_detail += f" - {response.text[:500]}"
+            print(f"❌ {error_detail}")
+            raise HTTPException(status_code=response.status_code, detail=error_detail)
             
-        # Sort results by score in descending order
-        results.sort(key=lambda x: x["relevance_score"], reverse=True)
-        
-        return RerankResponse(results=results)
-
+    except requests.exceptions.RequestException as e:
+        error_detail = f"Failed to connect to reranker-service: {str(e)}"
+        print(f"❌ {error_detail}")
+        raise HTTPException(status_code=503, detail=error_detail)
     except Exception as e:
         print(f"❌ Error during reranking: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred during reranking: {str(e)}")
@@ -1557,7 +1560,6 @@ async def generate_answer_from_docs(request: GenerateAnswerRequest):
             "• Ders materyalinde bilgi varsa: Madde madde, net ve anlaşılır şekilde açıkla\n"
             "• Ders materyalinde bilgi yoksa: 'Bu konu, verilen ders materyallerinde bulunmuyor' de\n"
             "• Kısa ve öğretici ol, gereksiz açıklama yapma\n"
-            "• MARKDOWN FORMATI KULLAN: Önemli kavramları **kalın** yaz, listeler için `-` veya `*` kullan, kod için `backtick` kullan, başlıklar için `##` kullan\n"
         )
         
         full_prompt = f"""DERS MATERYALİ:

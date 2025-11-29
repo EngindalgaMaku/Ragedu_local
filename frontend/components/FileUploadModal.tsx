@@ -1,6 +1,16 @@
 "use client";
 import React, { useState, useEffect, FormEvent } from "react";
-import { configureAndProcess, listMarkdownFiles, getSession, getChunksForSession } from "@/lib/api";
+import {
+  addMarkdownDocumentsToSession,
+  getBatchProcessingStatus,
+  listMarkdownFiles,
+  listMarkdownFilesWithCategories,
+  listMarkdownCategories,
+  getSession,
+  getChunksForSession,
+  MarkdownFileWithCategory,
+  MarkdownCategory,
+} from "@/lib/api";
 
 interface FileUploadModalProps {
   isOpen: boolean;
@@ -61,6 +71,22 @@ const ProcessingIcon = () => (
   </svg>
 );
 
+const FilterIcon = () => (
+  <svg
+    className="w-4 h-4"
+    fill="none"
+    stroke="currentColor"
+    viewBox="0 0 24 24"
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.707A1 1 0 013 7V4z"
+    />
+  </svg>
+);
+
 export default function FileUploadModal({
   isOpen,
   onClose,
@@ -71,26 +97,37 @@ export default function FileUploadModal({
   setIsProcessing,
   defaultEmbeddingModel,
 }: FileUploadModalProps) {
-  const [markdownFiles, setMarkdownFiles] = useState<string[]>([]);
+  const [markdownFiles, setMarkdownFiles] = useState<
+    MarkdownFileWithCategory[]
+  >([]);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [processedFiles, setProcessedFiles] = useState<Set<string>>(new Set());
+
+  // Category filtering states
+  const [categories, setCategories] = useState<MarkdownCategory[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState<number | null>(null);
+  const [filteredFiles, setFilteredFiles] = useState<
+    MarkdownFileWithCategory[]
+  >([]);
 
   // Configuration states - Fixed values (read-only in UI)
   const chunkStrategy = "lightweight"; // Fixed: lightweight chunking
   const chunkSize = 800; // Fixed: display only
   const chunkOverlap = 100; // Fixed: display only
-  const [embeddingModel, setEmbeddingModel] = useState(defaultEmbeddingModel || "nomic-embed-text"); // Use session's embedding model
-
-  // NEW: LLM Post-Processing option
-  const [useLLMPostProcessing, setUseLLMPostProcessing] = useState(false);
-  const [llmProvider, setLlmProvider] = useState<'ollama' | 'grok'>('grok'); // Default: Grok
-  
-  // Model name based on provider
-  const llmModelName = llmProvider === 'ollama' ? 'llama3:8b' : 'llama-3.1-8b-instant';
+  const [embeddingModel, setEmbeddingModel] = useState(
+    defaultEmbeddingModel || "nomic-embed-text"
+  ); // Use session's embedding model
 
   // Processing status
   const [processingStep, setProcessingStep] = useState("");
+  const [batchJobId, setBatchJobId] = useState<string | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{
+    processed: number;
+    total: number;
+    current_file: string | null;
+    total_chunks: number;
+  }>({ processed: 0, total: 0, current_file: null, total_chunks: 0 });
 
   // Update embedding model when defaultEmbeddingModel prop changes (from session settings)
   useEffect(() => {
@@ -103,63 +140,83 @@ export default function FileUploadModal({
 
   // Normalize filename for comparison (remove .md extension, convert to lowercase)
   const normalizeFilename = (filename: string): string => {
-    return filename.toLowerCase().replace(/\.md$/i, '');
+    return filename.toLowerCase().replace(/\.md$/i, "");
   };
 
-  // Fetch processed files from session chunks
+  // Update filtered files when markdownFiles or selectedCategory change
+  useEffect(() => {
+    if (selectedCategory === null) {
+      setFilteredFiles(markdownFiles);
+    } else {
+      setFilteredFiles(
+        markdownFiles.filter((file) => file.category_id === selectedCategory)
+      );
+    }
+  }, [markdownFiles, selectedCategory]);
+
+  // Handle category selection
+  const handleCategoryChange = (categoryId: number | null) => {
+    setSelectedCategory(categoryId);
+  };
+
+  // Fetch processed files from session chunks - OPTIMIZED
   const fetchProcessedFiles = async () => {
     try {
       const chunks = await getChunksForSession(sessionId);
-      console.log("🔍 Fetched chunks:", chunks.length, "chunks");
-      
-      // Extract unique document names from chunks
+
+      // Only log count, not individual chunks to prevent spam
+      console.log(
+        `📊 Processing ${chunks.length} chunks for session ${sessionId}`
+      );
+
+      // Extract unique document names from chunks - OPTIMIZED
       const processed = new Set<string>();
-      chunks.forEach((chunk: any, index: number) => {
+      const seenDocNames = new Set<string>(); // Prevent duplicate processing
+
+      chunks.forEach((chunk: any) => {
         // Try multiple possible locations for filename
-        const docName = chunk.document_name || 
-                       chunk.chunk_metadata?.source_file || 
-                       chunk.chunk_metadata?.filename ||
-                       chunk.chunk_metadata?.document_name ||
-                       chunk.chunk_metadata?.source_files;
-        
-        if (index < 3) {
-          console.log(`🔍 Chunk ${index}:`, {
-            document_name: chunk.document_name,
-            metadata: chunk.chunk_metadata,
-            extracted: docName
-          });
+        const docName =
+          chunk.document_name ||
+          chunk.chunk_metadata?.source_file ||
+          chunk.chunk_metadata?.filename ||
+          chunk.chunk_metadata?.document_name ||
+          chunk.chunk_metadata?.source_files;
+
+        // Skip if already processed this doc name
+        if (!docName || docName === "Unknown" || seenDocNames.has(docName)) {
+          return;
         }
-        
-        if (docName && docName !== "Unknown") {
-          // Handle array case (source_files might be an array)
-          let filesToProcess: string[] = [];
-          if (Array.isArray(docName)) {
-            filesToProcess = docName;
-          } else if (typeof docName === 'string') {
-            // Try parsing as JSON if it's a JSON string
-            try {
-              const parsed = JSON.parse(docName);
-              if (Array.isArray(parsed)) {
-                filesToProcess = parsed;
-              } else {
-                filesToProcess = [docName];
-              }
-            } catch {
+        seenDocNames.add(docName);
+
+        // Handle array case (source_files might be an array)
+        let filesToProcess: string[] = [];
+        if (Array.isArray(docName)) {
+          filesToProcess = docName;
+        } else if (typeof docName === "string") {
+          // Try parsing as JSON if it's a JSON string
+          try {
+            const parsed = JSON.parse(docName);
+            if (Array.isArray(parsed)) {
+              filesToProcess = parsed;
+            } else {
               filesToProcess = [docName];
             }
+          } catch {
+            filesToProcess = [docName];
           }
-          
-          filesToProcess.forEach((file: string) => {
-            if (file && file !== "Unknown") {
-              const normalized = normalizeFilename(file);
-              processed.add(normalized);
-              if (index < 3) console.log(`✅ Added processed file: "${file}" -> "${normalized}"`);
-            }
-          });
         }
+
+        filesToProcess.forEach((file: string) => {
+          if (file && file !== "Unknown") {
+            const normalized = normalizeFilename(file);
+            processed.add(normalized);
+          }
+        });
       });
-      
-      console.log("🔍 Processed files set:", Array.from(processed));
+
+      console.log(
+        `✅ Found ${processed.size} processed files for session ${sessionId}`
+      );
       setProcessedFiles(processed);
       return processed;
     } catch (e: any) {
@@ -172,19 +229,25 @@ export default function FileUploadModal({
   const fetchMarkdownFiles = async () => {
     try {
       setLoading(true);
-      
-      // Fetch both markdown files and processed files in parallel
-      const [files, processed] = await Promise.all([
-        listMarkdownFiles(),
-        fetchProcessedFiles()
-      ]);
-      
+
+      // Fetch markdown files with categories, categories, and processed files in parallel
+      const [filesWithCategories, categoriesList, processed] =
+        await Promise.all([
+          listMarkdownFilesWithCategories(),
+          listMarkdownCategories(),
+          fetchProcessedFiles(),
+        ]);
+
       // Filter out already processed files (normalize for comparison)
-      const availableFiles = files.filter((file: string) => {
-        const normalized = normalizeFilename(file);
-        return !processed.has(normalized);
-      });
+      const availableFiles = filesWithCategories.filter(
+        (file: MarkdownFileWithCategory) => {
+          const normalized = normalizeFilename(file.filename);
+          return !processed.has(normalized);
+        }
+      );
+
       setMarkdownFiles(availableFiles);
+      setCategories(categoriesList);
     } catch (e: any) {
       onError(e.message || "Markdown dosyaları yüklenemedi");
     } finally {
@@ -201,7 +264,76 @@ export default function FileUploadModal({
     );
   };
 
-  // Handle form submission
+  // Handle select all toggle
+  const handleSelectAll = () => {
+    const currentFilteredFilenames = filteredFiles.map((file) => file.filename);
+
+    if (
+      selectedFiles.length === currentFilteredFilenames.length &&
+      currentFilteredFilenames.every((filename) =>
+        selectedFiles.includes(filename)
+      )
+    ) {
+      // If all filtered files are selected, deselect all
+      setSelectedFiles([]);
+    } else {
+      // Otherwise, select all filtered files
+      setSelectedFiles(currentFilteredFilenames);
+    }
+  };
+
+  // Poll batch processing status (only while modal is open)
+  useEffect(() => {
+    if (!batchJobId || !isProcessing || !isOpen) return;
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const status = await getBatchProcessingStatus(batchJobId);
+        const job = status.job;
+
+        setBatchProgress({
+          processed: job.processed_successfully,
+          total: job.total_files,
+          current_file: job.current_file,
+          total_chunks: job.total_chunks,
+        });
+
+        if (job.current_file) {
+          setProcessingStep(`İşleniyor: ${job.current_file} (${job.processed_successfully}/${job.total_files})`);
+        }
+
+        if (job.status === "completed" || job.status === "completed_with_errors" || job.status === "failed") {
+          clearInterval(pollInterval);
+          setProcessingStep("İşlem tamamlandı!");
+          
+          onSuccess({
+            success: true,
+            message: `Batch işlem tamamlandı: ${job.processed_successfully}/${job.total_files} dosya, ${job.total_chunks} chunk`,
+            processed_count: job.processed_successfully,
+            total_chunks_added: job.total_chunks,
+            errors: job.errors,
+            job_id: job.job_id,
+          });
+
+          setSelectedFiles([]);
+          await fetchMarkdownFiles();
+
+          setTimeout(() => {
+            setIsProcessing(false);
+            setBatchJobId(null);
+            setProcessingStep("");
+            onClose();
+          }, 2000);
+        }
+      } catch (e: any) {
+        console.error("Error polling batch status:", e);
+      }
+    }, 2000); // Poll every 2 seconds
+
+    return () => clearInterval(pollInterval);
+  }, [batchJobId, isProcessing, isOpen]);
+
+  // Handle form submission with batch processing
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (selectedFiles.length === 0) {
@@ -211,38 +343,50 @@ export default function FileUploadModal({
 
     try {
       setIsProcessing(true);
-      setProcessingStep("Konfigürasyon hazırlanıyor...");
+      setProcessingStep("Batch işlem başlatılıyor...");
 
-      const result = await configureAndProcess({
-        session_id: sessionId,
-        markdown_files: selectedFiles,
-        chunk_strategy: chunkStrategy,
-        chunk_size: chunkSize,
-        chunk_overlap: chunkOverlap,
-        embedding_model: embeddingModel,
-        use_llm_post_processing: useLLMPostProcessing,
-        llm_model_name: llmModelName,
-      });
+      console.log(`🚀 Starting batch processing for ${selectedFiles.length} files`);
 
-      if (result.success) {
-        setProcessingStep("İşlem tamamlandı!");
-        onSuccess(result);
-        setSelectedFiles([]);
-        // Refresh the file list to exclude newly processed files
-        await fetchMarkdownFiles();
+      const result = await addMarkdownDocumentsToSession(
+        sessionId,
+        selectedFiles,
+        embeddingModel
+      );
+
+      if (result.success && result.job_id) {
+        // Batch processing started - close modal immediately
+        setBatchJobId(result.job_id);
+        setBatchProgress({
+          processed: 0,
+          total: result.total_files || selectedFiles.length,
+          current_file: null,
+          total_chunks: 0,
+        });
+        
+        // Show success message
+        onSuccess({
+          success: true,
+          message: `Batch işlem başlatıldı: ${result.total_files || selectedFiles.length} dosya arka planda işleniyor...`,
+          job_id: result.job_id,
+          background_processing: true,
+        });
+        
+        // Close modal immediately
         setTimeout(() => {
           onClose();
-          setProcessingStep("");
-        }, 2000);
+        }, 500); // Small delay to show message
+        
+        // Processing will continue in background, status will be polled
+        // Success callback will be called when job completes
       } else {
-        onError(result.message || "İşlem başarısız");
-        setIsProcessing(false);
-        setProcessingStep("");
+        throw new Error(result.message || "Batch işlem başlatılamadı");
       }
     } catch (e: any) {
+      console.error("❌ Processing error:", e);
       onError(e.message || "RAG konfigürasyonu başarısız");
       setIsProcessing(false);
       setProcessingStep("");
+      setBatchJobId(null);
     }
   };
 
@@ -275,27 +419,50 @@ export default function FileUploadModal({
     load();
   }, [isOpen, sessionId]);
 
-  // Update processing steps
+  // Update processing steps with proper cleanup
   useEffect(() => {
+    let stepInterval: NodeJS.Timeout | null = null;
+
     if (isProcessing && processingStep === "Konfigürasyon hazırlanıyor...") {
       const steps = [
         "Dosyalar okunuyor...",
         "Metin parçaları oluşturuluyor...",
         "Embedding vektörleri hesaplanıyor...",
         "Veritabanı güncelleniyor...",
+        "İşlem tamamlanıyor...",
       ];
 
       let stepIndex = 0;
-      const interval = setInterval(() => {
+      stepInterval = setInterval(() => {
         if (stepIndex < steps.length) {
           setProcessingStep(steps[stepIndex]);
           stepIndex++;
+        } else {
+          // Clear interval when steps are done
+          if (stepInterval) {
+            clearInterval(stepInterval);
+            stepInterval = null;
+          }
         }
       }, 3000);
-
-      return () => clearInterval(interval);
     }
+
+    // Cleanup function
+    return () => {
+      if (stepInterval) {
+        clearInterval(stepInterval);
+      }
+    };
   }, [isProcessing, processingStep]);
+
+  // Global cleanup when component unmounts
+  useEffect(() => {
+    return () => {
+      // Clear any remaining processing state
+      setIsProcessing(false);
+      setProcessingStep("");
+    };
+  }, []);
 
   if (!isOpen) return null;
 
@@ -341,14 +508,91 @@ export default function FileUploadModal({
               onSubmit={handleSubmit}
               className="space-y-6"
             >
+              {/* Category Filter */}
+              {categories.length > 0 && (
+                <div className="mb-6">
+                  <label className="block text-sm font-medium text-foreground mb-3">
+                    <div className="flex items-center gap-2">
+                      <FilterIcon />
+                      Kategori Filtresi
+                    </div>
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleCategoryChange(null)}
+                      className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                        selectedCategory === null
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-muted hover:bg-muted/80 text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      Tümü
+                      <span className="ml-2 text-xs opacity-70">
+                        ({markdownFiles.length})
+                      </span>
+                    </button>
+                    {categories.map((category) => (
+                      <button
+                        key={category.id}
+                        type="button"
+                        onClick={() => handleCategoryChange(category.id)}
+                        className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                          selectedCategory === category.id
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-muted hover:bg-muted/80 text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {category.name}
+                        <span className="ml-2 text-xs opacity-70">
+                          (
+                          {
+                            markdownFiles.filter(
+                              (file) => file.category_id === category.id
+                            ).length
+                          }
+                          )
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* File Selection */}
               <div>
-                <label className="block text-sm font-medium text-foreground mb-3">
-                  <div className="flex items-center gap-2">
-                    <UploadIcon className="w-5 h-5" />
-                    Markdown Dosyaları Seçin
-                  </div>
-                </label>
+                <div className="flex items-center justify-between mb-3">
+                  <label className="block text-sm font-medium text-foreground">
+                    <div className="flex items-center gap-2">
+                      <UploadIcon className="w-5 h-5" />
+                      Markdown Dosyaları Seçin
+                      {selectedCategory !== null && (
+                        <span className="text-xs text-muted-foreground ml-2">
+                          (Kategori:{" "}
+                          {
+                            categories.find((c) => c.id === selectedCategory)
+                              ?.name
+                          }
+                          )
+                        </span>
+                      )}
+                    </div>
+                  </label>
+                  {filteredFiles.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleSelectAll}
+                      className="text-xs text-primary hover:text-primary/80 font-medium px-2 py-1 rounded hover:bg-primary/10 transition-colors"
+                    >
+                      {selectedFiles.length === filteredFiles.length &&
+                      filteredFiles.every((file) =>
+                        selectedFiles.includes(file.filename)
+                      )
+                        ? "Hiçbirini Seçme"
+                        : "Tümünü Seç"}
+                    </button>
+                  )}
+                </div>
 
                 {loading ? (
                   <div className="text-center py-8">
@@ -359,30 +603,41 @@ export default function FileUploadModal({
                   </div>
                 ) : (
                   <div className="max-h-48 overflow-y-auto border border-border rounded-lg bg-background">
-                    {markdownFiles.length === 0 ? (
+                    {filteredFiles.length === 0 ? (
                       <div className="text-center py-8 text-muted-foreground">
                         <div className="text-sm">
-                          Markdown dosyası bulunamadı
+                          {selectedCategory === null
+                            ? "Markdown dosyası bulunamadı"
+                            : `${
+                                categories.find(
+                                  (c) => c.id === selectedCategory
+                                )?.name
+                              } kategorisinde dosya bulunamadı`}
                         </div>
                       </div>
                     ) : (
-                      markdownFiles.map((filename) => (
+                      filteredFiles.map((file) => (
                         <div
-                          key={filename}
+                          key={file.filename}
                           className="flex items-start p-4 hover:bg-muted/50 border-b border-border last:border-b-0 transition-colors"
                         >
                           <input
                             type="checkbox"
-                            checked={selectedFiles.includes(filename)}
-                            onChange={() => handleFileToggle(filename)}
+                            checked={selectedFiles.includes(file.filename)}
+                            onChange={() => handleFileToggle(file.filename)}
                             className="mt-0.5 mr-4 h-5 w-5 text-primary rounded border-border focus:ring-primary focus:ring-2 flex-shrink-0"
                           />
                           <div className="flex-1 min-w-0">
                             <div className="text-sm font-medium text-foreground truncate">
-                              {filename.replace(".md", "")}
+                              {file.filename.replace(".md", "")}
                             </div>
-                            <div className="text-xs text-muted-foreground mt-1 truncate">
-                              {filename}
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
+                              <span className="truncate">{file.filename}</span>
+                              {file.category_name && (
+                                <span className="px-2 py-1 bg-muted/50 rounded text-xs font-medium flex-shrink-0">
+                                  {file.category_name}
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -398,132 +653,6 @@ export default function FileUploadModal({
                     </div>
                   </div>
                 )}
-              </div>
-
-              {/* LLM Post-Processing Option */}
-              <div className="bg-gradient-to-r from-violet-500/10 to-purple-500/10 rounded-lg p-4 border border-violet-500/20">
-                <div className="flex items-start gap-3">
-                  <input
-                    type="checkbox"
-                    id="use-llm-processing"
-                    checked={useLLMPostProcessing}
-                    onChange={(e) => setUseLLMPostProcessing(e.target.checked)}
-                    className="mt-1 h-5 w-5 text-violet-600 rounded border-violet-300 focus:ring-violet-500 focus:ring-2"
-                  />
-                  <div className="flex-1">
-                    <label htmlFor="use-llm-processing" className="block text-sm font-semibold text-foreground cursor-pointer">
-                      🤖 LLM ile Gelişmiş İşleme (Batch Mode)
-                    </label>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      LLM kullanarak chunk kalitesini artırır. 
-                      <span className="font-medium text-violet-600"> 5 chunks/çağrı</span> - 
-                      <span className="font-medium text-amber-600"> ~6-7 dakika</span> ekstra süre
-                    </p>
-                    
-                    {useLLMPostProcessing && (
-                      <div className="mt-3 p-3 bg-violet-500/10 rounded-lg border border-violet-500/20 space-y-3">
-                        {/* LLM Provider Selection */}
-                        <div className="flex items-center gap-2 pb-2 border-b border-violet-500/20">
-                          <span className="text-xs font-medium text-foreground">Provider:</span>
-                          <button
-                            type="button"
-                            onClick={() => setLlmProvider('grok')}
-                            className={`px-2 py-1 text-xs rounded transition-all ${
-                              llmProvider === 'grok'
-                                ? 'bg-violet-600 text-white'
-                                : 'bg-muted text-muted-foreground hover:bg-muted/80'
-                            }`}
-                          >
-                            ⚡ Grok API
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setLlmProvider('ollama')}
-                            className={`px-2 py-1 text-xs rounded transition-all ${
-                              llmProvider === 'ollama'
-                                ? 'bg-violet-600 text-white'
-                                : 'bg-muted text-muted-foreground hover:bg-muted/80'
-                            }`}
-                          >
-                            🏠 Ollama
-                          </button>
-                        </div>
-                        
-                        <div className="text-xs space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-foreground">Model:</span>
-                            <span className="text-muted-foreground">{llmModelName}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-foreground">Provider:</span>
-                            <span className="text-muted-foreground">
-                              {llmProvider === 'grok' ? 'Grok API (Hızlı, Internet gerekli)' : 'Ollama (Local, RAM kullanır)'}
-                            </span>
-                          </div>
-                          {llmProvider === 'ollama' && (
-                            <div className="text-xs text-amber-600 font-medium mt-1 p-2 bg-amber-500/10 rounded border border-amber-500/20">
-                              ⚠️ Ollama batch processing desteklemiyor. Upload sonrası chunk listesinden tek tek iyileştirebilirsiniz.
-                            </div>
-                          )}
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-foreground">İşlem Modu:</span>
-                            <span className="text-muted-foreground">Batch Processing (80% daha az API çağrısı)</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-foreground">Tahmini Süre:</span>
-                            <span className="text-amber-600 font-medium">
-                              {selectedFiles.length > 0 ? `~${Math.ceil(selectedFiles.length * 2.5)} dakika` : 'Dosya seçin'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Configuration Parameters - Read-only Information */}
-              <div className="bg-muted/30 rounded-lg p-4 border border-border">
-                <h3 className="text-sm font-semibold text-foreground mb-3">
-                  Temel İşleme Ayarları
-                </h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="block text-xs font-medium text-muted-foreground">
-                      Parçalama Stratejisi
-                    </label>
-                    <div className="px-3 py-2 text-sm border border-border rounded-lg bg-muted/50 text-foreground">
-                      Lightweight Turkish
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="block text-xs font-medium text-muted-foreground">
-                      Parça Boyutu
-                    </label>
-                    <div className="px-3 py-2 text-sm border border-border rounded-lg bg-muted/50 text-foreground">
-                      Anlamsal (~400-1200)
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="block text-xs font-medium text-muted-foreground">
-                      Parça Çakışması
-                    </label>
-                    <div className="px-3 py-2 text-sm border border-border rounded-lg bg-muted/50 text-foreground">
-                      Otomatik (cümle bazlı)
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="block text-xs font-medium text-muted-foreground">
-                      Embedding Model
-                    </label>
-                    <div className="px-3 py-2 text-sm border border-border rounded-lg bg-muted/50 text-foreground">
-                      {embeddingModel}
-                    </div>
-                  </div>
-                </div>
               </div>
             </form>
           )}

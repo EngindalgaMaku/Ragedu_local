@@ -18,8 +18,9 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import NotificationSystem from "@/components/NotificationSystem";
 
-type TabType = "dashboard" | "sessions" | "upload" | "query" | "analytics";
+type TabType = "dashboard" | "sessions" | "upload" | "analytics" | "modules" | "assistant" | "query";
 
 interface TeacherLayoutProps {
   children: React.ReactNode;
@@ -52,16 +53,22 @@ const navigationItems: Array<{
     desc: "Materyal Yükleme",
   },
   {
-    id: "query",
-    name: "Eğitim Asistanı",
-    icon: Bot,
-    desc: "Soru-Cevap",
-  },
-  {
     id: "analytics",
     name: "Analytics Dashboard",
     icon: BarChart3,
     desc: "Konu Analizi",
+  },
+  {
+    id: "modules",
+    name: "Modül Sistemi",
+    icon: FolderOpen,
+    desc: "Eğitim Modülleri",
+  },
+  {
+    id: "assistant",
+    name: "Akıllı Asistan",
+    icon: Bot,
+    desc: "Soru & Cevap",
   },
 ];
 
@@ -86,6 +93,23 @@ function TeacherLayout({
   };
 
   const handleTabClick = (tabId: TabType) => {
+    // Special handling for upload tab - redirect to document-center
+    if (tabId === "upload") {
+      router.push("/document-center");
+      setSidebarOpen(false);
+      return;
+    }
+
+    // Special handling for assistant tab - redirect to education-assistant page
+    if (tabId === "assistant") {
+      router.push("/education-assistant");
+      setSidebarOpen(false);
+      return;
+    }
+
+    // For all other tabs, go to main page first and then set the active tab
+    router.push("/");
+
     if (onTabChange) {
       onTabChange(tabId);
     }
@@ -354,6 +378,9 @@ function TeacherLayout({
             </Button>
           </div>
           <div className="flex items-center gap-2">
+            {/* Notification System - Both Mobile and Desktop */}
+            <NotificationSystem />
+
             {/* User Menu Dropdown - Mobile Header */}
             <div className="relative lg:hidden">
               <Button

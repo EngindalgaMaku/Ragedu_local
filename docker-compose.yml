@@ -13,8 +13,6 @@ services:
       - PORT=${API_GATEWAY_PORT:-8000}
       - API_GATEWAY_PORT=${API_GATEWAY_PORT:-8000}
       - HOST=0.0.0.0
-      # API Keys
-      - ALIBABA_API_KEY=${ALIBABA_API_KEY}
       # Service URLs - Environment variable'lardan alınır
       - PDF_PROCESSOR_URL=${PDF_PROCESSOR_URL:-http://docstrange-service:80}
       - DOCUMENT_PROCESSOR_HOST=${DOCUMENT_PROCESSOR_HOST:-document-processing-service}
@@ -48,6 +46,8 @@ services:
       - session_data:/app/sessions
       - markdown_data:/app/data/markdown
       - database_data:/app/data
+    # Override Dockerfile CMD with multi-worker uvicorn - CRITICAL for concurrent requests!
+    command: python -m uvicorn src.api.main:app --host 0.0.0.0 --port ${API_GATEWAY_PORT:-8000} --workers 5
     depends_on:
       auth-service:
         condition: service_healthy
@@ -89,7 +89,7 @@ services:
       - RERANKER_SERVICE_HOST=${RERANKER_SERVICE_HOST:-reranker-service}
       - RERANKER_SERVICE_PORT=${RERANKER_SERVICE_PORT:-8008}
       - RERANKER_SERVICE_URL=${RERANKER_SERVICE_URL:-http://${RERANKER_SERVICE_HOST:-reranker-service}:${RERANKER_SERVICE_PORT:-8008}}
-      - USE_RERANKER_SERVICE=${USE_RERANKER_SERVICE:-false} # Set to "true" to use new reranker service
+      - USE_RERANKER_SERVICE=${USE_RERANKER_SERVICE:-true} # Enable new reranker service by default
       - CHROMADB_HOST=${CHROMADB_HOST:-chromadb-service}
       - CHROMADB_PORT=${CHROMADB_PORT:-8000}
       - CHROMADB_URL=${CHROMADB_URL:-http://${CHROMADB_HOST:-chromadb-service}:${CHROMADB_PORT:-8000}}
@@ -100,6 +100,8 @@ services:
       # Database configuration
       - DATABASE_PATH=/app/data/rag_assistant.db
       - APRAG_DB_PATH=/app/data/rag_assistant.db
+      # Embedding model configuration
+      - DEFAULT_EMBEDDING_MODEL=${DEFAULT_EMBEDDING_MODEL:-text-embedding-v4}
       # CORS configuration - Add external server IP for browser access
       - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:8000,http://host.docker.internal:3000,http://frontend:3000,http://api-gateway:8000,http://auth-service:8006,http://46.62.254.131:3000,http://46.62.254.131:8000,http://46.62.254.131:8006,http://46.62.254.131:8007}
       - CORS_CREDENTIALS=true
@@ -112,6 +114,8 @@ services:
     volumes:
       - database_data:/app/data
       - ./services/auth_service/database/migrations:/app/migrations:ro # Read-only access to migrations
+    # Override Dockerfile CMD with multi-worker uvicorn
+    command: python -m uvicorn main:app --host 0.0.0.0 --port ${APRAG_SERVICE_PORT:-8007} --workers 3
     healthcheck:
       test:
         [
@@ -169,20 +173,14 @@ services:
       - ./services/auth_service/create_test_user.py:/app/create_test_user.py
       - ./services/auth_service/reset_admin_password.py:/app/reset_admin_password.py
     healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          'import requests; import os; requests.get(f''http://localhost:{os.getenv("PORT", "8006")}/health'')',
-        ]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/health').read()"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 60s
     command: >
       sh -c "/app/init-db.sh &&
-             python -m uvicorn main:app --host 0.0.0.0 --port $$PORT"
+             python -m uvicorn main:app --host 0.0.0.0 --port $$PORT --workers 3"
     restart: unless-stopped
     networks:
       - rag-network
@@ -233,7 +231,10 @@ services:
       - RERANKER_SERVICE_HOST=${RERANKER_SERVICE_HOST:-reranker-service}
       - RERANKER_SERVICE_PORT=${RERANKER_SERVICE_PORT:-8008}
       - RERANKER_SERVICE_URL=${RERANKER_SERVICE_URL:-http://${RERANKER_SERVICE_HOST:-reranker-service}:${RERANKER_SERVICE_PORT:-8008}}
-      - USE_RERANKER_SERVICE=${USE_RERANKER_SERVICE:-false} # Set to "true" to use new reranker service
+      - USE_RERANKER_SERVICE=${USE_RERANKER_SERVICE:-true} # Enable new reranker service by default
+      - RERANKER_TYPE=${RERANKER_TYPE:-alibaba} # Default to alibaba reranker
+      - ALIBABA_API_KEY=${ALIBABA_API_KEY:-sk-6f04799e5b5842468307d6c8b825b652}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-sk-6f04799e5b5842468307d6c8b825b652}
       - CHROMADB_HOST=${CHROMADB_HOST:-chromadb-service}
       - CHROMADB_PORT=${CHROMADB_PORT:-8000}
       - CHROMADB_URL=${CHROMADB_URL:-http://${CHROMADB_HOST:-chromadb-service}:${CHROMADB_PORT:-8000}}
@@ -241,6 +242,18 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY}
     volumes:
       - session_data:/app/sessions
+      # Mount source code for hot reload during development
+      - ./services/document_processing_service/main.py:/app/main.py
+      - ./services/document_processing_service/main_new.py:/app/main_new.py
+      - ./services/document_processing_service/api:/app/api
+      - ./services/document_processing_service/core:/app/core
+      - ./services/document_processing_service/services:/app/services
+      - ./services/document_processing_service/utils:/app/utils
+      - ./services/document_processing_service/models:/app/models
+      - ./services/document_processing_service/config.py:/app/config.py
+      - ./src:/app/src
+    # Override Dockerfile CMD with multi-worker uvicorn
+    command: python -m uvicorn main_new:app --host 0.0.0.0 --port 8080 --workers 4
     restart: unless-stopped
     networks:
       - rag-network
@@ -259,7 +272,9 @@ services:
       - HUGGINGFACE_API_KEY=${HUGGINGFACE_API_KEY:-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}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-      - ALIBABA_API_KEY=${ALIBABA_API_KEY}
+      - ALIBABA_API_KEY=${ALIBABA_API_KEY:-sk-6f04799e5b5842468307d6c8b825b652}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-sk-6f04799e5b5842468307d6c8b825b652}
+      - ALIBABA_API_BASE=${ALIBABA_API_BASE:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       # FIX: Use host.docker.internal to access Ollama running on Windows host
       - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
       - OLLAMA_SKIP_VERIFY=true
@@ -269,7 +284,7 @@ services:
     # Override startup command: Skip Ollama serve, use external Ollama on host
     command: >
       sh -c "echo 'Using external Ollama at ${OLLAMA_HOST}' &&
-             uvicorn main:app --host 0.0.0.0 --port ${MODEL_INFERENCE_PORT:-8002}"
+             uvicorn main:app --host 0.0.0.0 --port ${MODEL_INFERENCE_PORT:-8002} --workers 4"
     # Memory optimization: Limit container memory since Ollama runs on host
     deploy:
       resources:
@@ -287,23 +302,24 @@ services:
     ports:
       - "${RERANKER_SERVICE_PORT:-8008}:8008"
     environment:
-      - ALIBABA_API_KEY=${ALIBABA_API_KEY}
-      - DASHSCOPE_API_KEY=${ALIBABA_API_KEY}
       - PORT=8008
-      - RERANKER_TYPE=${RERANKER_TYPE:-bge} # "bge" or "ms-marco"
+      # Default to "alibaba" to avoid heavy PyTorch dependencies
+      # Set RERANKER_TYPE=bge or RERANKER_TYPE=ms-marco if you need local rerankers
+      - RERANKER_TYPE=${RERANKER_TYPE:-alibaba} # "alibaba" (default, no heavy deps), "bge", or "ms-marco"
+      - ALIBABA_API_KEY=${ALIBABA_API_KEY:-${DASHSCOPE_API_KEY}}
       - BGE_MODEL_NAME=${BGE_MODEL_NAME:-BAAI/bge-reranker-v2-m3}
       - MS_MARCO_MODEL_NAME=${MS_MARCO_MODEL_NAME:-cross-encoder/ms-marco-MiniLM-L-6-v2}
-      # HuggingFace cache directory for persistent model storage
+      # HuggingFace cache directory for persistent model storage (only needed for local rerankers)
       - HF_HOME=/app/models
       - TRANSFORMERS_CACHE=/app/models
     volumes:
-      - reranker_models:/app/models # Persistent storage for downloaded models
+      - reranker_models:/app/models # Persistent storage for downloaded models (only needed for local rerankers)
     deploy:
       resources:
         limits:
-          memory: 4G # BGE model needs more RAM
+          memory: 2G # Alibaba API doesn't need much RAM, but keep some buffer
         reservations:
-          memory: 2G
+          memory: 512M # Minimum reservation
     restart: unless-stopped
     networks:
       - rag-network

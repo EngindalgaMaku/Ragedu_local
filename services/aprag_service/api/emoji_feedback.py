@@ -742,7 +742,7 @@ def _update_global_score(db: DatabaseManager, doc_id: str, emoji_score: float, e
                     positive_feedback_count = ?,
                     negative_feedback_count = ?,
                     avg_emoji_score = ?,
-                    last_updated = CURRENT_TIMESTAMP
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE doc_id = ?
                 """,
                 (total, positive, negative, new_avg, doc_id)
@@ -756,7 +756,7 @@ def _update_global_score(db: DatabaseManager, doc_id: str, emoji_score: float, e
                 """
                 INSERT INTO document_global_scores
                 (doc_id, total_feedback_count, positive_feedback_count, 
-                 negative_feedback_count, avg_emoji_score, last_updated)
+                 negative_feedback_count, avg_emoji_score, updated_at)
                 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
                 (doc_id, 1, positive, negative, emoji_score)
@@ -792,33 +792,37 @@ def _update_profile_from_emoji(
             feedback_count = row.get('total_feedback_count', 0)
             
             # Convert emoji_score (0-1) to 1-5 scale
+            # Emoji feedback primarily measures understanding, not satisfaction
             understanding_score = 1 + (emoji_score * 4)
             
             new_avg = (current_avg * feedback_count + understanding_score) / (feedback_count + 1)
             new_count = feedback_count + 1
             
-            # Update satisfaction similarly
+            # Don't update satisfaction from emoji feedback
+            # Satisfaction should only be updated from multi-dimensional feedback
+            # (relevance + clarity) to keep it distinct from understanding
             current_sat = row.get('average_satisfaction', 3.0)
-            satisfaction_score = 1 + (emoji_score * 4)
-            new_sat = (current_sat * feedback_count + satisfaction_score) / (feedback_count + 1)
             
             db.execute_update(
                 """
                 UPDATE student_profiles
                 SET average_understanding = ?,
-                    average_satisfaction = ?,
                     total_feedback_count = ?,
                     last_updated = CURRENT_TIMESTAMP
                 WHERE user_id = ? AND session_id = ?
                 """,
-                (new_avg, new_sat, new_count, user_id, session_id)
+                (new_avg, new_count, user_id, session_id)
             )
             
             logger.debug(f"Updated profile for user {user_id}: avg understanding {new_avg:.2f}")
             return True
         else:
             # Create new profile
+            # Emoji feedback primarily measures understanding, not satisfaction
             understanding_score = 1 + (emoji_score * 4)
+            # Set satisfaction to NULL - it should only be updated by multi-dimensional feedback
+            # This ensures understanding and satisfaction remain distinct
+            default_satisfaction = None
             
             db.execute_insert(
                 """
@@ -827,10 +831,10 @@ def _update_profile_from_emoji(
                  total_interactions, total_feedback_count, last_updated)
                 VALUES (?, ?, ?, ?, 1, 1, CURRENT_TIMESTAMP)
                 """,
-                (user_id, session_id, understanding_score, understanding_score)
+                (user_id, session_id, understanding_score, default_satisfaction)
             )
             
-            logger.debug(f"Created profile for user {user_id}")
+            logger.debug(f"Created profile for user {user_id} with understanding={understanding_score:.2f}, satisfaction=NULL")
             return True
             
     except Exception as e:

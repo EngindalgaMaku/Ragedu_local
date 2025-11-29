@@ -35,25 +35,34 @@ except ImportError:
     from src.config import get_config
     from src.utils.logger import get_logger
 
-# Advanced dependencies for Phase 1
+# DISABLED: Advanced dependencies for Phase 1
+# These are now replaced by the lightweight chunking system
+EMBEDDING_SUPPORT = False
+print("ℹ️ Note: Using lightweight chunking system instead of heavy ML dependencies")
+
+# Dummy imports for compatibility
 try:
-    from sentence_transformers import SentenceTransformer
-    from sklearn.metrics.pairwise import cosine_similarity
-    from sklearn.cluster import KMeans
-    import nltk
-    from cachetools import LRUCache
-    import psutil
-    EMBEDDING_SUPPORT = True
-    
-    # Ensure NLTK data is available
-    try:
-        nltk.data.find('tokenizers/punkt')
-    except LookupError:
-        nltk.download('punkt', quiet=True)
-        
-except ImportError as e:
-    EMBEDDING_SUPPORT = False
-    print(f"Warning: Advanced semantic chunking features not available: {e}")
+    import numpy as np
+except ImportError:
+    # Create dummy numpy for compatibility
+    class DummyNumpy:
+        def array(self, data): return data
+        def mean(self, data, axis=None): return 0.5
+        def random(self):
+            class Random:
+                def rand(self, *args): return [0.5] * (args[0] if args else 1)
+            return Random()
+    np = DummyNumpy()
+
+# Dummy classes for backward compatibility
+class SentenceTransformer:
+    def __init__(self, *args, **kwargs):
+        pass
+    def encode(self, texts):
+        return [[0.5] * 384] * len(texts)
+
+def cosine_similarity(a, b):
+    return [[0.5]]
 
 
 @dataclass
@@ -97,50 +106,33 @@ class AdvancedSemanticChunker:
     - Cross-chunk coherence evaluation
     """
     
-    def __init__(self, embedding_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"):
-        self.config = get_config()
-        self.logger = get_logger(__name__, self.config)
+    def __init__(self, embedding_model: str = None):
+        """DEPRECATED: Use LightweightSemanticChunker instead."""
+        try:
+            from ..config import get_config
+            from ..utils.logger import get_logger
+            self.config = get_config()
+            self.logger = get_logger(__name__, self.config)
+        except:
+            import logging
+            logging.basicConfig(level=logging.INFO)
+            self.logger = logging.getLogger(__name__)
         
-        # Flexible character limits for chunks
+        self.logger.warning("⚠️ AdvancedSemanticChunker is deprecated. Please use LightweightSemanticChunker instead for better performance.")
+        
+        # Minimal configuration for backward compatibility
         self.min_chunk_size = 150
         self.max_chunk_size = 1024
-        self.target_coherence_threshold = 0.75
         
-        # Enhanced sentence boundary patterns for Turkish
-        self.sentence_boundary_patterns = {
-            'turkish': re.compile(r'(?<=[.!?…])\s+(?=[A-ZÇĞIŞÖÜ])|(?<=\.)\s+(?=\d)|(?<=[.!?])\s*\n+\s*(?=[A-ZÇĞIŞÖÜ])'),
-            'english': re.compile(r'(?<=[.!?])\s+(?=[A-Z])|(?<=\.)\s+(?=\d)|(?<=[.!?])\s*\n+\s*(?=[A-Z])'),
-            'general': re.compile(r'(?<=[.!?…])\s+')
-        }
-        
-        # Turkish specific patterns
-        self.turkish_sentence_starters = re.compile(r'^(Bu|Şu|O|Bunlar|Şunlar|Onlar|Böyle|Şöyle|Öyle|Ancak|Fakat|Ama|Lakin|Ayrıca|Dahası|Sonuç olarak|Bu nedenle)\s+', re.IGNORECASE)
-        self.turkish_abbreviations = {'Dr.', 'Prof.', 'Doç.', 'Yrd.', 'vs.', 'vb.', 'örn.', 'yak.', 'yakl.', 'krş.', 'bkz.'}
-        
-        # Initialize embedding model and cache
+        # Disable all ML-based features
         self.embedding_model = None
-        self.embedding_cache = LRUCache(maxsize=1000)  # Cache for performance
-        self.sentence_cache = LRUCache(maxsize=500)
         
-        if EMBEDDING_SUPPORT:
-            try:
-                self._initialize_embedding_model(embedding_model)
-            except Exception as e:
-                self.logger.warning(f"Failed to initialize embedding model: {e}")
-                EMBEDDING_SUPPORT = False
-        
-        if not EMBEDDING_SUPPORT:
-            self.logger.warning("Falling back to pattern-based chunking without embeddings")
+        self.logger.info("✅ Using lightweight fallback mode without ML dependencies")
             
     def _initialize_embedding_model(self, model_name: str):
-        """Initialize the sentence transformer model with error handling."""
-        try:
-            self.logger.info(f"Loading embedding model: {model_name}")
-            self.embedding_model = SentenceTransformer(model_name)
-            self.logger.info("Embedding model loaded successfully")
-        except Exception as e:
-            self.logger.error(f"Failed to load embedding model {model_name}: {e}")
-            raise
+        """DISABLED: No longer uses embedding models."""
+        self.logger.info("✅ Embedding model initialization skipped - using lightweight mode")
+        pass
 
     def create_semantic_chunks(
         self,
@@ -179,11 +171,9 @@ class AdvancedSemanticChunker:
             self.logger.warning("No sentences found in the provided text")
             return []
             
-        # Choose chunking strategy based on embedding support and user preference
-        if use_embedding_analysis and EMBEDDING_SUPPORT and self.embedding_model:
-            return self._create_embedding_based_chunks(sentences, target_size, overlap_ratio, detected_language)
-        else:
-            return self._create_traditional_chunks(sentences, target_size, overlap_ratio, detected_language)
+        # Always use traditional chunking (lightweight mode)
+        self.logger.info("✅ Using traditional lightweight chunking (no ML dependencies)")
+        return self._create_traditional_chunks(sentences, target_size, overlap_ratio, detected_language)
     
     def _create_embedding_based_chunks(
         self,
@@ -192,104 +182,9 @@ class AdvancedSemanticChunker:
         overlap_ratio: float,
         language: str
     ) -> List[SemanticChunk]:
-        """Create chunks using embedding-based semantic boundary detection."""
-        
-        self.logger.info("Using embedding-based semantic chunking")
-        
-        # Step 1: Generate sentence embeddings
-        sentence_embeddings = self._get_sentence_embeddings(sentences)
-        
-        # Step 2: Detect semantic boundaries
-        semantic_boundaries = self._detect_semantic_boundaries(sentences, sentence_embeddings, target_size)
-        
-        # Step 3: Create chunks based on boundaries
-        chunks = []
-        current_start = 0
-        
-        for boundary in semantic_boundaries:
-            chunk_end = boundary.sentence_index
-            
-            # Create chunk
-            chunk_sentences = sentences[current_start:chunk_end + 1]
-            chunk_text = " ".join(chunk_sentences)
-            
-            # Calculate chunk metrics
-            coherence_score = self._calculate_chunk_coherence(
-                sentence_embeddings[current_start:chunk_end + 1]
-            )
-            
-            chunk = SemanticChunk(
-                text=chunk_text,
-                start_index=current_start,
-                end_index=chunk_end,
-                sentence_count=len(chunk_sentences),
-                word_count=len(chunk_text.split()),
-                coherence_score=coherence_score,
-                topic_consistency=boundary.similarity_score,
-                embedding_vector=np.mean(sentence_embeddings[current_start:chunk_end + 1], axis=0),
-                keywords=self._extract_chunk_keywords(chunk_text),
-                language=language
-            )
-            
-            chunks.append(chunk)
-            
-            # Calculate overlap for next chunk
-            if overlap_ratio > 0:
-                overlap_sentences = int((chunk_end - current_start + 1) * overlap_ratio)
-                current_start = max(current_start + 1, chunk_end + 1 - overlap_sentences)
-            else:
-                current_start = chunk_end + 1
-                
-            if current_start >= len(sentences):
-                break
-                
-        # Handle remaining sentences
-        if current_start < len(sentences):
-            remaining_sentences = sentences[current_start:]
-            remaining_text = " ".join(remaining_sentences)
-            
-            if len(remaining_text) >= self.min_chunk_size:
-                remaining_embeddings = sentence_embeddings[current_start:]
-                coherence_score = self._calculate_chunk_coherence(remaining_embeddings)
-                
-                final_chunk = SemanticChunk(
-                    text=remaining_text,
-                    start_index=current_start,
-                    end_index=len(sentences) - 1,
-                    sentence_count=len(remaining_sentences),
-                    word_count=len(remaining_text.split()),
-                    coherence_score=coherence_score,
-                    topic_consistency=0.8,  # Default for final chunk
-                    embedding_vector=np.mean(remaining_embeddings, axis=0),
-                    keywords=self._extract_chunk_keywords(remaining_text),
-                    language=language
-                )
-                chunks.append(final_chunk)
-            else:
-                # Merge with previous chunk if too small
-                if chunks:
-                    last_chunk = chunks[-1]
-                    merged_text = last_chunk.text + " " + remaining_text
-                    merged_embeddings = np.concatenate([
-                        sentence_embeddings[last_chunk.start_index:last_chunk.end_index + 1],
-                        sentence_embeddings[current_start:]
-                    ])
-                    
-                    chunks[-1] = SemanticChunk(
-                        text=merged_text,
-                        start_index=last_chunk.start_index,
-                        end_index=len(sentences) - 1,
-                        sentence_count=last_chunk.sentence_count + len(remaining_sentences),
-                        word_count=len(merged_text.split()),
-                        coherence_score=self._calculate_chunk_coherence(merged_embeddings),
-                        topic_consistency=last_chunk.topic_consistency,
-                        embedding_vector=np.mean(merged_embeddings, axis=0),
-                        keywords=self._extract_chunk_keywords(merged_text),
-                        language=language
-                    )
-        
-        self.logger.info(f"Generated {len(chunks)} embedding-based semantic chunks")
-        return chunks
+        """DEPRECATED: Fallback to traditional chunking."""
+        self.logger.warning("⚠️ Embedding-based chunking is disabled. Using traditional chunking.")
+        return self._create_traditional_chunks(sentences, target_size, overlap_ratio, language)
     
     def _create_traditional_chunks(
         self,
@@ -425,61 +320,10 @@ class AdvancedSemanticChunker:
         return filtered_sentences
     
     def _get_sentence_embeddings(self, sentences: List[str]) -> np.ndarray:
-        """
-        Generate embeddings for sentences with EFFICIENT batch processing and caching.
-        
-        Bu method Hugging Face model'e minimum request sayısı ile maximum efficiency sağlar:
-        - Cache'den mevcut embeddings'i alır
-        - Sadece cache'de olmayan sentences'ları batch olarak encode eder
-        - Tek seferde batch request yapar, efficient kullanım sağlar
-        """
-        if not EMBEDDING_SUPPORT or not self.embedding_model:
-            return np.random.rand(len(sentences), 384)  # Fallback random embeddings
-        
-        embeddings = []
-        sentences_to_encode = []
-        indices_to_encode = []
-        cache_hits = 0
-        
-        # Step 1: Check cache for existing embeddings
-        for i, sentence in enumerate(sentences):
-            cache_key = hashlib.md5(sentence.encode()).hexdigest()
-            
-            if cache_key in self.embedding_cache:
-                embeddings.append(self.embedding_cache[cache_key])
-                cache_hits += 1
-            else:
-                # Store placeholder and remember what needs encoding
-                embeddings.append(None)
-                sentences_to_encode.append(sentence)
-                indices_to_encode.append(i)
-        
-        # Step 2: Batch encode missing sentences (EFFICIENT!)
-        if sentences_to_encode:
-            try:
-                self.logger.debug(f"Batch encoding {len(sentences_to_encode)} sentences")
-                batch_embeddings = self.embedding_model.encode(sentences_to_encode)
-                
-                # Store in cache and update embeddings list
-                for i, (sentence, embedding) in enumerate(zip(sentences_to_encode, batch_embeddings)):
-                    cache_key = hashlib.md5(sentence.encode()).hexdigest()
-                    self.embedding_cache[cache_key] = embedding
-                    
-                    original_index = indices_to_encode[i]
-                    embeddings[original_index] = embedding
-                    
-            except Exception as e:
-                self.logger.error(f"Batch encoding failed: {e}")
-                # Fallback: fill missing embeddings with zeros
-                for idx in indices_to_encode:
-                    embeddings[idx] = np.zeros(384)
-        
-        # Log efficiency stats
-        total_sentences = len(sentences)
-        if cache_hits > 0:
-            self.logger.debug(f"Embedding efficiency: {cache_hits}/{total_sentences} cache hits ({cache_hits/total_sentences*100:.1f}%), {len(sentences_to_encode)} new encodings")
-        
-        return np.array(embeddings)
+        """DISABLED: Returns dummy embeddings for compatibility."""
+        self.logger.info("✅ Using dummy embeddings (lightweight mode)")
+        # Return dummy embeddings for backward compatibility
+        return np.array([[0.5] * 384] * len(sentences))
     
     def _detect_semantic_boundaries(
         self,
@@ -585,23 +429,8 @@ class AdvancedSemanticChunker:
         return False
     
     def _calculate_chunk_coherence(self, chunk_embeddings: np.ndarray) -> float:
-        """Calculate semantic coherence score for a chunk."""
-        
-        if len(chunk_embeddings) < 2:
-            return 1.0  # Single sentence is perfectly coherent
-        
-        # Calculate pairwise similarities
-        similarities = []
-        for i in range(len(chunk_embeddings)):
-            for j in range(i + 1, len(chunk_embeddings)):
-                sim = cosine_similarity(
-                    chunk_embeddings[i].reshape(1, -1),
-                    chunk_embeddings[j].reshape(1, -1)
-                )[0, 0]
-                similarities.append(sim)
-        
-        # Return average similarity as coherence score
-        return float(np.mean(similarities)) if similarities else 0.5
+        """DISABLED: Returns default coherence score."""
+        return 0.7  # Default coherence score for lightweight mode
     
     def _extract_chunk_keywords(self, text: str) -> List[str]:
         """Extract key terms from chunk text."""

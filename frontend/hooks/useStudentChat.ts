@@ -18,6 +18,11 @@ import {
   getAPRAGSettings,
   classifyQuestion,
   hybridRAGQuery,
+  startAsyncRAGQuery,
+  getAsyncRAGStatus,
+  AsyncRAGRequest,
+  AsyncRAGInitResponse,
+  AsyncRAGStatusResponse,
 } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -39,6 +44,18 @@ interface UseStudentChatReturn {
     suggestion: string,
     sessionRagSettings?: any
   ) => Promise<void>;
+  debugData: {
+    adaptiveQueryResult: any | null;
+    personalizationData: any | null;
+    lastQuery: string | null;
+  };
+  // Async RAG progress info
+  asyncTaskProgress?: {
+    taskId: string;
+    progress: number;
+    currentStep: string;
+    estimatedRemaining: number;
+  } | null;
 }
 
 export function useStudentChat({
@@ -50,6 +67,21 @@ export function useStudentChat({
   const [isLoading, setIsLoading] = useState(false);
   const [isQuerying, setIsQuerying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [debugData, setDebugData] = useState<{
+    adaptiveQueryResult: any | null;
+    personalizationData: any | null;
+    lastQuery: string | null;
+  }>({
+    adaptiveQueryResult: null,
+    personalizationData: null,
+    lastQuery: null,
+  });
+  const [asyncTaskProgress, setAsyncTaskProgress] = useState<{
+    taskId: string;
+    progress: number;
+    currentStep: string;
+    estimatedRemaining: number;
+  } | null>(null);
   const { user } = useAuth();
 
   // Load chat history from database on mount or sessionId change
@@ -154,6 +186,7 @@ export function useStudentChat({
         }
 
         // KB-Enhanced RAG payload (Hybrid RAG)
+        // IMPORTANT: Use session's embedding_model to match collection dimension
         const hybridPayload = {
           session_id: sessionId,
           query,
@@ -162,16 +195,59 @@ export function useStudentChat({
           use_qa_pairs: true,
           use_crag: true,
           model: sessionRagSettings?.model,
+          embedding_model: sessionRagSettings?.embedding_model, // CRITICAL: Match collection's embedding model
           max_tokens: 2048,
           temperature: 0.7,
           max_context_chars: 8000,
           include_examples: true,
           include_sources: true,
+          user_id: user?.id?.toString() || "student",
         };
 
-        // Get AI response from KB-Enhanced Hybrid RAG
-        const result = await hybridRAGQuery(hybridPayload);
-        const actualDurationMs = Date.now() - startTime;
+        if (sessionRagSettings?.embedding_model) {
+          console.log(
+            `🔍 Using session's embedding model: ${sessionRagSettings.embedding_model}`
+          );
+        }
+
+        // Check if we should use async RAG (for long operations)
+        const estimatedComplexity =
+          query.length +
+          (sessionRagSettings?.chunk_strategy === "semantic" ? 100 : 0);
+        const useAsyncRAG = estimatedComplexity > 150; // Use async for complex queries
+
+        let result;
+        let actualDurationMs;
+
+        if (useAsyncRAG) {
+          // ASYNC RAG PATH: Start background task and poll for results
+          console.log(
+            `🚀 Using async RAG for complex query (complexity: ${estimatedComplexity})`
+          );
+
+          const asyncInit = await startAsyncRAGQuery(hybridPayload);
+
+          setAsyncTaskProgress({
+            taskId: asyncInit.task_id,
+            progress: 0,
+            currentStep: asyncInit.message,
+            estimatedRemaining: asyncInit.estimated_time_seconds,
+          });
+
+          // Poll for results
+          result = await pollAsyncRAGResult(asyncInit.task_id);
+          actualDurationMs = Date.now() - startTime;
+
+          // Clear progress state
+          setAsyncTaskProgress(null);
+        } else {
+          // SYNC RAG PATH: Direct hybrid RAG call
+          result = await hybridRAGQuery(hybridPayload);
+          actualDurationMs = Date.now() - startTime;
+        }
+
+        // Store debug info from hybrid RAG response
+        const hybridDebugInfo = result.debug_info || {};
 
         // Check if APRAG is enabled for adaptive learning
         let finalResponse = result.answer;
@@ -182,22 +258,38 @@ export function useStudentChat({
           try {
             // Check APRAG status
             const apragSettings = await getAPRAGSettings(sessionId);
-            
+
             if (apragSettings.enabled && apragSettings.features.cacs) {
               // Use APRAG Adaptive Query for personalized learning
-              console.log("🎓 Using APRAG Adaptive Query for personalized response...");
-              
+              console.log(
+                "🎓 Using APRAG Adaptive Query for personalized response..."
+              );
+
               const adaptiveResult = await apragAdaptiveQuery({
                 user_id: user.id.toString(),
                 session_id: sessionId,
                 query: query,
                 rag_documents: (result.sources || []).map((s: any) => ({
-                  doc_id: s.metadata?.source_file || s.metadata?.filename || "unknown",
+                  doc_id:
+                    s.metadata?.source_file ||
+                    s.metadata?.filename ||
+                    "unknown",
                   content: s.content || "",
                   score: s.score || 0,
                   metadata: s.metadata || {},
                 })),
                 rag_response: result.answer,
+              });
+
+              // Save debug data with hybrid RAG debug info
+              setDebugData({
+                adaptiveQueryResult: {
+                  ...adaptiveResult,
+                  hybrid_rag_debug: hybridDebugInfo,
+                },
+                personalizationData:
+                  adaptiveResult.personalization_data || null,
+                lastQuery: query,
               });
 
               // Use personalized response
@@ -206,11 +298,14 @@ export function useStudentChat({
               pedagogicalInfo = {
                 zpd: adaptiveResult.pedagogical_context.zpd_recommended,
                 bloom: adaptiveResult.pedagogical_context.bloom_level,
-                cognitive_load: adaptiveResult.pedagogical_context.cognitive_load,
+                cognitive_load:
+                  adaptiveResult.pedagogical_context.cognitive_load,
                 cacs_applied: adaptiveResult.cacs_applied,
               };
 
-              console.log(`✅ APRAG Applied: ZPD=${pedagogicalInfo.zpd}, Bloom=${pedagogicalInfo.bloom}, CACS=${pedagogicalInfo.cacs_applied}`);
+              console.log(
+                `✅ APRAG Applied: ZPD=${pedagogicalInfo.zpd}, Bloom=${pedagogicalInfo.bloom}, CACS=${pedagogicalInfo.cacs_applied}`
+              );
             } else {
               // Fallback: Manual APRAG interaction logging
               const apragResult = await createAPRAGInteraction({
@@ -228,11 +323,43 @@ export function useStudentChat({
                 })),
               });
               apragInteractionId = apragResult.interaction_id;
+
+              // Set debug data even when APRAG is disabled (show RAG results)
+              setDebugData({
+                adaptiveQueryResult: {
+                  personalized_response: result.answer,
+                  original_response: result.answer,
+                  interaction_id: apragResult.interaction_id,
+                  top_documents:
+                    result.sources?.map((s: any) => ({
+                      content: s.content || "",
+                      score: s.score || 0,
+                      metadata: s.metadata || {},
+                    })) || [],
+                  cacs_applied: false,
+                  pedagogical_context: {
+                    zpd_recommended: "unknown",
+                    bloom_level: "unknown",
+                    cognitive_load: "unknown",
+                  },
+                  components_active: {
+                    cacs: false,
+                    zpd: false,
+                    bloom: false,
+                    cognitive_load: false,
+                    emoji_feedback: false,
+                  },
+                  processing_time_ms: actualDurationMs,
+                  hybrid_rag_debug: hybridDebugInfo,
+                },
+                personalizationData: null,
+                lastQuery: query,
+              });
             }
           } catch (apragError) {
             // Don't fail the whole request if APRAG fails
             console.error("Failed to use APRAG adaptive query:", apragError);
-            
+
             // Fallback to manual interaction logging
             try {
               const apragResult = await createAPRAGInteraction({
@@ -250,34 +377,44 @@ export function useStudentChat({
                 })),
               });
               apragInteractionId = apragResult.interaction_id;
-            } catch (fallbackError) {
-              console.error("Fallback interaction logging also failed:", fallbackError);
-            }
-          }
-        }
 
-        // Get topic classification first (if available)
-        let topicInfo: { topic_id: number; topic_title: string; confidence_score: number } | undefined;
-        if (apragInteractionId && sessionId) {
-          try {
-            const classificationResult = await classifyQuestion({
-              question: query,
-              session_id: sessionId,
-              interaction_id: apragInteractionId,
-            });
-            
-            if (classificationResult.success && classificationResult.topic_id) {
-              topicInfo = {
-                topic_id: classificationResult.topic_id,
-                topic_title: classificationResult.topic_title,
-                confidence_score: classificationResult.confidence_score,
-              };
+              // Set debug data even when APRAG fails (show RAG results)
+              setDebugData({
+                adaptiveQueryResult: {
+                  personalized_response: result.answer,
+                  original_response: result.answer,
+                  interaction_id: apragResult.interaction_id,
+                  top_documents:
+                    result.sources?.map((s: any) => ({
+                      content: s.content || "",
+                      score: s.score || 0,
+                      metadata: s.metadata || {},
+                    })) || [],
+                  cacs_applied: false,
+                  pedagogical_context: {
+                    zpd_recommended: "unknown",
+                    bloom_level: "unknown",
+                    cognitive_load: "unknown",
+                  },
+                  components_active: {
+                    cacs: false,
+                    zpd: false,
+                    bloom: false,
+                    cognitive_load: false,
+                    emoji_feedback: false,
+                  },
+                  processing_time_ms: actualDurationMs,
+                  hybrid_rag_debug: hybridDebugInfo,
+                },
+                personalizationData: null,
+                lastQuery: query,
+              });
+            } catch (fallbackError) {
+              console.error(
+                "Fallback interaction logging also failed:",
+                fallbackError
+              );
             }
-          } catch (classificationError) {
-            console.warn(
-              "Question classification for topic progress failed:",
-              classificationError
-            );
           }
         }
 
@@ -288,11 +425,14 @@ export function useStudentChat({
           sources: result.sources || [],
           durationMs: actualDurationMs,
           session_id: sessionId,
-          suggestions: [], // Will be filled asynchronously
+          suggestions: (result as any).suggestions || [], // Use suggestions from response if available
           aprag_interaction_id: apragInteractionId || undefined,
-          topic: topicInfo, // Include topic information
         };
 
+        // Stop querying immediately when response arrives
+        setIsQuerying(false);
+        setAsyncTaskProgress(null);
+        
         // Update UI with response
         setMessages((prev) => {
           const updated = [...prev];
@@ -306,72 +446,83 @@ export function useStudentChat({
         // Save to database
         await saveMessage(completeMessage);
 
-        // Generate suggestions asynchronously (non-blocking)
-        // CRITICAL: Save suggestions to database after generation
-        (async () => {
+        // Update topic progress asynchronously (does not block UI)
+        // Always try to classify question for topic progress, even if APRAG is disabled
+        // This ensures topic progress is tracked regardless of APRAG status
+        if (sessionId && user?.id) {
           try {
-            const suggestions = await generateSuggestions({
+            const classificationResult = await classifyQuestion({
               question: query,
-              answer: finalResponse, // Use personalized response for better context
-              sources: result.sources || [],
+              session_id: sessionId,
+              interaction_id: apragInteractionId || undefined, // Optional: only if available
+              user_id: user.id.toString(), // Always include user_id for topic progress tracking
             });
-
-            if (Array.isArray(suggestions) && suggestions.length > 0) {
-              // Update UI immediately
+            
+            // Check if there's a topic recommendation (mastery achieved)
+            if (classificationResult?.recommendation) {
+              const recommendation = classificationResult.recommendation;
+              
+              // Add recommendation as a system message
+              const recommendationMessage: Omit<StudentChatMessage, "id" | "timestamp"> = {
+                user: "",
+                bot: recommendation.message,
+                sources: [],
+                suggestions: [],
+                session_id: sessionId,
+              };
+              
               setMessages((prev) => {
-                const updated = [...prev];
-                const lastIndex = updated.length - 1;
-                if (lastIndex >= 0 && updated[lastIndex]) {
-                  updated[lastIndex] = {
-                    ...updated[lastIndex],
-                    suggestions: suggestions,
-                  };
-                }
+                const updated = [...prev, recommendationMessage as StudentChatMessage];
                 return updated;
               });
               
-              // CRITICAL: Save suggestions to database by updating existing message
-              try {
-                // Get current message from database to preserve all fields
-                const { getStudentChatHistory, saveStudentChatMessage } = await import("@/lib/api");
-                const chatHistory = await getStudentChatHistory(sessionId);
-                const messageToUpdate = chatHistory.find(
-                  (msg) => msg.aprag_interaction_id === apragInteractionId
-                );
-                
-                if (messageToUpdate) {
-                  // Update with suggestions, preserve all other fields
-                  // CRITICAL: Use topicInfo if available, otherwise keep existing topic
-                  const finalTopic = topicInfo || messageToUpdate.topic;
-                  await saveStudentChatMessage({
-                    user: messageToUpdate.user,
-                    bot: messageToUpdate.bot,
-                    sources: messageToUpdate.sources || [],
-                    durationMs: messageToUpdate.durationMs || 0,
-                    session_id: messageToUpdate.session_id,
-                    suggestions: suggestions, // Save suggestions
-                    aprag_interaction_id: messageToUpdate.aprag_interaction_id,
-                    topic: finalTopic, // Use topicInfo if available, otherwise keep existing
-                    emoji_feedback: messageToUpdate.emoji_feedback, // Keep existing emoji
-                  });
-                  console.log("✅ Suggestions saved to database", { 
-                    suggestionsCount: suggestions.length,
-                    topic: finalTopic,
-                    emoji: messageToUpdate.emoji_feedback 
-                  });
-                } else {
-                  console.warn("⚠️ Message not found for suggestions update", { apragInteractionId });
-                }
-              } catch (saveErr) {
-                console.error("❌ Failed to save suggestions to database:", saveErr);
+              // Save recommendation message
+              if (autoSave) {
+                await saveMessage(recommendationMessage);
               }
             }
-          } catch (suggErr) {
-            console.error("Failed to generate suggestions:", suggErr);
-            // Don't show error to user - suggestions are optional
+          } catch (classificationError) {
+            console.warn(
+              "Question classification for topic progress failed:",
+              classificationError
+            );
+            // Don't throw - topic progress is non-critical
           }
-        })();
+        }
+
+        // Generate suggestions asynchronously (non-blocking) if not already in response
+        // Note: We don't save suggestions separately to avoid duplicate entries
+        // Suggestions will be generated and displayed, but not saved to DB
+        if (!(result as any).suggestions || (result as any).suggestions.length === 0) {
+          if (result.sources && result.sources.length > 0) {
+            try {
+              const suggestions = await generateSuggestions({
+                question: query,
+                answer: result.answer,
+                sources: result.sources,
+              });
+
+              if (Array.isArray(suggestions) && suggestions.length > 0) {
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  if (updated[updated.length - 1]) {
+                    updated[updated.length - 1].suggestions = suggestions;
+                    // ✅ BUG FIX: Don't save again to avoid duplicate entries
+                    // Suggestions are ephemeral and will be regenerated if needed
+                  }
+                  return updated;
+                });
+              }
+            } catch (suggErr) {
+              console.error("Failed to generate suggestions:", suggErr);
+            }
+          }
+        }
       } catch (err: any) {
+        // Stop querying immediately on error
+        setIsQuerying(false);
+        setAsyncTaskProgress(null);
+        
         const errorMessage = err.message || "Sorgu başarısız oldu";
         setError(errorMessage);
 
@@ -433,6 +584,53 @@ export function useStudentChat({
     }
   }, [messages.length, maxMessages]);
 
+  // Helper function to poll async RAG results
+  const pollAsyncRAGResult = useCallback(
+    async (taskId: string): Promise<any> => {
+      const maxPollingTime = 60000; // 60 seconds max
+      const pollInterval = 2000; // Poll every 2 seconds
+      const startTime = Date.now();
+
+      while (Date.now() - startTime < maxPollingTime) {
+        try {
+          const status = await getAsyncRAGStatus(taskId);
+
+          // Update progress
+          setAsyncTaskProgress((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  progress: status.progress || prev.progress,
+                  currentStep: status.current_step || prev.currentStep,
+                  estimatedRemaining:
+                    status.estimated_remaining_seconds ||
+                    prev.estimatedRemaining,
+                }
+              : null
+          );
+
+          if (status.status === "completed" && status.result) {
+            console.log(`✅ Async RAG completed for task ${taskId}`);
+            return status.result;
+          }
+
+          if (status.status === "failed") {
+            throw new Error(status.error || "Async RAG task failed");
+          }
+
+          // Wait before next poll
+          await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        } catch (error) {
+          console.error("Error polling async RAG status:", error);
+          throw error;
+        }
+      }
+
+      throw new Error("Async RAG polling timed out");
+    },
+    []
+  );
+
   return {
     messages,
     isLoading,
@@ -442,5 +640,7 @@ export function useStudentChat({
     clearHistory,
     refreshHistory,
     handleSuggestionClick,
+    debugData,
+    asyncTaskProgress,
   };
 }

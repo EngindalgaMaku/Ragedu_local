@@ -18,6 +18,7 @@ const useSession = () => ({
   },
 });
 import axios from "axios";
+import { getApiUrl } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -134,7 +135,7 @@ const ProgressiveAssessmentFlow: React.FC<ProgressiveAssessmentFlowProps> = ({
     try {
       setLoading(true);
       const response = await axios.get(
-        `${apiBaseUrl}/api/aprag/progressive-assessment/check-trigger/${interactionId}`,
+        `${getApiUrl()}/aprag/progressive-assessment/check-trigger/${interactionId}`,
         {
           headers: {
             Authorization: `Bearer ${session?.accessToken}`,
@@ -183,7 +184,7 @@ const ProgressiveAssessmentFlow: React.FC<ProgressiveAssessmentFlowProps> = ({
     try {
       setLoading(true);
       const response = await axios.post(
-        `${apiBaseUrl}/api/aprag/progressive-assessment/follow-up`,
+        `${getApiUrl()}/aprag/progressive-assessment/follow-up`,
         {
           interaction_id: interactionId,
           user_id: userId,
@@ -231,7 +232,7 @@ const ProgressiveAssessmentFlow: React.FC<ProgressiveAssessmentFlowProps> = ({
     try {
       setLoading(true);
       const response = await axios.post(
-        `${apiBaseUrl}/api/aprag/progressive-assessment/deep-analysis`,
+        `${getApiUrl()}/aprag/progressive-assessment/deep-analysis`,
         {
           interaction_id: interactionId,
           user_id: userId,

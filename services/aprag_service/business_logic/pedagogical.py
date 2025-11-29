@@ -384,10 +384,18 @@ class BloomTaxonomyDetector:
         instructions += f"Öğrencinin mevcut seviyesi: {student_zpd_level}\n\n"
         
         if detected_level == 'remember':
-            instructions += "📝 Yanıt Stratejisi:\n"
-            instructions += "- Kısa, net ve doğrudan tanım ver\n"
-            instructions += "- Hafızayı destekleyici ipuçları ekle\n"
-            instructions += "- Anahtar kelimeleri vurgula\n"
+            instructions += "📝 Yanıt Stratejisi (MUTLAKA UYGULA):\n"
+            instructions += "1. KISA VE NET: Yanıtı maksimum 2-3 paragraf ile sınırla. Her paragraf 3-4 cümle olsun.\n"
+            instructions += "2. DOĞRUDAN TANIM: İlk cümlede doğrudan tanımı ver. Örnek: 'Profaz, hücre bölünmesinin başlangıç evresidir.'\n"
+            instructions += "3. HAFIZA İPUÇLARI (ZORUNLU): Mutlaka hafızayı destekleyici ipuçları ekle:\n"
+            instructions += "   - Kelime kökeni: 'Profaz = pro (ön) + faz (evre)' gibi\n"
+            instructions += "   - Görsel benzetme: 'Kromozomlar iplik gibi görünür' gibi\n"
+            instructions += "   - Kısa özet cümle: 'Profaz = hazırlık evresi' gibi\n"
+            instructions += "4. ANAHTAR KELİMELERİ VURGULA (ZORUNLU): Önemli terimleri **kalın** yaparak vurgula:\n"
+            instructions += "   - Örnek: '**Profaz**', '**kromozomlar**', '**çekirdek zarı**' gibi\n"
+            instructions += "   - En az 3-5 anahtar kelimeyi mutlaka vurgula\n"
+            instructions += "5. TEKNİK TERİMLERİ AZALT: Öğrenci seviyesi 'elementary' ise, teknik terimleri basit dille açıkla\n"
+            instructions += "6. TEKRARLAMA: Önemli kavramları 1-2 kez tekrarla (hafıza için)\n"
         
         elif detected_level == 'understand':
             instructions += "💡 Yanıt Stratejisi:\n"
